@@ -163,7 +163,7 @@ substitutes `no hash`.
    `fmt`, `tone`, and the footer pattern as the recommended layout.
 3. `samples/display.json`: footer becomes the wire format above; restamp,
    propagate the new sample hash.
-4. Push, then `./deploy.sh` (pulls on the host, syncs, restarts).
+4. Push, then on the host: `git pull` and `sudo ./deploy/setup.sh sync`.
 
 **firmware side** (the YAML session):
 

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -15,7 +16,6 @@ ROOT = Path(__file__).resolve().parents[1]
 DEPLOY = ROOT / "deploy"
 SETUP = DEPLOY / "setup.sh"
 FETCH_FONTS = DEPLOY / "fetch-fonts.sh"
-DEPLOY_SH = ROOT / "deploy.sh"
 UNIT = DEPLOY / "display-mcp.service"
 RUNBOOK = ROOT / "docs" / "RUNBOOK.md"
 
@@ -45,7 +45,7 @@ def run(args, **kw):
 # --- syntax -----------------------------------------------------------------
 
 
-@pytest.mark.parametrize("script", [SETUP, FETCH_FONTS, DEPLOY_SH])
+@pytest.mark.parametrize("script", [SETUP, FETCH_FONTS])
 def test_bash_syntax(script):
     result = run(["bash", "-n", str(script)])
     assert result.returncode == 0, result.stderr
@@ -110,6 +110,33 @@ def test_help_exits_zero():
     assert "Commands:" in result.stdout
 
 
+def test_help_and_dispatch_agree():
+    """Every command --help documents dispatches, and vice versa.
+
+    setup.sh is the whole deploy story now, so its --help is the only place
+    anyone finds out what it can do. `sync` was missing from the synopsis for
+    long enough that it looked like it did not exist.
+    """
+    text = SETUP.read_text()
+    dispatched = set(re.findall(r"^  (\w+}?\)|\w+\))\s+(?:need_root; )?do_", text, re.M))
+    dispatched = {d.rstrip(")") for d in dispatched}
+
+    out = run([str(SETUP), "--help"]).stdout
+    commands_block = out.split("Commands:")[1].split("Flags:")[0]
+    documented = set(re.findall(r"^  (\w+)\s{2,}", commands_block, re.M))
+
+    assert documented == dispatched, (
+        f"only documented: {documented - dispatched}; "
+        f"only dispatched: {dispatched - documented}"
+    )
+
+    # The synopsis at the top is what people actually read; it should name
+    # them all too.
+    synopsis = out.split("Commands:")[0]
+    missing = {c for c in dispatched if f"setup.sh {c}" not in synopsis}
+    assert not missing, f"missing from the synopsis at the top of --help: {missing}"
+
+
 # --- the unit file ------------------------------------------------------------
 
 
@@ -124,7 +151,7 @@ def test_unit_has_required_fields():
 
 def test_no_epaper_env_prefix_anywhere_in_deploy_or_runbook():
     offenders = []
-    for path in list(DEPLOY.rglob("*")) + [RUNBOOK, DEPLOY_SH]:
+    for path in list(DEPLOY.rglob("*")) + [RUNBOOK]:
         if path.is_dir():
             continue
         try:
@@ -148,12 +175,10 @@ def test_fetch_fonts_usage_without_args():
 # --- shellcheck, if available -------------------------------------------------
 
 
-@pytest.mark.parametrize("script", [SETUP, FETCH_FONTS, DEPLOY_SH])
+@pytest.mark.parametrize("script", [SETUP, FETCH_FONTS])
 def test_shellcheck_clean(script):
     if shutil.which("shellcheck") is None:
         pytest.skip("shellcheck not installed")
-    # deploy.sh intentionally expands $DIR client-side in the ssh command
-    # (SC2029, info-level); fail only on warning severity and above.
     result = run(["shellcheck", "--severity=warning", str(script)])
     assert result.returncode == 0, result.stdout + result.stderr
 

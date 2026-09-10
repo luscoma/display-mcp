@@ -49,7 +49,6 @@ display-mcp/
     setup.sh                ported from the earlier repo
     display-mcp.service
     fetch-fonts.sh          the Instrument Sans download, for local dev too
-  deploy.sh                 pull on the host, sync, restart
   firmware/                 the ESPHome project; source of truth for the panel
     epaper-schedule.yaml    device config: vocabulary, wake cycle, deep sleep
     display_list.h          the on-device interpreter (authoritative semantics)
@@ -195,7 +194,7 @@ Access AUD tag and team domain.
 | 1 | renderer | `render/` port + CLI + hash and wrap tests | 0 |
 | 2 | core | `store.py`, `panel.py`, `main.py`, `config.py` + tests | 0 |
 | 3 | mcp | `mcp_server.py`, `auth.py`, `prompts/compose.md` + tests (against the stubbed store) | 0 |
-| 4 | deploy | unit, `setup.sh` port, `fetch-fonts.sh`, RUNBOOK.md, deploy.sh | 0 |
+| 4 | deploy | unit, `setup.sh` port, `fetch-fonts.sh`, RUNBOOK.md | 0 |
 | 5 | integration | merge 1–4, run the service locally, drive it with an MCP client, walk the runbook gates, fix drift | 1–4 |
 
 Package 0 is done first, on `main`. Packages 1–4 branch from it and run in

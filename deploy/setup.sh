@@ -10,7 +10,9 @@
 #   sudo ./setup.sh install                 # detects the LAN address itself
 #   sudo ./setup.sh install --with-tunnel --tunnel-token TOKEN \
 #                            --access-team-domain URL --access-aud TAG
-#   sudo ./setup.sh status
+#   sudo ./setup.sh sync                    # code-only redeploy: the usual one
+#   ./setup.sh status                       # no root needed
+#   sudo ./setup.sh check                   # can the renderer load fonts + sample
 #   sudo ./setup.sh uninstall               # keeps /var/lib/display-mcp
 #   sudo ./setup.sh uninstall --purge       # takes it too, and the user
 #
@@ -558,7 +560,8 @@ do_status() {
 # --- args -----------------------------------------------------------------
 
 usage() {
-  sed -n '3,22p' "${BASH_SOURCE[0]}" | sed 's/^#//; s/^ //'
+  awk 'NR>2 && /^#/ { sub(/^#[[:space:]]?/, ""); print; next } NR>2 { exit }' \
+      "${BASH_SOURCE[0]}"
   cat <<'EOF'
 
 Commands:
