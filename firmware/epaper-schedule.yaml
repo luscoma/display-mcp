@@ -1,0 +1,422 @@
+########################################################################
+# Waveshare ESP32-S3-ePaper-13.3E6 — display-list build
+#
+# The firmware is a renderer, not a design. It fetches a few KB of JSON,
+# executes it against the panel, and sleeps. Changing the layout is a file
+# edit on the server; only the vocabulary below (five font sizes, eleven
+# icons, the op set in display_list.h) is compiled in.
+#
+# No online_image, so no 3.84 MB PSRAM decode buffer.
+#
+# Source of truth: display-mcp/firmware/. display_list.h and secrets.yaml
+# (gitignored) sit next to this file; build with `esphome run` from here.
+########################################################################
+
+substitutions:
+  device_name: epaper-13e6
+  friendly_name: E-Paper Schedule
+
+  # The display-list server. Raw IP on purpose: the panel's DNS view has
+  # already changed under it once, and a dead name leaves the wall frozen on
+  # its last image with nothing in the log but a failed fetch.
+  dl_url: "http://172.17.247.125:8080/display.json"
+
+  sleep_minutes: "60min"
+  max_awake: "4min"
+
+  epd_clk_pin: "9"
+  epd_data0_pin: "46"
+  epd_data1_pin: "17" # no MISO on this board; inert spare pin
+  epd_cs0_pin: "10"
+  epd_cs1_pin: "3"
+  epd_reset_pin: "2"
+  epd_busy_pin: "12"
+  epd_power_pin: "1"
+  batt_adc_pin: "8"
+  boot_button_pin: "0"
+
+esphome:
+  name: ${device_name}
+  friendly_name: ${friendly_name}
+  includes:
+    - display_list.h
+  on_boot:
+    priority: -100
+    then:
+      - script.execute: wake_cycle
+
+esp32:
+  board: esp32-s3-devkitc-1
+  flash_size: 16MB
+  framework:
+    type: esp-idf
+
+# Still needed: the panel framebuffer is 960 KB.
+psram:
+  mode: octal
+  speed: 80MHz
+  ignore_not_found: false
+
+logger:
+  level: INFO
+  logs:
+    display_list: INFO
+
+# The fmt op's {time}: the panel's own clock at draw time. ESP-IDF keeps
+# system time in the RTC across deep sleep, so after the first sync every
+# hourly wake already has a valid clock and SNTP only corrects drift.
+time:
+  - platform: sntp
+    id: sntp_time
+    timezone: America/Los_Angeles
+    # The component's own "Synchronized time" line is debug-level; say it at
+    # INFO so a normal log shows whether NTP egress works.
+    on_time_sync:
+      - logger.log:
+          level: INFO
+          format: "sntp synchronized: %02d:%02d local"
+          args: ["id(sntp_time).now().hour", "id(sntp_time).now().minute"]
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  fast_connect: true
+
+api:
+  actions:
+    - action: refresh_now
+      then:
+        - script.execute: wake_cycle
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+    on_begin:
+      - deep_sleep.prevent: ds
+
+http_request:
+  timeout: 15s
+  watchdog_timeout: 30s
+  verify_ssl: false
+
+external_components:
+  - source:
+      type: git
+      url: https://github.com/philippwaller/esphome-epaper-spectra6-133
+      ref: v0.5.0
+
+########################################################################
+# Vocabulary — changing any of this is a rebuild
+########################################################################
+
+font:
+  - file: &face { type: gfonts, family: Instrument Sans, weight: 700 }
+    id: font_xl
+    size: 84
+    glyphsets: [GF_Latin_Core]
+  - file: *face
+    id: font_lg
+    size: 48
+    glyphsets: [GF_Latin_Core]
+  - file: { type: gfonts, family: Instrument Sans, weight: 400 }
+    id: font_md
+    size: 36
+    glyphsets: [GF_Latin_Core]
+  - file: { type: gfonts, family: Instrument Sans, weight: 400 }
+    id: font_sm
+    size: 28
+    glyphsets: [GF_Latin_Core]
+  - file: *face
+    id: font_xs
+    size: 22
+    glyphsets: [GF_Latin_Core]
+
+# Icons come from Material Design Icons by NAME, so there are no codepoints
+# to get wrong. chroma_key keeps the off pixels transparent, which matters
+# wherever an icon sits on a coloured fill.
+image:
+  - { file: mdi:weather-sunny,         id: ic_weather_sunny_lg,         type: BINARY, transparency: chroma_key, resize: 88x88 }
+  - { file: mdi:weather-partly-cloudy, id: ic_weather_partly_cloudy_lg, type: BINARY, transparency: chroma_key, resize: 88x88 }
+  - { file: mdi:weather-cloudy,        id: ic_weather_cloudy_lg,        type: BINARY, transparency: chroma_key, resize: 88x88 }
+  - { file: mdi:weather-rainy,         id: ic_weather_rainy_lg,         type: BINARY, transparency: chroma_key, resize: 88x88 }
+  - { file: mdi:weather-snowy,         id: ic_weather_snowy_lg,         type: BINARY, transparency: chroma_key, resize: 88x88 }
+  - { file: mdi:weather-night,         id: ic_weather_night_lg,         type: BINARY, transparency: chroma_key, resize: 88x88 }
+  - { file: mdi:check,                 id: ic_check_sm,                 type: BINARY, transparency: chroma_key, resize: 36x36 }
+  - { file: mdi:map-marker,            id: ic_map_marker_sm,            type: BINARY, transparency: chroma_key, resize: 36x36 }
+  - { file: mdi:clock-outline,         id: ic_clock_sm,                 type: BINARY, transparency: chroma_key, resize: 36x36 }
+  - { file: mdi:alert,                 id: ic_alert_sm,                 type: BINARY, transparency: chroma_key, resize: 36x36 }
+  - { file: mdi:battery,               id: ic_battery_sm,               type: BINARY, transparency: chroma_key, resize: 36x36 }
+
+########################################################################
+# State
+########################################################################
+
+globals:
+  # The fetched document. Not restored — every wake is a cold boot.
+  - id: dl_body
+    type: std::string
+    restore_value: false
+  # Identity of what is currently ON the panel — the document's meta.hash.
+  # One value does both jobs: it is sent as If-None-Match so the server can
+  # 304 us, and compared locally so a changed timestamp never costs a refresh.
+  # Restored strings are a real ESPHome thing (RestoringGlobalStringComponent).
+  - id: dl_shown_id
+    type: std::string
+    restore_value: true
+    max_restore_data_length: 64
+  - id: dl_new_id
+    type: std::string
+    restore_value: false
+
+########################################################################
+# Display
+########################################################################
+
+display:
+  - platform: epaper_spectra6_133
+    id: epd
+    spi_host: SPI3_HOST
+    update_interval: never
+    clk_pin: ${epd_clk_pin}
+    data0_pin: ${epd_data0_pin}
+    data1_pin: ${epd_data1_pin}
+    cs0_pin: ${epd_cs0_pin}
+    cs1_pin: ${epd_cs1_pin}
+    busy_pin: ${epd_busy_pin}
+    reset_pin: ${epd_reset_pin}
+    power_pin: ${epd_power_pin}
+    clear_color: white
+    change_detection_mode: track
+    auto_sleep: true
+    power_off_after_sleep: true
+    lambda: |-
+      dl::DisplayListAssets a;
+      a.fonts["xl"] = id(font_xl);
+      a.fonts["lg"] = id(font_lg);
+      a.fonts["md"] = id(font_md);
+      a.fonts["sm"] = id(font_sm);
+      a.fonts["xs"] = id(font_xs);
+
+      a.icons["weather-sunny/lg"]         = id(ic_weather_sunny_lg);
+      a.icons["weather-partly-cloudy/lg"] = id(ic_weather_partly_cloudy_lg);
+      a.icons["weather-cloudy/lg"]        = id(ic_weather_cloudy_lg);
+      a.icons["weather-rainy/lg"]         = id(ic_weather_rainy_lg);
+      a.icons["weather-snowy/lg"]         = id(ic_weather_snowy_lg);
+      a.icons["weather-night/lg"]         = id(ic_weather_night_lg);
+      a.icons["check/sm"]                 = id(ic_check_sm);
+      a.icons["map-marker/sm"]            = id(ic_map_marker_sm);
+      a.icons["clock/sm"]                 = id(ic_clock_sm);
+      a.icons["alert/sm"]                 = id(ic_alert_sm);
+      a.icons["battery/sm"]               = id(ic_battery_sm);
+
+      // {time} / {time24} for the fmt op; empty when the clock is not valid,
+      // which the op prints as "--:--". Formatted by hand: "%-I" is a glibc
+      // extension that newlib does not promise.
+      auto t = id(sntp_time).now();
+      if (t.is_valid()) {
+        char buf[16];
+        int h12 = t.hour % 12;
+        if (h12 == 0) h12 = 12;
+        snprintf(buf, sizeof buf, "%d:%02d %s", h12, t.minute, t.hour < 12 ? "AM" : "PM");
+        a.time = buf;
+        snprintf(buf, sizeof buf, "%02d:%02d", t.hour, t.minute);
+        a.time24 = buf;
+      }
+
+      // {battery} / {battv}. First cut: linear 3.3 V -> 0 %, 4.2 V -> 100 %,
+      // clamped; a LiPo curve can replace it later. The wake cycle forces a
+      // fresh ADC reading before the draw, so this is not stale.
+      const float v = id(batt_v).state;
+      if (!std::isnan(v)) {
+        char buf[16];
+        int pct = static_cast<int>((v - 3.3f) / (4.2f - 3.3f) * 100.0f + 0.5f);
+        pct = std::max(0, std::min(100, pct));
+        snprintf(buf, sizeof buf, "%d%%", pct);
+        a.battery = buf;
+        snprintf(buf, sizeof buf, "%.1fV", v);
+        a.battv = buf;
+      }
+
+      if (!dl::draw_display_list(it, id(dl_body), a)) {
+        // Never leave a silently blank wall.
+        it.print(600, 780, id(font_lg), Color(255, 0, 0),
+                 TextAlign::TOP_CENTER, "no display list");
+        it.print(600, 850, id(font_sm), Color(0, 0, 0),
+                 TextAlign::TOP_CENTER, "${dl_url}");
+      }
+
+sensor:
+  - platform: adc
+    id: batt_v
+    pin: ${batt_adc_pin}
+    name: "Battery voltage"
+    attenuation: 12db
+    accuracy_decimals: 2
+    update_interval: 30s
+    filters:
+      - multiply: 3.0 # vendor BSP: volts = adc_mv * 3 / 1000
+    unit_of_measurement: "V"
+    device_class: voltage
+
+switch:
+  # Debug hold. The script's sleep_now checks this, but deep_sleep's own
+  # run_duration would still put the board down after ${max_awake}, so the
+  # switch has to tell the component too. Persisted across reboots: turn it
+  # off again or the panel never sleeps.
+  - platform: template
+    id: stay_awake
+    name: "Stay awake"
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    entity_category: config
+    on_turn_on:
+      - deep_sleep.prevent: ds
+    on_turn_off:
+      - deep_sleep.allow: ds
+
+deep_sleep:
+  id: ds
+  run_duration: ${max_awake}
+  sleep_duration: ${sleep_minutes}
+  wakeup_pin:
+    number: ${boot_button_pin}
+    inverted: true
+    allow_other_uses: true # also the boot_button binary_sensor below
+  wakeup_pin_mode: KEEP_AWAKE
+
+# While awake (e.g. "Stay awake" held), the boot button refetches. Asleep, the
+# same GPIO is the deep-sleep wakeup pin above, and the boot-time wake_cycle
+# does the fetch. wake_cycle is mode: single, so a press mid-fetch is ignored.
+binary_sensor:
+  - platform: gpio
+    id: boot_button
+    internal: true
+    pin:
+      number: ${boot_button_pin}
+      inverted: true
+      mode: { input: true, pullup: true }
+      allow_other_uses: true
+    filters:
+      - delayed_on: 30ms
+    on_press:
+      - script.execute: wake_cycle
+
+########################################################################
+# Wake cycle
+#
+# The 30 s panel refresh is the expensive part — about 1.5 mAh against the
+# 0.15 mAh of a wake that changes nothing. So we ask with If-None-Match and
+# hope for a 304: no body, no parse, no refresh. On a 200 we compare
+# meta.hash as well, which catches a server whose ETag moves when the
+# content doesn't.
+########################################################################
+
+script:
+  - id: wake_cycle
+    mode: single
+    then:
+      - wait_until:
+          condition:
+            wifi.connected:
+          timeout: 20s
+      - http_request.get:
+          url: ${dl_url}
+          capture_response: true
+          # ESPHome caps captured bodies at 1 kB by default and silently
+          # truncates; a display list is a few KB, so raise it well past
+          # the server's 256 KB hard limit on a document.
+          max_response_buffer_size: 256kB
+          # Empty on first boot, which simply means "no match" and gets a 200.
+          request_headers:
+            If-None-Match: !lambda |-
+              // Header values are const char*; keep the storage alive for
+              // the request rather than pointing into a temporary.
+              static std::string hdr;
+              hdr = id(dl_shown_id).empty() ? "" : "\"" + id(dl_shown_id) + "\"";
+              return hdr.c_str();
+          on_response:
+            then:
+              - lambda: |-
+                  // A 304 has no body, so dl_body stays empty and the guard
+                  // below skips the refresh. ESPHome logs its own ERROR line
+                  // for any non-2xx: on an unchanged wake that is cosmetic.
+                  if (response->status_code == 304) {
+                    ESP_LOGI("dl", "304 not modified");
+                    return;
+                  }
+                  if (response->status_code != 200) {
+                    ESP_LOGW("dl", "HTTP %d", response->status_code);
+                    return;
+                  }
+                  id(dl_body) = body;
+                  id(dl_new_id) = dl::document_id(body);
+                  if (id(dl_new_id).empty()) {
+                    ESP_LOGE("dl", "BUG: document has no meta.hash. Every wake will "
+                                   "now do a full 30 s refresh — about 36 mAh/day, "
+                                   "which roughly halves battery life. Fix the "
+                                   "generator: display-mcp-cli stamp display.json");
+                  }
+                  ESP_LOGI("dl", "%u bytes, id '%s' (shown '%s')",
+                           (unsigned) body.size(), id(dl_new_id).c_str(),
+                           id(dl_shown_id).c_str());
+      - if:
+          condition:
+            lambda: |-
+              // An unknown id means we cannot tell whether anything changed, so
+              // we redraw. That is the expensive path, and the ERROR above says so.
+              if (id(dl_body).empty()) return false;
+              return id(dl_new_id).empty() || id(dl_new_id) != id(dl_shown_id);
+          then:
+            # Only on the redraw path, never on a 304: give SNTP a moment so
+            # the {time} stamp is real. A cold boot that misses it prints --:--.
+            - wait_until:
+                condition:
+                  time.has_time:
+                timeout: 5s
+            # The ADC sensor's first poll lands at a random offset inside its
+            # interval, usually after the draw; force one so {battery} is real.
+            - component.update: batt_v
+            - component.update: epd
+            - wait_until:
+                condition:
+                  lambda: "return !id(epd).is_processing();"
+                timeout: 180s
+            - delay: 3s
+            - lambda: "id(dl_shown_id) = id(dl_new_id);"
+          else:
+            # Say which guard stopped the refresh. A 304 means the ETag did its
+            # job. A 200 with identical bytes means the server's ETag changed
+            # while the content did not — mtime-derived, not content-derived —
+            # and only the hash saved you a 30 s refresh. Worth fixing at the
+            # source: see "Server-side ETag" in SPEC.md.
+            - lambda: |-
+                if (id(dl_body).empty()) {
+                  ESP_LOGI("dl", "unchanged (304) — no download, no refresh");
+                } else {
+                  ESP_LOGW("dl", "unchanged, but the server sent 200 — its ETag "
+                                 "does not match meta.hash; meta.hash caught it");
+                }
+      - script.execute: sleep_now
+
+  - id: sleep_now
+    mode: single
+    then:
+      - if:
+          condition:
+            switch.is_on: stay_awake
+          then:
+            - logger.log: "held awake"
+          else:
+            - deep_sleep.enter: ds
+
+button:
+  - platform: template
+    name: "Fetch and draw"
+    on_press:
+      - script.execute: wake_cycle
+
+  - platform: template
+    name: "Force redraw"
+    on_press:
+      - lambda: "id(dl_shown_id).clear();"
+      - script.execute: wake_cycle

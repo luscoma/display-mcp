@@ -1,0 +1,507 @@
+{
+  "v": 1,
+  "meta": {
+    "generated": "2026-09-08T06:31:00-07:00",
+    "ttl": 3600,
+    "title": "daily schedule",
+    "hash": "21a77f4c46f1534d"
+  },
+  "bg": "white",
+  "palette": {
+    "accent": "red",
+    "work": "blue",
+    "home": "green",
+    "highlight": "yellow"
+  },
+  "ops": [
+    {
+      "op": "rect",
+      "x": 0,
+      "y": 0,
+      "w": 1200,
+      "h": 216,
+      "c": "black",
+      "fill": true
+    },
+    {
+      "op": "text",
+      "x": 48,
+      "y": 34,
+      "s": "Tuesday",
+      "f": "xl",
+      "c": "white"
+    },
+    {
+      "op": "text",
+      "x": 48,
+      "y": 146,
+      "s": "September 8",
+      "f": "md",
+      "c": "white"
+    },
+    {
+      "op": "icon",
+      "x": 916,
+      "y": 46,
+      "n": "weather-partly-cloudy",
+      "z": "lg",
+      "c": "yellow"
+    },
+    {
+      "op": "text",
+      "x": 1152,
+      "y": 52,
+      "s": "72\u00b0",
+      "f": "lg",
+      "c": "white",
+      "a": "right"
+    },
+    {
+      "op": "text",
+      "x": 1152,
+      "y": 150,
+      "s": "H 78\u00b0   L 54\u00b0",
+      "f": "sm",
+      "c": "white",
+      "a": "right"
+    },
+    {
+      "op": "text",
+      "x": 48,
+      "y": 256,
+      "s": "SCHEDULE",
+      "f": "xs",
+      "c": "black"
+    },
+    {
+      "op": "rect",
+      "x": 48,
+      "y": 290,
+      "w": 1104,
+      "h": 3,
+      "c": "black",
+      "fill": true
+    },
+    {
+      "op": "line",
+      "x": 252,
+      "y": 326,
+      "x2": 252,
+      "y2": 1030,
+      "c": "black",
+      "t": 2
+    },
+    {
+      "op": "circle",
+      "x": 252,
+      "y": 352,
+      "r": 9,
+      "c": "home",
+      "fill": true
+    },
+    {
+      "op": "text",
+      "x": 230,
+      "y": 338,
+      "s": "8:30 AM",
+      "f": "sm",
+      "c": "black",
+      "a": "right"
+    },
+    {
+      "op": "rect",
+      "x": 288,
+      "y": 330,
+      "w": 8,
+      "h": 88,
+      "c": "home",
+      "fill": true
+    },
+    {
+      "op": "text",
+      "x": 312,
+      "y": 324,
+      "s": "School drop-off",
+      "f": "lg",
+      "c": "black",
+      "w": 800
+    },
+    {
+      "op": "text",
+      "x": 312,
+      "y": 384,
+      "s": "Leave by 8:15",
+      "f": "sm",
+      "c": "black"
+    },
+    {
+      "op": "circle",
+      "x": 252,
+      "y": 484,
+      "r": 9,
+      "c": "work",
+      "fill": true
+    },
+    {
+      "op": "text",
+      "x": 230,
+      "y": 470,
+      "s": "9:30 AM",
+      "f": "sm",
+      "c": "black",
+      "a": "right"
+    },
+    {
+      "op": "rect",
+      "x": 288,
+      "y": 462,
+      "w": 8,
+      "h": 88,
+      "c": "work",
+      "fill": true
+    },
+    {
+      "op": "text",
+      "x": 312,
+      "y": 456,
+      "s": "Team standup",
+      "f": "lg",
+      "c": "black",
+      "w": 800
+    },
+    {
+      "op": "text",
+      "x": 312,
+      "y": 516,
+      "s": "Zoom \u00b7 15 min",
+      "f": "sm",
+      "c": "black"
+    },
+    {
+      "op": "rect",
+      "x": 264,
+      "y": 578,
+      "w": 888,
+      "h": 116,
+      "c": "highlight",
+      "fill": true
+    },
+    {
+      "op": "circle",
+      "x": 252,
+      "y": 616,
+      "r": 13,
+      "c": "accent",
+      "fill": true
+    },
+    {
+      "op": "text",
+      "x": 230,
+      "y": 602,
+      "s": "11:00 AM",
+      "f": "sm",
+      "c": "black",
+      "a": "right"
+    },
+    {
+      "op": "rect",
+      "x": 288,
+      "y": 594,
+      "w": 8,
+      "h": 88,
+      "c": "accent",
+      "fill": true
+    },
+    {
+      "op": "text",
+      "x": 312,
+      "y": 588,
+      "s": "Design review \u2014 display list",
+      "f": "lg",
+      "c": "black",
+      "w": 760
+    },
+    {
+      "op": "text",
+      "x": 312,
+      "y": 648,
+      "s": "Conf room B \u00b7 now",
+      "f": "sm",
+      "c": "black"
+    },
+    {
+      "op": "circle",
+      "x": 252,
+      "y": 748,
+      "r": 9,
+      "c": "work",
+      "fill": true
+    },
+    {
+      "op": "text",
+      "x": 230,
+      "y": 734,
+      "s": "1:00 PM",
+      "f": "sm",
+      "c": "black",
+      "a": "right"
+    },
+    {
+      "op": "rect",
+      "x": 288,
+      "y": 726,
+      "w": 8,
+      "h": 88,
+      "c": "work",
+      "fill": true
+    },
+    {
+      "op": "text",
+      "x": 312,
+      "y": 720,
+      "s": "1:1",
+      "f": "lg",
+      "c": "black",
+      "w": 800
+    },
+    {
+      "op": "text",
+      "x": 312,
+      "y": 780,
+      "s": "Zoom",
+      "f": "sm",
+      "c": "black"
+    },
+    {
+      "op": "circle",
+      "x": 252,
+      "y": 880,
+      "r": 9,
+      "c": "home",
+      "fill": true
+    },
+    {
+      "op": "text",
+      "x": 230,
+      "y": 866,
+      "s": "4:30 PM",
+      "f": "sm",
+      "c": "black",
+      "a": "right"
+    },
+    {
+      "op": "rect",
+      "x": 288,
+      "y": 858,
+      "w": 8,
+      "h": 88,
+      "c": "home",
+      "fill": true
+    },
+    {
+      "op": "text",
+      "x": 312,
+      "y": 852,
+      "s": "Taekwondo",
+      "f": "lg",
+      "c": "black",
+      "w": 800
+    },
+    {
+      "op": "icon",
+      "x": 312,
+      "y": 908,
+      "n": "map-marker",
+      "z": "sm",
+      "c": "black"
+    },
+    {
+      "op": "text",
+      "x": 356,
+      "y": 912,
+      "s": "Dojang",
+      "f": "sm",
+      "c": "black"
+    },
+    {
+      "op": "circle",
+      "x": 252,
+      "y": 1012,
+      "r": 9,
+      "c": "home",
+      "fill": true
+    },
+    {
+      "op": "text",
+      "x": 230,
+      "y": 998,
+      "s": "6:30 PM",
+      "f": "sm",
+      "c": "black",
+      "a": "right"
+    },
+    {
+      "op": "rect",
+      "x": 288,
+      "y": 990,
+      "w": 8,
+      "h": 88,
+      "c": "home",
+      "fill": true
+    },
+    {
+      "op": "text",
+      "x": 312,
+      "y": 984,
+      "s": "Dinner",
+      "f": "lg",
+      "c": "black",
+      "w": 800
+    },
+    {
+      "op": "text",
+      "x": 48,
+      "y": 1188,
+      "s": "TODAY",
+      "f": "xs",
+      "c": "black"
+    },
+    {
+      "op": "rect",
+      "x": 48,
+      "y": 1222,
+      "w": 1104,
+      "h": 3,
+      "c": "black",
+      "fill": true
+    },
+    {
+      "op": "rect",
+      "x": 48,
+      "y": 1262,
+      "w": 34,
+      "h": 34,
+      "c": "home",
+      "fill": true
+    },
+    {
+      "op": "icon",
+      "x": 51,
+      "y": 1265,
+      "n": "check",
+      "z": "sm",
+      "c": "white"
+    },
+    {
+      "op": "text",
+      "x": 104,
+      "y": 1258,
+      "s": "Send the Q3 summary",
+      "f": "md",
+      "c": "black",
+      "w": 1040
+    },
+    {
+      "op": "rect",
+      "x": 48,
+      "y": 1334,
+      "w": 34,
+      "h": 34,
+      "c": "black",
+      "fill": false,
+      "t": 3
+    },
+    {
+      "op": "text",
+      "x": 104,
+      "y": 1330,
+      "s": "Order printer filament and a spare 0.4 nozzle",
+      "f": "md",
+      "c": "black",
+      "w": 1040
+    },
+    {
+      "op": "rect",
+      "x": 48,
+      "y": 1406,
+      "w": 34,
+      "h": 34,
+      "c": "black",
+      "fill": false,
+      "t": 3
+    },
+    {
+      "op": "text",
+      "x": 104,
+      "y": 1402,
+      "s": "Book the dentist",
+      "f": "md",
+      "c": "black",
+      "w": 1040
+    },
+    {
+      "op": "rect",
+      "x": 48,
+      "y": 1478,
+      "w": 34,
+      "h": 34,
+      "c": "black",
+      "fill": false,
+      "t": 3
+    },
+    {
+      "op": "text",
+      "x": 104,
+      "y": 1474,
+      "s": "Measure the driver board for the frame",
+      "f": "md",
+      "c": "black",
+      "w": 1040
+    },
+    {
+      "op": "rect",
+      "x": 48,
+      "y": 1534,
+      "w": 1104,
+      "h": 2,
+      "c": "black",
+      "fill": true
+    },
+    {
+      "op": "text",
+      "x": 48,
+      "y": 1552,
+      "s": "Updated: 6:31 AM",
+      "f": "xs",
+      "c": "black"
+    },
+    {
+      "op": "fmt",
+      "x": 1045,
+      "y": 1552,
+      "s": "{hash}@{time24}",
+      "f": "xs",
+      "c": "black",
+      "a": "right",
+      "tone": "light"
+    },
+    {
+      "op": "icon",
+      "x": 1058,
+      "y": 1545,
+      "n": "battery",
+      "z": "sm",
+      "c": "black",
+      "tone": "light"
+    },
+    {
+      "op": "fmt",
+      "x": 1100,
+      "y": 1552,
+      "s": "{battery}",
+      "f": "xs",
+      "c": "black",
+      "tone": "light"
+    }
+  ]
+}

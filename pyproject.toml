@@ -1,0 +1,62 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "display-mcp"
+version = "0.1.0"
+description = "MCP server and LAN endpoint for a display-list e-paper panel"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    # MCP SDK v2: MCPServer + streamable HTTP. Cap the major.
+    "mcp>=2,<3",
+    "starlette>=0.40",
+    "uvicorn>=0.30",
+    "pillow>=10",
+    # Cloudflare Access JWT verification (RS256 via the crypto extra).
+    "pyjwt[crypto]>=2.9",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.6",
+    # test_scaffold.py builds a wheel to check what the force-include below
+    # actually ships; that needs the build backend importable, not just
+    # available to pip's build isolation.
+    "hatchling",
+]
+
+[project.scripts]
+display-mcp = "display_mcp.main:main"
+display-mcp-cli = "display_mcp.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/display_mcp"]
+artifacts = ["src/display_mcp/prompts/*.md", "src/display_mcp/prompts/*.json"]
+
+# The spec and the sample have exactly one source of truth each, at the top of
+# the repo. They are copied into the package at build time rather than kept as
+# a second checked-in copy, because a second copy drifts and the drift is
+# invisible: a non-editable install (what deploy/setup.sh does) has no docs/ or
+# samples/ next to it, so these are the bytes the server actually serves for
+# display://spec and display://sample. See _read_repo_or_bundled in
+# mcp_server.py; tests/test_scaffold.py builds a wheel and checks them.
+[tool.hatch.build.targets.wheel.force-include]
+"docs/SPEC.md" = "display_mcp/prompts/SPEC.md"
+"samples/display.json" = "display_mcp/prompts/sample.json"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

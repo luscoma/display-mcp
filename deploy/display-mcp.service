@@ -1,0 +1,68 @@
+[Unit]
+Description=display-mcp: e-paper display-list server
+Documentation=file:///opt/display-mcp/app/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=display-mcp
+Group=display-mcp
+WorkingDirectory=/opt/display-mcp
+ExecStart=/opt/display-mcp/venv/bin/display-mcp
+Restart=on-failure
+RestartSec=5
+
+# EDIT THIS: the host's own LAN address, plus loopback for your own curl.
+# Comma-separated; each address is bound explicitly. Binding addresses rather
+# than 0.0.0.0 means the panel endpoint cannot appear on an interface you
+# forgot (the global IPv6 one, say). setup.sh writes the real value into a
+# drop-in, so this line is only a default.
+Environment=DISPLAY_MCP_PANEL_BIND=192.168.1.10,127.0.0.1
+Environment=DISPLAY_MCP_PANEL_PORT=8080
+
+Environment=DISPLAY_MCP_MCP_HOST=127.0.0.1
+Environment=DISPLAY_MCP_MCP_PORT=8001
+Environment=DISPLAY_MCP_MCP_PATH=/mcp
+Environment=DISPLAY_MCP_STATE_DIR=/var/lib/display-mcp
+Environment=DISPLAY_MCP_FONT_DIR=/opt/display-mcp/fonts
+
+# Cloudflare Access. Both unset -> the MCP endpoint is authless (fine for
+# loopback-only local dev; startup logs it loudly). Find these in the
+# Cloudflare Zero Trust dashboard: Settings -> Custom Pages for the team
+# domain, and Access -> Applications -> <this app> -> Overview for the AUD
+# tag. `setup.sh install --access-team-domain URL --access-aud TAG` writes
+# both into the systemd drop-in for you instead of hand-editing here.
+#Environment=DISPLAY_MCP_CF_ACCESS_TEAM_DOMAIN=https://<team>.cloudflareaccess.com
+#Environment=DISPLAY_MCP_CF_ACCESS_AUD=<aud tag>
+
+# systemd gives us most of what a container would, without the daemon.
+StateDirectory=display-mcp
+StateDirectoryMode=0755
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateUsers=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryMax=512M
+
+# There is no browser here — nothing executes the content, it is parsed as
+# JSON and drawn as numbers. So the user-namespace carve-outs a headless
+# Chromium would have needed are not required, and the confinement above can
+# stay strict.
+
+[Install]
+WantedBy=multi-user.target

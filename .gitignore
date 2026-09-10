@@ -1,0 +1,18 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+fonts/
+/state/
+.DS_Store
+.claude/
+
+# firmware/: ESPHome project. Secrets and the build tree never get committed.
+firmware/secrets.yaml
+firmware/.esphome/
+
+# editor scratch
+*.swp
