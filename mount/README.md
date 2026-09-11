@@ -59,8 +59,8 @@ centre, which is invisible on the front and buys wall outside the notch.
 ## Printing
 
 A 306 mm ring fits no ordinary bed, so `split = "quarters"` (default) cuts it
-into four L pieces with dovetail joints, 0.15 mm fit, all face-down and
-support-free:
+into four L pieces with dovetail joints at −0.05 mm fit (the ladder's pick
+in PETG; 0.15 and 0.05 were loose), all face-down and support-free:
 
 | Piece | Where | Bounding box |
 |---|---|---|
@@ -88,7 +88,15 @@ second ladder) prints:
   gets thinner to keep the 0.3 mm glass float; above it the extra goes on the
   back. Set `face_t` / `back_t` to match and print the real thing.
 - **A joint pair** (`part = "joint"`, `stl/bezel_joint_test.stl`): the two
-  halves of the top dovetail, to check `tab_fit` (0.15) on your printer.
+  halves of the top dovetail at the current `tab_fit`.
+- **A fit ladder** (`part = "joints"`, `stl/bezel_joint_ladder.stl`, 76 × 120
+  mm): one tab half and a socket half at each value in `joint_fits`
+  (0.10, 0.05, 0, −0.05), labelled on the back. Try the one tab in every
+  socket; the right one seats with light friction and doesn't rattle. Set
+  `tab_fit` to it. On this printer, in PETG, that was −0.05. **Every fit
+  number here was found by test print in PETG on one printer.** PLA shrinks
+  less, so −0.05 may bind; ABS/ASA shrink more, so it may rattle. Print the
+  ladder before the quarters if you change material or printer.
 - **A notch slice**: 50 mm of the bottom wall through the ribbon tail, to
   offer up to the panel's ribbon edge and check the notch clears the flex.
 
@@ -110,3 +118,86 @@ openscad -o stl/bezel_coupons.stl -D 'part="coupons"' epaper_frame_bezel.scad
 openscad -o stl/bezel_quarter_0.stl -D 'part="piece"' -D piece_id=0 epaper_frame_bezel.scad
 openscad -o front.png --camera=0,0,1000,0,0,0 --projection=o --imgsize=1400,1600 epaper_frame_bezel.scad
 ```
+
+---
+
+# Electronics carrier — `epaper_frame_carrier.scad`
+
+A web of ribs that lies on the back of the backing board in the
+bottom-right corner (seen from behind, where the ribbon tail is), is
+screwed to the frame, and carries the ESP32-S3 driver board on its
+standoffs and the battery. `carrier_plan.png` (true-scale plan over the
+measured no-go zones), `carrier_assembly.png`, `carrier_print.png` and
+`carrier_coupons.png` are the mock-ups, `carrier_boss.png` the section
+through a boss; `stl/carrier.stl` is the part, `stl/carrier_coupons.stl`
+the test plate.
+
+## How it holds on
+
+Rails along the right and bottom edges stand from the backing board up to
+the frame's second step (the ledge, 9.0 mm behind the backing; the rail
+ladder picked 8.9 × 5.5) and turn outward into a 5.5 mm flange that lies
+on it, with four plain holes for
+#2 pan-head wood screws (a countersink would cut through the edges of a
+flange that narrow) — the same step the frame's own turn buttons are
+screwed into. The part drops straight in from behind and is screwed down;
+nothing slides or hooks.
+
+The bottom edge, measured from the ribbon corner: a turn button at 1.5",
+the backing's ribbon cut-out from 2" to 8" (no groove or ledge usable
+there), another button at 8.5", and nothing can lie on the backing within
+1" of that edge. So the bottom rail is the corner run, 0 to 1", with one
+screw; the right rail carries three; and every rib stays above the 1"
+strip. Everything hangs close to the right rail, so that is enough: the
+earlier arm out to an 8" screw is still in the file (`far_rail`) but off.
+Nothing screws into the backing board itself.
+
+## Coupons first
+
+`stl/carrier_coupons.stl` (~118 × 78 mm, a few grams) prints the four
+things that have to be right before the whole part is worth its plastic;
+`stl/carrier_coupons_ledge.stl` is the same plate without the board ring,
+for re-testing the rails alone; `stl/carrier_rail_ladder.stl` (`part =
+"rail_ladder"`) is nine 20 mm rail stubs at every combination of
+`ladder_heights` (8.9 / 9.9 / 10.9 to the flange) and `ladder_widths`
+(5.5 / 6.5 / 7.5 flange), each labelled "height width" on top, to pick
+`ledge_z` and `ledge_w` directly:
+
+- **Rail coupon**: 30 mm of the right rail with its flange and a screw
+  hole. Does it stand in the opening with the flange flat on the ledge, is
+  the flange the right width, does the overhang print.
+- **Corner coupon**: the corner run and the bottom of the right rail.
+  Does it seat in the corner, does it clear the 1.5" button.
+- **Far-window coupon**: the 8" segment with its screw, post and 20 mm of
+  arm. Does the segment fit between the cut-out and the 8.5" button.
+- **Board ring**: the four bosses alone. Do the standoffs land, do the
+  M2.5 heads sit in the counterbores.
+
+## What sits on it
+
+- The **ribbon tail**, the **adapter board** and the **FFC** (the flat
+  flexible cable to the driver board) stay on the backing board under tape
+  exactly as now; the web leaves that area open.
+- The **driver board** sits above the battery, next to the rail, so the
+  FFC runs straight up from the adapter with no fold. It is placed by its
+  bottom-right hole, measured on the frame: 1.5" in from the right wall,
+  4.75" up from the bottom (`board_br_x_in`, `board_br_y_in`). It takes M2, not
+  M2.5. It stands on its 6 mm standoffs over a ring of ribs with a 9 mm
+  boss at each of the four holes (72 × 21.75 mm pattern; the first coupon
+  at 71 × 20.75 was 1 mm short each way). Each boss is recessed on both
+  faces: a 1.5 mm collar on top with a 3.8 mm socket the standoff's foot
+  drops into, so it can't walk sideways, and a 4.2 × 1.5 mm counterbore
+  underneath so the M2 pan head sits flush. Ribs are 3.5 mm; the web
+  between socket floor and head is 2.0 mm. The standoffs are 3 mm
+  across-flats hex (3.46 across corners), hence the 3.8 socket.
+
+Board top face ends up 11.1 mm behind the backing plus components, the
+rails 11.0; the moulding must be deeper than that beyond the ledge.
+
+## Printing
+
+120 × 166 mm, 11.0 mm tall at the rails. Print bottom-down as exported. The
+flange undersides are bare 5.5 mm overhangs (in use the frame's wall is
+under them, so nothing can be added there): enable slicer supports for
+overhangs only, they land under the flanges and snap off. PETG like the
+bezel.

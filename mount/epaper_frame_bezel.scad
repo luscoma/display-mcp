@@ -49,6 +49,7 @@
 //        | "piece"      one piece (piece_id), face-down, for STL export
 //        | "coupons"    test plate: corner samples at coupon_thicks, a joint pair, a notch slice
 //        | "joint"      the dovetail pair alone, well separated, for a fit test
+//        | "joints"     fit ladder: one tab half and a socket half per value in joint_fits
 //        | "notch"      the ribbon-edge piece from behind with the glass ghosted: the notch area
 //
 // Frame coordinates: origin at the rabbet centre, X across, Y up, viewer
@@ -116,7 +117,12 @@ joint_side_y   = 0;      // joint position on the left and right edges (frame Y)
 tab_depth      = 8;
 tab_neck       = 7;
 tab_head       = 10;
-tab_fit        = 0.15;
+// Fit values below were dialled in by test print on one printer in PETG.
+// Another material or printer will land elsewhere: PLA shrinks less, so
+// -0.05 may be tight; ABS/ASA shrink more, so it may be loose. Print
+// part = "joints" first and set tab_fit to the socket that seats with light
+// friction. The same goes for rabbet_fit and panel_fit, less critically.
+tab_fit        = -0.05;  // PETG, this printer: 0.15 and 0.05 loose, -0.05 right
 plate_gap      = 8;      // spacing between pieces in the print layout
 
 /* [Sample coupons] */
@@ -125,6 +131,7 @@ coupon_size    = 40;                       // corner coupon edge length
 coupon_gap     = 8;
 coupon_cols    = 3;                        // corners per row on the plate
 coupon_extras  = true;                     // also print the joint pair and the notch slice
+joint_fits     = [0.10, 0.05, 0.0, -0.05]; // socket clearance ladder for part = "joints" (0.15 was loose in PETG)
 
 /* [Mock-up] */
 show_backing   = true;   // in the profile: the frame's backing board with its ribbon-edge cut-out
@@ -265,6 +272,23 @@ module joint_coupon(sep = coupon_gap) {
       }
 }
 
+// fit ladder: the tab half of the top joint once, and the socket half at each
+// clearance in joint_fits, labelled on the back. Try the one tab in every socket.
+module tab_half() {
+  mirror([0, 0, 1]) intersection() {
+    spacer_piece(0);
+    box(joint_top_x - 26, joint_top_x + 12, Hout/2 - 30, BIG, -BIG, BIG);
+  }
+}
+module socket_half(fit) {
+  mirror([0, 0, 1]) intersection() {
+    spacer_piece(1, fit);
+    box(joint_top_x, joint_top_x + 26, Hout/2 - 30, BIG, -BIG, BIG);
+  }
+  translate([joint_top_x + 14, Hout/2 - 8, thick - eps])
+    linear_extrude(0.4) text(str(fit), size = 4, halign = "left", valign = "center");
+}
+
 module notch_coupon() {
   mirror([0, 0, 1]) intersection() {
     ring();
@@ -308,7 +332,7 @@ module tab3d(j, grow = 0) {
 }
 
 // piece = ring ∩ region, plus its tabs, minus the sockets its neighbours' tabs need
-module piece(region_pts, tabs, sockets) {
+module piece(region_pts, tabs, sockets, fit = tab_fit) {
   difference() {
     intersection() {
       ring();
@@ -317,7 +341,7 @@ module piece(region_pts, tabs, sockets) {
         for (j = tabs) tab3d(j);
       }
     }
-    for (j = sockets) tab3d(j, tab_fit);
+    for (j = sockets) tab3d(j, fit);
   }
 }
 
@@ -348,7 +372,7 @@ function sockets(i) =
 
 n_pieces = split == "quarters" ? 4 : split == "halves" ? 2 : 1;
 
-module spacer_piece(i) { piece(region(i), tabs(i), sockets(i)); }
+module spacer_piece(i, fit = tab_fit) { piece(region(i), tabs(i), sockets(i), fit); }
 
 // face-down for printing: front face on z=0, body in +Z
 module printable(i) { mirror([0, 0, 1]) spacer_piece(i); }
@@ -473,6 +497,11 @@ rotate(final_rot) {
     fpc_mock();
   }
   else if (part == "joint") color(spacer_color) translate([0, -Hout/2, 0]) joint_coupon(30);
+  else if (part == "joints") color(spacer_color) {
+    translate([-(joint_top_x - 26), -(Hout/2 - 30), 0]) tab_half();
+    for (i = [0 : len(joint_fits) - 1])
+      translate([50 - joint_top_x, -(Hout/2 - 30) + i * 34, 0]) socket_half(joint_fits[i]);
+  }
   else if (part == "coupons") color(spacer_color) {
     // corner coupons in rows of coupon_cols, thinnest first; then the joint pair and the notch slice
     rows = ceil(len(coupon_thicks) / coupon_cols);

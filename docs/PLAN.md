@@ -56,6 +56,7 @@ display-mcp/
     secrets.yaml            wifi/OTA secrets, gitignored; .esphome/ likewise
   mount/                    the hardware; see docs/plans/frame-bezel.md
     epaper_frame_bezel.scad the picture-frame bezel (4.85 mm, four dovetailed quarters)
+    epaper_frame_carrier.scad  rib web on the backing board, screwed to the frame, for the driver board and battery
     bezel_*.png             mock-ups; stl/ everything exported at the defaults
     README.md               numbers, print procedure, coupons
 ```

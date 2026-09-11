@@ -18,7 +18,9 @@ semantics.
   `epaper-schedule.yaml`, `display_list.h`, `fetch_and_watch.py`.
   `secrets.yaml` and `.esphome/` live there too and are gitignored.
 - `mount/` the hardware: `epaper_frame_bezel.scad`, the picture-frame bezel
-  the panel hangs behind, with mock-ups and STLs. Decisions in
+  the panel hangs behind, and `epaper_frame_carrier.scad`, the rib web behind
+  the backing board that holds the driver board and battery; mock-ups and
+  STLs alongside. Decisions in
   `docs/plans/frame-bezel.md`; the bezel hides 1 mm of image per edge, which
   is why `check()` has `BEZEL_MARGIN`.
 

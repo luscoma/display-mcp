@@ -89,7 +89,7 @@ frame's second step stays free for the board and battery.
 ## Decision 6: four dovetailed quarters.
 
 A 306 mm ring fits no ordinary bed. `split = "quarters"` gives four L pieces
-with 8 mm dovetails at 0.15 mm fit, printed face-down and support-free; the
+with 8 mm dovetails at −0.05 mm fit, printed face-down and support-free; the
 largest is 216 × 161 mm. The bottom joint sits at x = −88 rather than the
 middle so it stays out of the ribbon notch. `halves` (two 255 × 161 mm U
 pieces) suits a 256 mm bed. Everything is trapped in compression in the
@@ -111,15 +111,48 @@ Three things, all now in the defaults:
   had ~5 mm spare at the right. The bonded-flex extent is now 35 to 174 mm
   from the tail corner (was 40 to 176), notch 4 mm beyond that each end.
 
+The second print (all three fixes in) went together and fits the frame. Its
+one finding: the dovetails were loose at 0.15 mm fit in PETG. The fit
+ladder (`part = "joints"`: one tab, sockets at 0.10 / 0.05 / 0 / −0.05)
+settled it on 2026-09-10: **−0.05** seats right, so `tab_fit` is −0.05.
+The socket is cut 0.05 smaller than the tab and the print's own inside
+corners take up the rest. That number is specific to PETG on this printer;
+the ladder exists so anyone changing either prints it first rather than
+trusting the default.
+
+## Decision 8: the electronics carrier is a screwed-down web. (2026-09-10.)
+
+The driver board and battery get a printed part, `mount/epaper_frame_carrier.scad`,
+that lies on the back of the backing board in the ribbon corner. Three
+drafts in one afternoon: a plate on the frame's second step with the ribbon
+routed underneath; a plate flat on the backing hooking into the groove;
+and the one that stuck, the user's: a web of ribs rather than a plate,
+since on the backing board a plate does nothing, with rails on the two
+outer edges that rise to the frame's second step and flange out over it so
+the part is screwed to the frame like its own turn buttons are. Ribbon
+tail, adapter and FFC stay taped to the backing; the web leaves them alone.
+The board screws to counterbored bosses on its standoffs; the battery
+straps to a low tray around a cross rib. Measured bottom edge, from the
+ribbon corner: turn buttons at 1.5" and 8.5", the backing's ribbon cut-out
+from 2" to 8" where neither groove nor ledge can be used, and a 1" strip
+along the edge nothing can lie on; so the bottom rail is a 1" corner run
+with one screw, the right rail takes three, and the ribs stay above the
+strip. After the first full print the board moved above the battery,
+placed by a hole measured on the frame (1.5" in, 4.75" up), so the FFC
+runs straight up from the adapter; with everything close to the right rail
+the arm out to an 8" screw was dropped. Coupons (rail, corner, far window,
+board ring, then a 3 × 3 rail ladder) settled the ledge at 9.0 up and a
+5.5 flange, and the board holes at 72 × 21.75, before the full print. Power is
+battery only; the frame comes down to charge.
+Flange undersides are unsupported overhangs in the print and take slicer
+supports; nothing can be put under them because the frame's wall is there.
+
 ## Still open
+
 
 - The full print: does the ring drop into the rabbet, does the panel float
   without ticking, does the flex fold clear in the notch. Adjust
   `rabbet_fit`, `panel_fit` or `fpc_notch_out` from what the print says.
-- The dovetail pair (`stl/bezel_joint_test.stl`) was printed but the fit has
-  not been reported; open `tab_fit` to 0.2 if it needed a tap.
-- Holding the driver board and battery between the frame's two rabbet
-  steps: nothing is designed yet, and the board outline still has to be
-  measured.
-- The backing board hole, and whether the frame's turn buttons reach with
-  the backing on the first step.
+- The carrier coupons, then the full print: do the rails seat and the
+  flanges suit the ledge, does the far segment fit its window, does the
+  board and battery stack clear the moulding.
