@@ -34,7 +34,7 @@ import math
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from PIL import Image, ImageDraw, ImageFont
 
@@ -136,12 +136,118 @@ def fonts_available(font_dir: Path) -> bool:
     ).exists()
 
 
+# The 2x2 ordered (Bayer) matrix behind every mix, indexed [y & 1][x & 1].
+# Mirrors mix_on() in display_list.h; see docs/plans/ink-mixing.md decision 2.
+_BAYER2 = ((0, 2), (3, 1))
+
+DENSITIES = (25, 50, 75)
+
+
+def mix_on(x: int, y: int, pct: int) -> bool:
+    """True where the *second* ink of a mix goes.
+
+    Phase is absolute — canvas coordinates, not the op's origin — so abutting
+    fills tile without a seam and a knockout lands exactly on the mix beneath
+    it. At pct=50 the matrix selects cells 0 and 1, which sit at (0,0) and
+    (1,1), i.e. precisely `(x + y) % 2 == 0`: the test tone's knockout has
+    always used. Existing documents therefore render unchanged.
+    """
+    return _BAYER2[y & 1][x & 1] < pct // 25
+
+
+class Ink(NamedTuple):
+    """A resolved colour: two inks and the percentage of `b` among them.
+
+    A plain colour is `Ink(c, c, 100)`, so callers never branch on whether
+    something is a mix — the solid case is a mix with nothing to interleave.
+    """
+
+    a: tuple
+    b: tuple
+    mix: int
+
+    @property
+    def solid(self) -> bool:
+        return self.a == self.b
+
+
 class Ctx:
     def __init__(self, doc: dict[str, Any], font_dir: Path, ideal: bool = False):
         self.palette = doc.get("palette") or {}
         self.table = IDEAL if ideal else INK
         self.fonts = _load_fonts(Path(font_dir))
         self.problems: list[str] = []
+
+    def ink(self, name: str, where: str = "") -> Ink:
+        """Resolve a colour name to an Ink, following palette aliases.
+
+        Mirrors resolve_color() in display_list.h. Every malformed case warns
+        and still yields something drawable; nothing here skips an op.
+        """
+        n = name
+        for _ in range(8):
+            if n in self.table:
+                return Ink(self.table[n], self.table[n], 100)
+            entry = self.palette.get(n)
+            if entry is None:
+                break
+            if isinstance(entry, dict):
+                return self._mix(entry, n, where)
+            n = entry
+        self.problems.append(f"{where}: unknown colour {n!r}")
+        black = self.table["black"]
+        return Ink(black, black, 100)
+
+    def _mix(self, entry: dict[str, Any], name: str, where: str) -> Ink:
+        black = self.table["black"]
+        c, c2 = entry.get("c"), entry.get("c2")
+        if not isinstance(c, str):
+            self.problems.append(f"{where}: mix {name!r} has no 'c'; using black")
+            return Ink(black, black, 100)
+        a = self._base(c, where)
+        if not isinstance(c2, str):
+            self.problems.append(f"{where}: mix {name!r} has no 'c2'; drawing solid")
+            return Ink(a, a, 100)
+        b = self._base(c2, where)
+        if a == b:
+            self.problems.append(f"{where}: mix {name!r} has c2 == c; drawing solid")
+            return Ink(a, a, 100)
+        return Ink(a, b, self._density(entry.get("mix"), name, where))
+
+    def _base(self, name: str, where: str) -> tuple:
+        """One ink. A mix inside a mix isn't representable in a 2x2 mask, so
+        a nested one warns and contributes only its own base colour."""
+        n = name
+        for _ in range(8):
+            if n in self.table:
+                return self.table[n]
+            entry = self.palette.get(n)
+            if entry is None:
+                break
+            if isinstance(entry, dict):
+                self.problems.append(
+                    f"{where}: {n!r} is a mix and mixes cannot nest; using its 'c'"
+                )
+                n = entry.get("c")
+                if not isinstance(n, str):
+                    break
+                continue
+            n = entry
+        self.problems.append(f"{where}: unknown colour {n!r}")
+        return self.table["black"]
+
+    def _density(self, raw: Any, name: str, where: str) -> int:
+        if raw is None:
+            return 50
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)) or not 0 <= raw <= 100:
+            self.problems.append(f"{where}: mix {name!r} has mix={raw!r}; using 50")
+            return 50
+        pct = min(DENSITIES, key=lambda v: (abs(v - raw), v))
+        if pct != raw:
+            self.problems.append(
+                f"{where}: mix {name!r} has mix={raw}, rounded to {pct} (25/50/75 only)"
+            )
+        return pct
 
     def color(self, name: str, where: str = ""):
         # Palette aliases resolve up to 8 hops, matching resolve_color() in
@@ -384,22 +490,72 @@ def expand_fields(template: str, fields: dict[str, str]) -> tuple[str, list[str]
     return FIELD_RE.sub(sub, template), unknown
 
 
+def draw_on(img: Image.Image) -> ImageDraw.ImageDraw:
+    """An ImageDraw that rasterises glyphs the way the panel does.
+
+    The compiled fonts are 1 bpp — `font::Font(..., 1)` in the generated
+    firmware — so on the wall a glyph pixel is either full ink or nothing,
+    and `font.cpp`'s blending branch never runs. Pillow defaults to an 8-bit
+    glyph mask on an RGB image, which quietly made the preview softer than
+    the panel for every piece of text it has ever drawn. `fontmode = "1"`
+    turns that off and renders bilevel, as the panel does.
+    """
+    d = ImageDraw.Draw(img)
+    d.fontmode = "1"
+    return d
+
+
+def paint(img: Image.Image, ink: Ink, draw_fn) -> None:
+    """Run `draw_fn(draw, colour)`, interleaving two inks if `ink` is a mix.
+
+    The firmware hands `print()` and the shape primitives a proxy Display
+    that rewrites the colour inside draw_pixel_at (decision 6). PIL has no
+    such hook, so the equivalent here is to rasterise the op once into a
+    1-bit stencil and then lay the two inks down through it — same result,
+    same absolute phase, and it works for glyphs without needing to know
+    where the glyphs are.
+
+    A solid ink draws straight onto the page, so every document that exists
+    today takes exactly the path it took before and cannot shift by a pixel.
+    """
+    if ink.solid:
+        draw_fn(draw_on(img), ink.a)
+        return
+    stencil = Image.new("1", img.size, 0)
+    draw_fn(draw_on(stencil), 1)
+    box = stencil.getbbox()
+    if box is None:
+        return
+    sp, ip = stencil.load(), img.load()
+    x0, y0, x1, y1 = box
+    for yy in range(y0, y1):
+        for xx in range(x0, x1):
+            if sp[xx, yy]:
+                ip[xx, yy] = ink.b if mix_on(xx, yy, ink.mix) else ink.a
+
+
 def _apply_tone_box(img, ctx, op, where, doc, x0, y0, x1, y1) -> None:
-    """The checkerboard itself, over one box. Shared by text, fmt and icon."""
+    """The checkerboard itself, over one box. Shared by text, fmt and icon.
+
+    `tone: light` is a 50% mix with whatever `bgc` names (decision 5), so it
+    runs off the same mask as everything else. Because the phase is absolute,
+    a `bgc` that is itself a mix reproduces the fill underneath exactly
+    instead of speckling it.
+    """
     tone = op.get("tone")
     if tone is None:
         return
     if tone not in TONES:
         ctx.problems.append(f"{where}: unknown tone {tone!r} (drawn at full ink)")
         return
-    bg = ctx.color(op.get("bgc", doc.get("bg", "white")), where)
+    bg = ctx.ink(op.get("bgc", doc.get("bg", "white")), where)
     px = img.load()
     x0, y0 = max(0, int(x0)), max(0, int(y0))
     x1, y1 = min(WIDTH, int(x1)), min(HEIGHT, int(y1))
     for yy in range(y0, y1):
         for xx in range(x0, x1):
-            if (xx + yy) % 2 == 0:
-                px[xx, yy] = bg
+            if mix_on(xx, yy, 50):
+                px[xx, yy] = bg.b if mix_on(xx, yy, bg.mix) else bg.a
 
 
 def _apply_tone(img, d, ctx, op, where, drawn, font, anchor, doc) -> None:
@@ -421,23 +577,35 @@ def _apply_tone(img, d, ctx, op, where, drawn, font, anchor, doc) -> None:
 def render(doc: dict[str, Any], font_dir: Path, ideal: bool = False, now: datetime | None = None):
     """Return (PIL image, problems). Never raises on a bad op; it reports it."""
     ctx = Ctx(doc, font_dir, ideal)
-    img = Image.new("RGB", (WIDTH, HEIGHT), ctx.color(doc.get("bg", "white"), "bg"))
-    d = ImageDraw.Draw(img)
+    # The panel's fill() is a framebuffer memset that never reaches
+    # draw_pixel_at, so a mixed bg is one ink laid down and the other
+    # interleaved over it — see decision 6.
+    bg_ink = ctx.ink(doc.get("bg", "white"), "bg")
+    img = Image.new("RGB", (WIDTH, HEIGHT), bg_ink.a)
+    if not bg_ink.solid:
+        ip = img.load()
+        for yy in range(HEIGHT):
+            for xx in range(WIDTH):
+                if mix_on(xx, yy, bg_ink.mix):
+                    ip[xx, yy] = bg_ink.b
+    d = draw_on(img)
 
     fields = system_fields(doc, now)
 
     for i, op in enumerate(doc.get("ops", [])):
         where = f"ops[{i}] {op.get('op', '?')}"
         kind = op.get("op")
-        c = ctx.color(op.get("c", "black"), where)
+        ink = ctx.ink(op.get("c", "black"), where)
 
         if kind == "rect":
             x, y, w, h = op["x"], op["y"], op["w"], op["h"]
             if op.get("fill", True):
-                d.rectangle([x, y, x + w - 1, y + h - 1], fill=c)
+                paint(img, ink, lambda dr, col: dr.rectangle(
+                    [x, y, x + w - 1, y + h - 1], fill=col))
             else:
                 t = op.get("t", 1)
-                d.rectangle([x, y, x + w - 1, y + h - 1], outline=c, width=t)
+                paint(img, ink, lambda dr, col: dr.rectangle(
+                    [x, y, x + w - 1, y + h - 1], outline=col, width=t))
             xr, yr = x + w, y + h
             if not (-64 <= xr <= WIDTH + 64):
                 ctx.problems.append(f"{where}: x+w={xr} is off-canvas")
@@ -446,7 +614,8 @@ def render(doc: dict[str, Any], font_dir: Path, ideal: bool = False, now: dateti
 
         elif kind == "line":
             t = op.get("t", 1)
-            d.line([op["x"], op["y"], op["x2"], op["y2"]], fill=c, width=t)
+            paint(img, ink, lambda dr, col: dr.line(
+                [op["x"], op["y"], op["x2"], op["y2"]], fill=col, width=t))
             x2, y2 = op.get("x2"), op.get("y2")
             if isinstance(x2, (int, float)) and not (-64 <= x2 <= WIDTH + 64):
                 ctx.problems.append(f"{where}: x2={x2} is off-canvas")
@@ -457,9 +626,10 @@ def render(doc: dict[str, Any], font_dir: Path, ideal: bool = False, now: dateti
             x, y, r = op["x"], op["y"], op["r"]
             box = [x - r, y - r, x + r, y + r]
             if op.get("fill", True):
-                d.ellipse(box, fill=c)
+                paint(img, ink, lambda dr, col: dr.ellipse(box, fill=col))
             else:
-                d.ellipse(box, outline=c, width=op.get("t", 1))
+                t = op.get("t", 1)
+                paint(img, ink, lambda dr, col: dr.ellipse(box, outline=col, width=t))
 
         elif kind == "text":
             f = ctx.font(op.get("f", "md"), where)
@@ -472,12 +642,15 @@ def render(doc: dict[str, Any], font_dir: Path, ideal: bool = False, now: dateti
                 lh = op.get("lh", round(size * 1.24))
                 drawn = []
                 for n, line in enumerate(lines):
-                    d.text((op["x"], op["y"] + n * lh), line, font=f, fill=c, anchor=anchor)
-                    drawn.append((op["x"], op["y"] + n * lh, line))
+                    ly = op["y"] + n * lh
+                    paint(img, ink, lambda dr, col, ly=ly, line=line: dr.text(
+                        (op["x"], ly), line, font=f, fill=col, anchor=anchor))
+                    drawn.append((op["x"], ly, line))
                 _apply_tone(img, d, ctx, op, where, drawn, f, anchor, doc)
             else:
                 text = fit_line(f, op["s"], max_w)
-                d.text((op["x"], op["y"]), text, font=f, fill=c, anchor=anchor)
+                paint(img, ink, lambda dr, col: dr.text(
+                    (op["x"], op["y"]), text, font=f, fill=col, anchor=anchor))
                 _apply_tone(img, d, ctx, op, where, [(op["x"], op["y"], text)], f, anchor, doc)
 
         elif kind == "fmt":
@@ -489,7 +662,8 @@ def render(doc: dict[str, Any], font_dir: Path, ideal: bool = False, now: dateti
             text, unknown = expand_fields(op.get("s", ""), fields)
             for name in unknown:
                 ctx.problems.append(f"{where}: unknown field {{{name}}} (left literal)")
-            d.text((op["x"], op["y"]), text, font=f, fill=c, anchor=anchor)
+            paint(img, ink, lambda dr, col: dr.text(
+                (op["x"], op["y"]), text, font=f, fill=col, anchor=anchor))
             _apply_tone(img, d, ctx, op, where, [(op["x"], op["y"], text)], f, anchor, doc)
 
         elif kind == "icon":
@@ -499,7 +673,7 @@ def render(doc: dict[str, Any], font_dir: Path, ideal: bool = False, now: dateti
             if name not in ICONS or z not in ICONS[name]:
                 ctx.problems.append(f"{where}: {key!r} is not compiled in")
             size = ICON_SIZES.get(z, 36)
-            draw_icon(d, name, op["x"], op["y"], size, c)
+            paint(img, ink, lambda dr, col: draw_icon(dr, name, op["x"], op["y"], size, col))
             x, y = op["x"], op["y"]
             _apply_tone_box(img, ctx, op, where, doc, x, y, x + size, y + size)
 

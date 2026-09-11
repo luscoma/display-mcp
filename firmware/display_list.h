@@ -62,9 +62,42 @@ inline bool base_color(const std::string &n, esphome::Color &out) {
   return false;
 }
 
-// Resolve through the document's palette aliases, with a depth cap so a
-// self-referential palette can't hang the render.
-inline esphome::Color resolve_color(const char *name, JsonObject palette) {
+// Decision 2 (docs/plans/ink-mixing.md): one 2x2 Bayer mask, three
+// densities, absolute (panel-space, never op-relative) phase, so adjacent
+// fills and knockouts tile seamlessly and a tone knockout can reproduce a
+// mixed ground exactly.
+//
+//     B = | 0 2 |     mix_on(x, y, pct) picks the second ink (c2/b)
+//         | 3 1 |     wherever B[y&1][x&1] < pct / 25 (integer division).
+//
+// Bit-identity check at pct=50 (threshold 2), which every existing document
+// depends on via lighten_rect's `((px + py) & 1) == 0`:
+//
+//     (x&1,y&1)=(0,0): B=0, 0<2 -> true   | px+py even -> true
+//     (x&1,y&1)=(1,0): B=2, 2<2 -> false  | px+py odd  -> false
+//     (x&1,y&1)=(0,1): B=3, 3<2 -> false  | px+py odd  -> false
+//     (x&1,y&1)=(1,1): B=1, 1<2 -> true   | px+py even -> true
+//
+// All four phases agree, so mix_on(x, y, 50) == ((x + y) & 1 == 0) exactly.
+// At pct=25 (threshold 1) only B==0 survives: one cell in four. At pct=75
+// (threshold 3) every cell but B==3 survives: three in four.
+static const uint8_t B[2][2] = {{0, 2}, {3, 1}};
+inline bool mix_on(int x, int y, int pct) { return B[y & 1][x & 1] < pct / 25; }
+
+/// A resolved ink. `mix` in {25, 50, 75} dithers `a`/`b` by mix_on(); a plain
+/// colour is `{a, a, 100}`, so every call site draws through the same path
+/// with nothing to branch on (decision 1).
+struct Ink {
+  esphome::Color a, b;
+  int mix;
+};
+
+/// Resolve a colour name to a single Color, refusing to land on a palette
+/// mix -- used for a mix's own `c`/`c2`, which may not nest ("a mix of
+/// mixes is not representable in a 2x2 mask", decision 1). Same alias chain
+/// and 8-hop cap as resolve_ink, but a mix found along the way degrades to
+/// that entry's own `c` and the walk continues, rather than blending it.
+inline esphome::Color resolve_solid(const char *name, JsonObject palette) {
   std::string n = name ? name : "black";
   esphome::Color c;
   for (int hop = 0; hop < 8; hop++) {
@@ -72,13 +105,83 @@ inline esphome::Color resolve_color(const char *name, JsonObject palette) {
       return c;
     if (palette.isNull())
       break;
-    const char *next = palette[n.c_str()];
+    auto v = palette[n.c_str()];
+    if (v.template is<JsonObject>()) {
+      ESP_LOGW(TAG, "'%s' is a mix, not a plain colour here; using its base ink", n.c_str());
+      n = v.template as<JsonObject>()["c"] | "black";
+      continue;
+    }
+    const char *next = v;
+    if (next == nullptr)
+      break;
+    n = next;
+  }
+  ESP_LOGW(TAG, "unknown colour '%s', using black", n.c_str());
+  return esphome::Color(0, 0, 0);
+}
+
+/// Parse a palette object entry ({c, c2, mix}) into an Ink. `name` is the
+/// palette key it was found under, for warnings. Every case here is pinned
+/// down in docs/plans/ink-mixing.md decision 1's schema table -- the Python
+/// renderer implements the same contract independently, so nothing here is
+/// left to whichever side was written first.
+inline Ink resolve_mix_entry(const char *name, JsonObject entry, JsonObject palette) {
+  const char *c_name = entry["c"] | "black";
+  const esphome::Color a = resolve_solid(c_name, palette);
+
+  const char *c2_name = entry["c2"];
+  if (c2_name == nullptr || !strcmp(c2_name, c_name)) {
+    // c2 missing, or equal to c: not a mix (decision 1).
+    ESP_LOGW(TAG, "palette '%s' has no distinct c2, drawing solid", name);
+    return Ink{a, a, 100};
+  }
+  const esphome::Color b = resolve_solid(c2_name, palette);
+
+  auto mv = entry["mix"];
+  int pct = 50;
+  if (!mv.isNull()) {
+    if (!mv.template is<int>() && !mv.template is<float>()) {
+      ESP_LOGW(TAG, "palette '%s' mix is not a number, using 50", name);
+    } else {
+      const float f = mv.template as<float>();
+      if (f < 0 || f > 100) {
+        ESP_LOGW(TAG, "palette '%s' mix %.0f out of range, using 50", name, f);
+      } else {
+        pct = static_cast<int>(f + 0.5f);
+        if (pct != 25 && pct != 50 && pct != 75) {
+          const int rounded = pct <= 37 ? 25 : (pct <= 62 ? 50 : 75);
+          ESP_LOGW(TAG, "palette '%s' mix %d rounds to %d", name, pct, rounded);
+          pct = rounded;
+        }
+      }
+    }
+  }
+  return Ink{a, b, pct};
+}
+
+// Resolve through the document's palette aliases, with a depth cap so a
+// self-referential palette can't hang the render. A palette entry is either
+// a plain alias string (as before) or a mix object, in which case the whole
+// thing resolves through resolve_mix_entry instead of chasing further
+// aliases -- a mix is always a leaf.
+inline Ink resolve_ink(const char *name, JsonObject palette) {
+  std::string n = name ? name : "black";
+  esphome::Color c;
+  for (int hop = 0; hop < 8; hop++) {
+    if (base_color(n, c))
+      return Ink{c, c, 100};
+    if (palette.isNull())
+      break;
+    auto v = palette[n.c_str()];
+    if (v.template is<JsonObject>())
+      return resolve_mix_entry(n.c_str(), v.template as<JsonObject>(), palette);
+    const char *next = v;
     if (next == nullptr)
       break;
     n = next;
   }
   ESP_LOGW(TAG, "unknown colour '%s', using black", name ? name : "(null)");
-  return esphome::Color(0, 0, 0);
+  return Ink{esphome::Color(0, 0, 0), esphome::Color(0, 0, 0), 100};
 }
 
 inline int measure_w(esphome::display::BaseFont *f, const std::string &s) {
@@ -197,6 +300,77 @@ inline void thick_line(esphome::display::Display &it, int x1, int y1, int x2, in
   }
 }
 
+/// A proxy `display::Display` that dithers by rewriting colour inside
+/// draw_pixel_at() (decision 6). `line`, `rectangle`, `filled_rectangle`,
+/// `circle`, `filled_circle` and `image` are non-virtual members of Display
+/// that call `this->draw_pixel_at`, and so does the font's glyph loop via
+/// `print()` -- so invoking any of them *on* this proxy dithers rect, line,
+/// circle, text, fmt and icon uniformly, with no separate fill-then-overlay
+/// path for shapes and glyphs.
+///
+/// Up to two inks can be registered, each keyed by the literal Color a call
+/// site draws with (conventionally that ink's own `a`) -- one ink covers
+/// rect/line/circle/text/fmt, two covers icon's color_on/color_off. A colour
+/// that matches no registered key passes through unchanged, which keeps an
+/// opaque icon's untouched half sane when only one side is mixed.
+///
+/// Subclasses `display::Display`, not `DisplayBuffer` -- the latter adds a
+/// pure `draw_absolute_pixel_internal` this proxy has no use for. It is
+/// never registered with `App` and never polled (`update()` is a stub to
+/// satisfy PollingComponent's pure virtual), and it never touches its own
+/// clipping or rotation: draw_pixel_at forwards raw (x, y) into the real
+/// display's own DisplayBuffer::draw_pixel_at, which is what actually
+/// applies the panel's clipping and rotation.
+class MixDisplay : public esphome::display::Display {
+ public:
+  explicit MixDisplay(esphome::display::Display &real) : real_(real) {}
+
+  void add_ink(esphome::Color key, Ink ink) {
+    if (n_ < 2) {
+      keys_[n_] = key;
+      inks_[n_] = ink;
+      n_++;
+    }
+  }
+
+  void draw_pixel_at(int x, int y, esphome::Color color) override {
+    for (int i = 0; i < n_; i++) {
+      if (keys_[i] == color) {
+        real_.draw_pixel_at(x, y, mix_on(x, y, inks_[i].mix) ? inks_[i].b : inks_[i].a);
+        return;
+      }
+    }
+    real_.draw_pixel_at(x, y, color);  // unregistered colour: pass through
+  }
+
+  int get_width() override { return real_.get_width(); }
+  int get_height() override { return real_.get_height(); }
+
+  // fill() is the one primitive that does NOT reach draw_pixel_at on the
+  // real panel -- EpaperSpectra6133 overrides it with a framebuffer memset
+  // -- so it can't be dithered through this proxy; a mixed bg is handled at
+  // the call site instead (fill the base ink, then overlay the second).
+  // Both fill() and clear() must forward straight to the real display
+  // rather than fall through to Display's own fill() -> filled_rectangle()
+  // -> draw_pixel_at loop, which would paint the whole panel (~1.92M
+  // pixels) one pixel at a time.
+  void fill(esphome::Color color) override { real_.fill(color); }
+  void clear() override { real_.clear(); }
+
+  esphome::display::DisplayType get_display_type() override { return real_.get_display_type(); }
+  void update() override {}  // never polled: nothing self-registers this with App
+
+ protected:
+  int get_width_internal() override { return real_.get_width(); }
+  int get_height_internal() override { return real_.get_height(); }
+
+ private:
+  esphome::display::Display &real_;
+  esphome::Color keys_[2]{};
+  Ink inks_[2]{};
+  int n_ = 0;
+};
+
 inline void replace_all(std::string &s, const char *key, const std::string &val) {
   const size_t klen = strlen(key);
   size_t pos = 0;
@@ -227,20 +401,25 @@ inline std::string expand_fmt(const std::string &tpl, const std::string &doc_has
 
 /// `tone: "light"`: the panel has six inks and no grey, so a lighter text
 /// weight is a 1 px checkerboard of the local background knocked out of the
-/// glyphs. get_text_bounds() does the TextAlign and x_offset math the way
-/// print() does, so the box lands on the ink for any alignment.
-inline void lighten_rect(esphome::display::Display &it, int x1, int y1, int w, int h, esphome::Color bg) {
+/// glyphs -- always at a fixed 50% (decision 5: tone is sugar for "mix with
+/// bgc at 50%", not a separate density). `bg` may itself be a mix, in which
+/// case each knocked-out pixel takes whichever of bg's two inks its own
+/// mix_on() would have painted there; absolute phase means that reproduces
+/// the mixed ground exactly instead of speckling. get_text_bounds() does the
+/// TextAlign and x_offset math the way print() does, so the box lands on the
+/// ink for any alignment.
+inline void lighten_rect(esphome::display::Display &it, int x1, int y1, int w, int h, Ink bg) {
   const int x0 = std::max(x1, 0), y0 = std::max(y1, 0);
   const int xe = std::min(x1 + w, it.get_width()), ye = std::min(y1 + h, it.get_height());
   for (int py = y0; py < ye; py++)
     for (int px = x0; px < xe; px++)
-      if (((px + py) & 1) == 0)
-        it.draw_pixel_at(px, py, bg);
+      if (mix_on(px, py, 50))
+        it.draw_pixel_at(px, py, mix_on(px, py, bg.mix) ? bg.b : bg.a);
 }
 
 inline void lighten_box(esphome::display::Display &it, int x, int y, const char *text,
                         esphome::display::BaseFont *font, esphome::display::TextAlign align,
-                        esphome::Color bg) {
+                        Ink bg) {
   int x1 = 0, y1 = 0, w = 0, h = 0;
   it.get_text_bounds(x, y, text, font, align, &x1, &y1, &w, &h);
   lighten_rect(it, x1, y1, w, h, bg);
@@ -289,8 +468,18 @@ inline bool draw_display_list(esphome::display::Display &it, const std::string &
   esphome::json::parse_json(body, [&](JsonObject root) -> bool {
     JsonObject palette = root["palette"];
     const char *bg_name = root["bg"] | "white";
-    esphome::Color bg = resolve_color(bg_name, palette);
-    it.fill(bg);
+    const Ink bg_ink = resolve_ink(bg_name, palette);
+    it.fill(bg_ink.a);
+    if (bg_ink.mix != 100) {
+      // fill() can't be dithered through the proxy (see MixDisplay), so a
+      // mixed bg is the base ink from the fast fill() above, plus an
+      // explicit overlay of the second ink wherever mix_on() says so.
+      const int w = it.get_width(), h = it.get_height();
+      for (int y = 0; y < h; y++)
+        for (int x = 0; x < w; x++)
+          if (mix_on(x, y, bg_ink.mix))
+            it.draw_pixel_at(x, y, bg_ink.b);
+    }
     // For the `hash` op: the identity of this document, drawn on the wall so
     // you can read off which version the panel shows. Empty when the server
     // forgot to stamp it, which the wake cycle already logs as a bug.
@@ -305,27 +494,32 @@ inline bool draw_display_list(esphome::display::Display &it, const std::string &
     int n = 0, skipped = 0;
     for (JsonObject o : ops) {
       const char *kind = o["op"] | "";
-      esphome::Color c = resolve_color(o["c"] | "black", palette);
+      const Ink c = resolve_ink(o["c"] | "black", palette);
+      // Every shape and glyph op below draws through this proxy instead of
+      // `it` directly, which is what makes a mixed `c` dither (decision 6);
+      // solid ink (mix == 100) draws pixel-identical either way.
+      MixDisplay mix(it);
+      mix.add_ink(c.a, c);
 
       if (!strcmp(kind, "rect")) {
         const int x = o["x"] | 0, y = o["y"] | 0, w = o["w"] | 0, h = o["h"] | 0;
         if (o["fill"] | true) {
-          it.filled_rectangle(x, y, w, h, c);
+          mix.filled_rectangle(x, y, w, h, c.a);
         } else {
           const int t = o["t"] | 1;
           for (int i = 0; i < t; i++)
-            it.rectangle(x + i, y + i, w - 2 * i, h - 2 * i, c);
+            mix.rectangle(x + i, y + i, w - 2 * i, h - 2 * i, c.a);
         }
 
       } else if (!strcmp(kind, "line")) {
-        thick_line(it, o["x"] | 0, o["y"] | 0, o["x2"] | 0, o["y2"] | 0, o["t"] | 1, c);
+        thick_line(mix, o["x"] | 0, o["y"] | 0, o["x2"] | 0, o["y2"] | 0, o["t"] | 1, c.a);
 
       } else if (!strcmp(kind, "circle")) {
         const int x = o["x"] | 0, y = o["y"] | 0, r = o["r"] | 0;
         if (o["fill"] | true)
-          it.filled_circle(x, y, r, c);
+          mix.filled_circle(x, y, r, c.a);
         else
-          it.circle(x, y, r, c);
+          mix.circle(x, y, r, c.a);
 
       } else if (!strcmp(kind, "text")) {
         auto fit = assets.fonts.find(o["f"] | "md");
@@ -341,7 +535,7 @@ inline bool draw_display_list(esphome::display::Display &it, const std::string &
         const auto align = align_of(o["a"] | "left");
 
         const bool light = tone_is_light(o["tone"] | "");
-        const esphome::Color local_bg = resolve_color(o["bgc"] | bg_name, palette);
+        const Ink local_bg = resolve_ink(o["bgc"] | bg_name, palette);
 
         if ((o["wrap"] | false) && max_w > 0) {
           const int lines = o["lines"] | 2;
@@ -349,13 +543,13 @@ inline bool draw_display_list(esphome::display::Display &it, const std::string &
           auto out = wrap(font, s, max_w, lines);
           for (size_t i = 0; i < out.size(); i++) {
             const int ly = y + static_cast<int>(i) * lh;
-            it.print(x, ly, font, c, align, out[i].c_str());
+            mix.print(x, ly, font, c.a, align, out[i].c_str());
             if (light)
               lighten_box(it, x, ly, out[i].c_str(), font, align, local_bg);
           }
         } else {
           const std::string line = fit_line(font, s, max_w);
-          it.print(x, y, font, c, align, line.c_str());
+          mix.print(x, y, font, c.a, align, line.c_str());
           if (light)
             lighten_box(it, x, y, line.c_str(), font, align, local_bg);
         }
@@ -375,9 +569,9 @@ inline bool draw_display_list(esphome::display::Display &it, const std::string &
         const std::string s = expand_fmt(o["s"] | "", doc_hash, assets);
         const int x = o["x"] | 0, y = o["y"] | 0;
         const auto align = align_of(o["a"] | "left");
-        it.print(x, y, font, c, align, s.c_str());
+        mix.print(x, y, font, c.a, align, s.c_str());
         if (tone_is_light(o["tone"] | ""))
-          lighten_box(it, x, y, s.c_str(), font, align, resolve_color(o["bgc"] | bg_name, palette));
+          lighten_box(it, x, y, s.c_str(), font, align, resolve_ink(o["bgc"] | bg_name, palette));
 
       } else if (!strcmp(kind, "icon")) {
         std::string key = std::string(o["n"] | "") + "/" + std::string(o["z"] | "sm");
@@ -389,9 +583,10 @@ inline bool draw_display_list(esphome::display::Display &it, const std::string &
         }
         // color_off only matters for opaque binary images; with
         // transparency: chroma_key the off pixels are skipped entirely.
-        esphome::Color off = resolve_color(o["bgc"] | bg_name, palette);
+        const Ink off = resolve_ink(o["bgc"] | bg_name, palette);
+        mix.add_ink(off.a, off);
         const int ix = o["x"] | 0, iy = o["y"] | 0;
-        iit->second->draw(ix, iy, &it, c, off);
+        iit->second->draw(ix, iy, &mix, c.a, off.a);
         if (tone_is_light(o["tone"] | ""))
           lighten_rect(it, ix, iy, iit->second->get_width(), iit->second->get_height(), off);
 

@@ -18,12 +18,15 @@ from display_mcp.render import (
     HEIGHT,
     ICON_SIZES,
     ICONS,
+    IDEAL,
+    INK,
     WIDTH,
     bezel_problems,
     check,
     draw_icon,
     fit_line,
     fonts_available,
+    mix_on,
     render,
     render_hash,
     wrap_lines,
@@ -587,3 +590,182 @@ def test_weather_night_is_a_crescent_not_a_disc():
     cx = cy = PAD + size // 2
     assert px[cx - size // 8, cy] != ground, "left limb should be inked"
     assert px[cx + size // 8, cy] == ground, "crescent's bite should be untouched"
+
+
+# --------------------------------------------------------------------------
+# bilevel text — docs/plans/ink-mixing.md, decision 7
+# --------------------------------------------------------------------------
+
+
+def test_render_emits_only_the_six_inks(sample_doc, font_dir):
+    """The panel's fonts are 1 bpp, so nothing it draws is ever a blend.
+
+    Pillow anti-aliases text on an RGB image by default, which used to put
+    hundreds of impossible colours into the preview.
+    """
+    img, _ = render(sample_doc, font_dir)
+    six = set(INK.values())
+    px = img.load()
+    strays = {px[x, y] for y in range(HEIGHT) for x in range(WIDTH)} - six
+    assert not strays, f"{len(strays)} colours the panel cannot make, e.g. {list(strays)[:4]}"
+
+
+def test_ideal_render_emits_only_the_six_inks(sample_doc, font_dir):
+    img, _ = render(sample_doc, font_dir, ideal=True)
+    px = img.load()
+    strays = {px[x, y] for y in range(HEIGHT) for x in range(WIDTH)} - set(IDEAL.values())
+    assert not strays, f"{len(strays)} blended colours, e.g. {list(strays)[:4]}"
+
+
+# --------------------------------------------------------------------------
+# ink mixing — docs/plans/ink-mixing.md, decisions 1 and 2
+# --------------------------------------------------------------------------
+
+
+def _share(img, ink, x0, y0, x1, y1):
+    """Fraction of the pixels in a box that are exactly `ink`."""
+    px = img.load()
+    n = sum(px[x, y] == ink for y in range(y0, y1) for x in range(x0, x1))
+    return n / ((x1 - x0) * (y1 - y0))
+
+
+def _one_rect(palette, colour, w=40, h=40):
+    return {
+        "v": 1,
+        "meta": {},
+        "bg": "white",
+        "palette": palette,
+        "ops": [{"op": "rect", "x": 0, "y": 0, "w": w, "h": h, "c": colour}],
+    }
+
+
+@pytest.mark.parametrize("pct,want", [(25, 0.25), (50, 0.50), (75, 0.75), (100, 1.0)])
+def test_mix_on_density(pct, want):
+    on = sum(mix_on(x, y, pct) for y in range(64) for x in range(64))
+    assert on / 4096 == want
+
+
+def test_mix_on_50_is_the_historic_tone_checkerboard():
+    """tone: light has always knocked out (x + y) % 2 == 0. A 50% mix has to
+    be that exact set, or every shipped document using tone shifts a pixel."""
+    assert all(
+        mix_on(x, y, 50) == ((x + y) % 2 == 0) for y in range(64) for x in range(64)
+    )
+
+
+def test_mix_on_phase_is_absolute():
+    """Tiles drawn at different origins interlock rather than seam."""
+    assert mix_on(0, 0, 50) == mix_on(88, 0, 50) == mix_on(0, 88, 50)
+    assert mix_on(7, 3, 25) == mix_on(9, 5, 25)
+
+
+def test_mixed_fill_interleaves_two_inks(font_dir):
+    doc = _one_rect({"grey": {"c": "black", "c2": "white", "mix": 25}}, "grey", 100, 100)
+    img, problems = render(doc, font_dir)
+    assert problems == []
+    assert _share(img, INK["white"], 10, 10, 90, 90) == 0.25
+    assert _share(img, INK["black"], 10, 10, 90, 90) == 0.75
+
+
+def test_mixed_text_keeps_both_inks(font_dir):
+    """The case decision 3 turns on: a two-ink glyph on a ground that matches
+    neither ink keeps full coverage, so both inks land in equal measure."""
+    doc = {
+        "v": 1,
+        "meta": {},
+        "bg": "white",
+        "palette": {"plum": {"c": "red", "c2": "blue"}},
+        "ops": [{"op": "text", "x": 40, "y": 40, "s": "Plum", "f": "xl", "c": "plum"}],
+    }
+    img, problems = render(doc, font_dir)
+    assert problems == []
+    px = img.load()
+    red = sum(px[x, y] == INK["red"] for y in range(40, 160) for x in range(40, 400))
+    blue = sum(px[x, y] == INK["blue"] for y in range(40, 160) for x in range(40, 400))
+    assert red > 500 and blue > 500
+    assert abs(red - blue) / (red + blue) < 0.05
+
+
+def test_mixed_bg(font_dir):
+    """The panel's fill() is a memset that never reaches draw_pixel_at, so a
+    mixed bg is one ink laid down and the other interleaved over it."""
+    doc = {
+        "v": 1,
+        "meta": {},
+        "bg": "grey",
+        "palette": {"grey": {"c": "black", "c2": "white"}},
+        "ops": [],
+    }
+    img, problems = render(doc, font_dir)
+    assert problems == []
+    assert _share(img, INK["white"], 0, 0, 200, 200) == 0.5
+
+
+def test_solid_colours_are_untouched_by_mixing(sample_doc, font_dir):
+    """Every document that predates mixes must render exactly as it did."""
+    img, problems = render(sample_doc, font_dir)
+    assert problems == []
+    px = img.load()
+    # A flat stretch of the sample's black header, clear of its two text
+    # lines: not one pixel may have been interleaved with anything.
+    assert all(px[x, 130] == INK["black"] for x in range(48))
+
+
+@pytest.mark.parametrize(
+    "entry,fragment",
+    [
+        ({"c": "black"}, "no 'c2'"),
+        ({"c": "red", "c2": "red"}, "c2 == c"),
+        ({"c2": "red"}, "no 'c'"),
+        ({"c": "red", "c2": "blue", "mix": 40}, "rounded to 50"),
+        ({"c": "red", "c2": "blue", "mix": 400}, "using 50"),
+        ({"c": "puce", "c2": "blue"}, "unknown colour"),
+    ],
+)
+def test_malformed_mix_warns_and_still_draws(font_dir, entry, fragment):
+    """Nothing here skips an op; the interpreter always draws something."""
+    img, problems = render(_one_rect({"m": entry}, "m"), font_dir)
+    assert any(fragment in p for p in problems), problems
+    assert img.getpixel((20, 20)) != INK["white"], "the op was skipped"
+
+
+def test_mixes_may_not_nest(font_dir):
+    """A mix of mixes isn't representable in a 2x2 mask."""
+    palette = {
+        "inner": {"c": "black", "c2": "white"},
+        "outer": {"c": "inner", "c2": "red"},
+    }
+    img, problems = render(_one_rect(palette, "outer"), font_dir)
+    assert any("cannot nest" in p for p in problems), problems
+    # falls back to inner's own base ink, so the fill is black against red
+    assert _share(img, INK["red"], 5, 5, 35, 35) == 0.5
+    assert _share(img, INK["black"], 5, 5, 35, 35) == 0.5
+
+
+def test_mix_may_reference_an_alias(font_dir):
+    palette = {"accent": "red", "m": {"c": "accent", "c2": "white"}}
+    img, problems = render(_one_rect(palette, "m"), font_dir)
+    assert problems == []
+    assert _share(img, INK["red"], 5, 5, 35, 35) == 0.5
+
+
+def test_tone_over_a_mixed_ground_reproduces_it(font_dir):
+    """bgc naming a mix is why mixes live in the palette: the knockout is in
+    phase with the fill, so it repaints exactly what was underneath."""
+    doc = {
+        "v": 1,
+        "meta": {},
+        "bg": "white",
+        "palette": {"grey": {"c": "black", "c2": "white"}},
+        "ops": [
+            {"op": "rect", "x": 0, "y": 0, "w": 300, "h": 100, "c": "grey"},
+            {
+                "op": "text", "x": 20, "y": 20, "s": "Hi", "f": "lg",
+                "c": "black", "tone": "light", "bgc": "grey",
+            },
+        ],
+    }
+    img, problems = render(doc, font_dir)
+    assert problems == []
+    # ground away from the glyphs is still an unbroken 50/50 grey
+    assert _share(img, INK["white"], 200, 20, 290, 90) == 0.5
