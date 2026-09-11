@@ -72,6 +72,75 @@ def test_stamp_matches_render_hash_for_any_doc(tmp_path, capsys):
     assert written["meta"]["hash"] == render_hash(doc)
 
 
+def test_stamp_never_adds_generated(tmp_path, capsys):
+    """`stamp` writes meta.hash only. Unlike Store.publish(), it never stamps
+    meta.generated -- see docs/SPEC.md and docs/PLAN.md's "one code path"
+    rule. A file with no `generated` stays without one after stamping.
+    """
+    doc = {"bg": "white", "ops": [{"op": "rect", "x": 0, "y": 0, "w": 10, "h": 10, "c": "red"}]}
+    f = tmp_path / "doc.json"
+    f.write_text(json.dumps(doc))
+    _run(["stamp", str(f)], capsys)
+    written = json.loads(f.read_text())
+    assert "generated" not in written["meta"]
+
+
+def test_stamp_leaves_existing_generated_untouched(tmp_path, capsys):
+    """A `generated` already on disk is the author's and stamp must not
+    touch it -- only Store.publish() ever writes that field.
+    """
+    doc = {
+        "bg": "white",
+        "meta": {"generated": "hand-authored, not a publish timestamp"},
+        "ops": [{"op": "rect", "x": 0, "y": 0, "w": 10, "h": 10, "c": "red"}],
+    }
+    f = tmp_path / "doc.json"
+    f.write_text(json.dumps(doc))
+    _run(["stamp", str(f)], capsys)
+    written = json.loads(f.read_text())
+    assert written["meta"]["generated"] == "hand-authored, not a publish timestamp"
+
+
+def test_stamp_run_twice_is_a_true_no_op(tmp_path, capsys):
+    """Because meta.hash excludes meta.generated and stamp never touches
+    generated, restamping unchanged content changes nothing on disk at all
+    -- unlike Store.publish(), which always moves meta.generated even for
+    byte-identical input. Both are fine; this pins the difference.
+    """
+    doc = {"bg": "white", "ops": [{"op": "rect", "x": 0, "y": 0, "w": 10, "h": 10, "c": "red"}]}
+    f = tmp_path / "doc.json"
+    f.write_text(json.dumps(doc))
+    _run(["stamp", str(f)], capsys)
+    first = f.read_text()
+    _run(["stamp", str(f)], capsys)
+    second = f.read_text()
+    assert first == second
+
+
+def test_stamp_and_publish_agree_on_hash_despite_generated_asymmetry(
+    tmp_path, capsys, monkeypatch
+):
+    """The two stamping paths disagree about meta.generated on purpose (see
+    docs/SPEC.md), but they must never disagree about meta.hash -- that's
+    the one identity the panel's change detection relies on.
+    """
+    from display_mcp import store as store_mod
+    from display_mcp.store import Store
+
+    doc = {"bg": "white", "ops": [{"op": "rect", "x": 0, "y": 0, "w": 10, "h": 10, "c": "red"}]}
+
+    f = tmp_path / "doc.json"
+    f.write_text(json.dumps(doc))
+    _run(["stamp", str(f)], capsys)
+    stamped = json.loads(f.read_text())
+
+    monkeypatch.setattr(store_mod.render, "check", lambda doc, font_dir: [])
+    store = Store(tmp_path / "state", tmp_path / "fonts")
+    result = store.publish(dict(doc), "default")
+
+    assert stamped["meta"]["hash"] == result.hash
+
+
 def test_render_writes_png(font_dir, tmp_path, capsys, sample_doc):
     f = tmp_path / "doc.json"
     f.write_text(json.dumps(sample_doc))

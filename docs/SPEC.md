@@ -28,9 +28,25 @@ The wrap and truncate logic is differentially tested between them (see
 ```
 
 `meta.hash` is the identity of what the document *draws* — see *Change
-detection*. `set_display` stamps it, and also stamps `meta.generated`; for
-a file on disk, `display-mcp-cli stamp` writes `meta.hash` only. Anything
-else under `meta` is the author's and is read by nothing here — in
+detection*. `set_display` stamps it, and also stamps `meta.generated` to the
+moment of that publish. `display-mcp-cli stamp`, on a file on disk, writes
+`meta.hash` only and leaves `generated` exactly as it found it — absent
+stays absent, present stays whatever it was. This is deliberate, not an
+oversight: `generated` means *published at*, and a file on disk has not
+been published — it may be headed for `set_display`, or it may be served
+straight off disk (see *Workflow*) or read by a tool that never touches the
+store at all, and none of those are a publish event `stamp` could honestly
+record. `Store.publish()` stays the only code path that stamps either field
+of `meta`; see `docs/PLAN.md`.
+
+Because `meta.hash` deliberately excludes `generated` (see *Change
+detection*), this costs nothing on identity: `stamp` run twice on an
+unchanged file is a true no-op — byte-identical output — while `set_display`
+run twice on identical content always moves `generated` and still produces
+the same hash. Two documents that hash the same but differ in `generated`
+are not a bug in either path; they're the point of excluding it.
+
+Anything else under `meta` is the author's and is read by nothing here — in
 particular there is no `ttl`: the wake interval is the panel's own hourly
 schedule, not something the document controls.
 
