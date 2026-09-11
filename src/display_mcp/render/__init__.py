@@ -32,6 +32,7 @@ import hashlib
 import json
 import math
 import re
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -143,6 +144,43 @@ _BAYER2 = ((0, 2), (3, 1))
 DENSITIES = (25, 50, 75)
 
 
+# The named mixes, compiled into the firmware as BUILTIN_MIXES in
+# display_list.h and mirrored here. A document writes `"c": "navy"` with no
+# palette entry (decision 10).
+#
+# This table is a permanent contract: these names mean these recipes, and the
+# way to break one is to bump the document's `v`, never to redefine a name in
+# place — the definitions live in the firmware rather than in `palette`, so
+# they are outside `meta.hash` and a redefinition would change what an
+# already-published document draws without changing its identity.
+#
+# tests/test_firmware_parity.py extracts the C++ table and diffs it against
+# this one, so keep both machine-readable: one entry per line.
+BUILTIN_MIXES: dict[str, tuple[str, str, int]] = {
+    "navy": ("black", "blue", 50),
+    "maroon": ("black", "red", 50),
+    "plum": ("red", "blue", 50),
+    "forest": ("black", "green", 50),
+    "teal": ("blue", "green", 50),
+    "brown": ("red", "green", 50),
+    "grey-dark": ("black", "white", 25),
+    "cream-pale": ("yellow", "white", 75),
+    "cream": ("yellow", "white", 50),
+    "sage-pale": ("green", "white", 75),
+    "slate-pale": ("blue", "white", 75),
+    "pink-pale": ("red", "white", 75),
+    "grey-light": ("black", "white", 75),
+    "sage": ("green", "white", 50),
+    "pink": ("red", "white", 50),
+    "slate": ("blue", "white", 50),
+    "chartreuse": ("yellow", "green", 50),
+    "grey-mid": ("black", "white", 50),
+    "mustard": ("black", "yellow", 50),
+    "orange": ("yellow", "red", 50),
+    "olive": ("yellow", "blue", 50),
+}
+
+
 def mix_on(x: int, y: int, pct: int) -> bool:
     """True where the *second* ink of a mix goes.
 
@@ -171,18 +209,82 @@ class Ink(NamedTuple):
         return self.a == self.b
 
 
+def _luminance(rgb: tuple) -> float:
+    """WCAG relative luminance of an (r, g, b) triple, channels 0-255."""
+
+    def lin(c: int) -> float:
+        c = c / 255
+        return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+
+    r, g, b = rgb
+    return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+
+
+def _contrast_ratio(rgb_a: tuple, rgb_b: tuple) -> float:
+    """WCAG contrast ratio between two colours; always >= 1."""
+    la, lb = _luminance(rgb_a), _luminance(rgb_b)
+    lighter, darker = max(la, lb), min(la, lb)
+    return (lighter + 0.05) / (darker + 0.05)
+
+
+def _effective_rgb(ink: Ink) -> tuple:
+    """What the eye integrates at reading distance: the mix average for a
+    mixed ink, the ink itself when solid (docs/plans/ink-mixing.md decision
+    3 — a glyph is too few pixels to read as anything but its blend)."""
+    if ink.solid:
+        return ink.a
+    t = ink.mix / 100
+    return tuple(round(a + (b - a) * t) for a, b in zip(ink.a, ink.b, strict=True))
+
+
+def _dominant_ground(img: Image.Image, box: tuple) -> tuple | None:
+    """Most common pixel colour under `box`, clipped to the canvas.
+
+    None when the box has no on-canvas area at all — an op drawn off-screen,
+    a zero-size box (an empty string) — so callers skip rather than warn on
+    those, per the false-positive list in the ink-mixing plan.
+    """
+    x0, y0, x1, y1 = box
+    x0, y0 = max(0, int(x0)), max(0, int(y0))
+    x1, y1 = min(WIDTH, int(x1)), min(HEIGHT, int(y1))
+    if x1 <= x0 or y1 <= y0:
+        return None
+    px = img.load()
+    counts = Counter(px[x, y] for y in range(y0, y1) for x in range(x0, x1))
+    return counts.most_common(1)[0][0]
+
+
 class Ctx:
-    def __init__(self, doc: dict[str, Any], font_dir: Path, ideal: bool = False):
+    def __init__(
+        self, doc: dict[str, Any], font_dir: Path, ideal: bool = False, warn_ink: bool = False
+    ):
         self.palette = doc.get("palette") or {}
         self.table = IDEAL if ideal else INK
+        self.table_rev = {v: k for k, v in self.table.items()}
         self.fonts = _load_fonts(Path(font_dir))
         self.problems: list[str] = []
+        # The three ink-mixing authoring warnings (contrast floor, chromatic
+        # mix as text, sub-2px density) are check()-only, the same way
+        # bezel_problems() is check()-only — render() on its own reports
+        # only what stops a document from drawing correctly. Gated so a bare
+        # render() call (previews, tests, cli --ideal) is unaffected.
+        self.warn_ink = warn_ink
+
+    def name_of(self, rgb: tuple) -> str:
+        """Reverse-lookup a raw canvas pixel to its ink name. Every pixel the
+        renderer ever paints is one of the six table entries verbatim — a
+        mix interleaves two solid inks, it never averages them on canvas —
+        so this always resolves for real pixels."""
+        return self.table_rev.get(rgb, "ink")
 
     def ink(self, name: str, where: str = "") -> Ink:
         """Resolve a colour name to an Ink, following palette aliases.
 
-        Mirrors resolve_color() in display_list.h. Every malformed case warns
-        and still yields something drawable; nothing here skips an op.
+        Mirrors resolve_ink() in display_list.h. Resolution is base inks ->
+        the document's palette -> the built-in mixes, so the six ink names
+        are immutable and a document can shadow a built-in one by declaring
+        it. Every malformed case warns and still yields something drawable;
+        nothing here skips an op.
         """
         n = name
         for _ in range(8):
@@ -190,7 +292,11 @@ class Ctx:
                 return Ink(self.table[n], self.table[n], 100)
             entry = self.palette.get(n)
             if entry is None:
-                break
+                builtin = BUILTIN_MIXES.get(n)
+                if builtin is None:
+                    break
+                a, b, m = builtin
+                return Ink(self.table[a], self.table[b], m)
             if isinstance(entry, dict):
                 return self._mix(entry, n, where)
             n = entry
@@ -223,7 +329,15 @@ class Ctx:
                 return self.table[n]
             entry = self.palette.get(n)
             if entry is None:
-                break
+                builtin = BUILTIN_MIXES.get(n)
+                if builtin is None:
+                    break
+                self.problems.append(
+                    f"{where}: {n!r} is a built-in mix, not a plain colour here; "
+                    "using its base ink"
+                )
+                n = builtin[0]
+                continue
             if isinstance(entry, dict):
                 self.problems.append(
                     f"{where}: {n!r} is a mix and mixes cannot nest; using its 'c'"
@@ -574,9 +688,121 @@ def _apply_tone(img, d, ctx, op, where, drawn, font, anchor, doc) -> None:
         _apply_tone_box(img, ctx, op, where, doc, x0, y0, x1 + 1, y1 + 1)
 
 
-def render(doc: dict[str, Any], font_dir: Path, ideal: bool = False, now: datetime | None = None):
-    """Return (PIL image, problems). Never raises on a bad op; it reports it."""
-    ctx = Ctx(doc, font_dir, ideal)
+def _check_contrast(img, ctx: Ctx, ink: Ink, fg_name: str, where: str, boxes: list[tuple]) -> None:
+    """Warning: 3:1 contrast floor for text/fmt/icon against what is actually
+    behind it (docs/plans/ink-mixing.md decision 4).
+
+    The ground is sampled from the real canvas *before* this op draws, so a
+    rect, a mixed fill or the page bg are all handled the same way. All five
+    compiled font sizes are WCAG "large text", so one floor covers every
+    size. `boxes` lets a wrapped text block check each line's own ground;
+    the worst line is what gets reported. A no-op unless `ctx.warn_ink`
+    (set by check(), not by a bare render() call -- see Ctx.__init__).
+    """
+    if not ctx.warn_ink:
+        return
+    fg = _effective_rgb(ink)
+    worst = None
+    for box in boxes:
+        bg = _dominant_ground(img, box)
+        if bg is None:
+            continue
+        ratio = _contrast_ratio(fg, bg)
+        if worst is None or ratio < worst[0]:
+            worst = (ratio, bg)
+    if worst is None:
+        return
+    ratio, bg = worst
+    if ratio < 3.0:
+        ctx.problems.append(
+            f"{where}: {fg_name} on {ctx.name_of(bg)} is {ratio:.1f}:1 "
+            "(below 3:1) — will be hard to read"
+        )
+
+
+def _check_mix_as_text(ctx: Ctx, ink: Ink, name: str, where: str) -> None:
+    """Warning: a chromatic mix used as text shifts toward its lighter ink
+    (docs/plans/ink-mixing.md decision 3).
+
+    A fill has enough pixels to average two inks; a glyph does not, so the
+    brighter ink dominates and the blend reads lighter than the swatch of
+    the same mix. Achromatic (black+white) is exempt — there is no hue to
+    lose, and the lightening is the point (it is what the shipping footer
+    stamp already relies on). A no-op unless `ctx.warn_ink`.
+    """
+    if not ctx.warn_ink:
+        return
+    if ink.solid:
+        return
+    black, white = ctx.table["black"], ctx.table["white"]
+    if {ink.a, ink.b} == {black, white}:
+        return
+    gap = abs(_luminance(ink.a) - _luminance(ink.b))
+    if gap > 0.2:
+        a_name, b_name = ctx.name_of(ink.a), ctx.name_of(ink.b)
+        lighter = a_name if _luminance(ink.a) > _luminance(ink.b) else b_name
+        ctx.problems.append(
+            f"{where}: {name!r} mixes {a_name}+{b_name} (luminance gap "
+            f"{gap:.2f}) — as text it will read shifted toward {lighter}, "
+            "not the blend a fill of the same mix would show"
+        )
+
+
+_PARITY_OUTCOME = {25: "0% or 50%", 75: "50% or 100%"}
+
+
+def _check_thin_mix(ctx: Ctx, ink: Ink, where: str, feature: str, **dims) -> None:
+    """Warning: a feature thinner than 2 px cannot carry 25%/75%
+    (docs/plans/ink-mixing.md decision 2).
+
+    The mask is 2x2, so a one-pixel-wide run samples a single row or column
+    of it and lands on 0/50/100% depending on which row or column that is —
+    only 50% is parity-independent. `feature` is one of "line", "outline"
+    (a rect drawn with fill: false) or "fill" (a filled rect too thin in one
+    dimension); `dims` carries the measurements to report. A no-op unless
+    `ctx.warn_ink`.
+    """
+    if not ctx.warn_ink:
+        return
+    if ink.solid or ink.mix not in _PARITY_OUTCOME:
+        return
+    outcome = _PARITY_OUTCOME[ink.mix]
+    if feature in ("line", "outline"):
+        t = dims["t"]
+        if t >= 2:
+            return
+        noun = "line" if feature == "line" else "rect outline"
+        ctx.problems.append(
+            f"{where}: {ink.mix}% mix on a {t}px {noun} renders at {outcome}, "
+            f"not {ink.mix}%, and which one depends on the op's coordinate "
+            "parity"
+        )
+    else:
+        w, h = dims["w"], dims["h"]
+        if w >= 2 and h >= 2:
+            return
+        ctx.problems.append(
+            f"{where}: {ink.mix}% mix on a {w}x{h} fill is too thin to carry "
+            f"the density — renders at {outcome} depending on the op's "
+            "coordinate parity"
+        )
+
+
+def render(
+    doc: dict[str, Any],
+    font_dir: Path,
+    ideal: bool = False,
+    now: datetime | None = None,
+    warn_ink: bool = False,
+):
+    """Return (PIL image, problems). Never raises on a bad op; it reports it.
+
+    `warn_ink` adds the three ink-mixing authoring warnings (contrast floor,
+    chromatic mix as text, sub-2px density) to `problems`; it is off by
+    default so every existing caller of render() is unaffected, and check()
+    is the one caller that turns it on.
+    """
+    ctx = Ctx(doc, font_dir, ideal, warn_ink)
     # The panel's fill() is a framebuffer memset that never reaches
     # draw_pixel_at, so a mixed bg is one ink laid down and the other
     # interleaved over it — see decision 6.
@@ -600,10 +826,12 @@ def render(doc: dict[str, Any], font_dir: Path, ideal: bool = False, now: dateti
         if kind == "rect":
             x, y, w, h = op["x"], op["y"], op["w"], op["h"]
             if op.get("fill", True):
+                _check_thin_mix(ctx, ink, where, "fill", w=w, h=h)
                 paint(img, ink, lambda dr, col: dr.rectangle(
                     [x, y, x + w - 1, y + h - 1], fill=col))
             else:
                 t = op.get("t", 1)
+                _check_thin_mix(ctx, ink, where, "outline", t=t)
                 paint(img, ink, lambda dr, col: dr.rectangle(
                     [x, y, x + w - 1, y + h - 1], outline=col, width=t))
             xr, yr = x + w, y + h
@@ -614,6 +842,7 @@ def render(doc: dict[str, Any], font_dir: Path, ideal: bool = False, now: dateti
 
         elif kind == "line":
             t = op.get("t", 1)
+            _check_thin_mix(ctx, ink, where, "line", t=t)
             paint(img, ink, lambda dr, col: dr.line(
                 [op["x"], op["y"], op["x2"], op["y2"]], fill=col, width=t))
             x2, y2 = op.get("x2"), op.get("y2")
@@ -632,6 +861,7 @@ def render(doc: dict[str, Any], font_dir: Path, ideal: bool = False, now: dateti
                 paint(img, ink, lambda dr, col: dr.ellipse(box, outline=col, width=t))
 
         elif kind == "text":
+            c_name = op.get("c", "black")
             f = ctx.font(op.get("f", "md"), where)
             anchor = ANCHOR.get(op.get("a", "left"), "la")
             max_w = op.get("w")
@@ -640,15 +870,23 @@ def render(doc: dict[str, Any], font_dir: Path, ideal: bool = False, now: dateti
                 fname = op.get("f", "md")
                 size = FONTS.get(fname, FONTS["md"])[0]
                 lh = op.get("lh", round(size * 1.24))
+                positions = [(op["x"], op["y"] + n * lh, line) for n, line in enumerate(lines)]
+                boxes = [
+                    d.textbbox((px, py), line, font=f, anchor=anchor) for px, py, line in positions
+                ]
+                _check_contrast(img, ctx, ink, c_name, where, boxes)
+                _check_mix_as_text(ctx, ink, c_name, where)
                 drawn = []
-                for n, line in enumerate(lines):
-                    ly = op["y"] + n * lh
+                for _x, ly, line in positions:
                     paint(img, ink, lambda dr, col, ly=ly, line=line: dr.text(
                         (op["x"], ly), line, font=f, fill=col, anchor=anchor))
                     drawn.append((op["x"], ly, line))
                 _apply_tone(img, d, ctx, op, where, drawn, f, anchor, doc)
             else:
                 text = fit_line(f, op["s"], max_w)
+                box = d.textbbox((op["x"], op["y"]), text, font=f, anchor=anchor)
+                _check_contrast(img, ctx, ink, c_name, where, [box])
+                _check_mix_as_text(ctx, ink, c_name, where)
                 paint(img, ink, lambda dr, col: dr.text(
                     (op["x"], op["y"]), text, font=f, fill=col, anchor=anchor))
                 _apply_tone(img, d, ctx, op, where, [(op["x"], op["y"], text)], f, anchor, doc)
@@ -657,24 +895,31 @@ def render(doc: dict[str, Any], font_dir: Path, ideal: bool = False, now: dateti
             # text without wrap whose `s` is a template of system fields. The
             # values are never in the document, so meta.hash covers where and
             # how the line is drawn, never what it says.
+            c_name = op.get("c", "black")
             f = ctx.font(op.get("f", "xs"), where)
             anchor = ANCHOR.get(op.get("a", "left"), "la")
             text, unknown = expand_fields(op.get("s", ""), fields)
-            for name in unknown:
-                ctx.problems.append(f"{where}: unknown field {{{name}}} (left literal)")
+            for field_name in unknown:
+                ctx.problems.append(f"{where}: unknown field {{{field_name}}} (left literal)")
+            box = d.textbbox((op["x"], op["y"]), text, font=f, anchor=anchor)
+            _check_contrast(img, ctx, ink, c_name, where, [box])
+            _check_mix_as_text(ctx, ink, c_name, where)
             paint(img, ink, lambda dr, col: dr.text(
                 (op["x"], op["y"]), text, font=f, fill=col, anchor=anchor))
             _apply_tone(img, d, ctx, op, where, [(op["x"], op["y"], text)], f, anchor, doc)
 
         elif kind == "icon":
+            c_name = op.get("c", "black")
             name = op.get("n")
             z = op.get("z", "sm")
             key = f"{name}/{z}"
             if name not in ICONS or z not in ICONS[name]:
                 ctx.problems.append(f"{where}: {key!r} is not compiled in")
             size = ICON_SIZES.get(z, 36)
-            paint(img, ink, lambda dr, col: draw_icon(dr, name, op["x"], op["y"], size, col))
             x, y = op["x"], op["y"]
+            _check_contrast(img, ctx, ink, c_name, where, [(x, y, x + size, y + size)])
+            _check_mix_as_text(ctx, ink, c_name, where)
+            paint(img, ink, lambda dr, col: draw_icon(dr, name, op["x"], op["y"], size, col))
             _apply_tone_box(img, ctx, op, where, doc, x, y, x + size, y + size)
 
         else:
@@ -739,7 +984,7 @@ def check(doc: dict[str, Any], font_dir: Path) -> list[str]:
     still flagged: that one means the document on disk no longer draws what
     its hash claims, which the panel would act on.
     """
-    _, problems = render(doc, font_dir)
+    _, problems = render(doc, font_dir, warn_ink=True)
     problems = problems + bezel_problems(doc)
     stamped = (doc.get("meta") or {}).get("hash")
     if stamped:

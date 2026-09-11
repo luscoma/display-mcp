@@ -66,6 +66,13 @@ thin sample but suggests the lighter ink is where it shows through.
 **Text on a mixed ground is fine.** Black 36 px over grey, pale slate and
 cream all read cleanly.
 
+**Coupon 3 (2026-09-10), on the new firmware.** 25% and 75% both work and
+the grey ladder reads as three clear steps. A `grey-25` rule at 2 px+ is
+fine at rule thickness. The five clean-hue pairs hold as text on white at
+`lg`, `md` and `sm` — `brown` (red+green) reads "a bit mustardy" but still
+as brown. The one miss was the secondary panel, which used the wrong grey;
+see decision 8.
+
 **Toned text over a mixed ground vanishes**, as predicted: the knockout is in
 phase with the dither, so the glyph keeps only its base-ink pixels. Do not
 put toned text on a mixed fill.
@@ -87,11 +94,16 @@ is not otherwise reachable.
 
 ```json
 "palette": {
-  "accent": "red",
-  "mustard": {"c": "black", "c2": "yellow", "mix": 50},
-  "grey":    {"c": "black", "c2": "white",  "mix": 25}
+  "accent":     "red",
+  "mustard":    {"c": "black", "c2": "yellow", "mix": 50},
+  "grey-light": {"c": "black", "c2": "white",  "mix": 75}
 }
 ```
+
+**`mix` is the share of `c2`, not of the ink.** With `c: black, c2: white`,
+a higher `mix` means more white and therefore a *lighter* grey. This reads
+backwards to anyone carrying print habits, where "25% black" means a light
+tint, and it is a live trap: see decision 8.
 
 Rather than adding `c2`/`mix` to every op's field table. Reasons: restyling
 stays one line, which is why `palette` exists; `meta.hash` already covers
@@ -152,9 +164,32 @@ Implementation is the proxy of decision 6, which applies the mask uniformly
 to fills, shapes and glyphs alike. `bg` is the one exception and needs fill
 plus an overlay pass; see decision 6.
 
-25% and 75% were **not** reachable on the coupon (see above), so they remain
-unjudged. They cost one threshold once the mask exists, so ship all three
-and judge on the first real build.
+25% and 75% were **not** reachable on the coupons 1 and 2 (see above), so
+they were unjudged until coupon 3.
+
+### A feature thinner than 2 px cannot carry 25% or 75%
+
+Found building coupon 3. The mask is 2x2, so a one-pixel-wide run samples a
+single row or column of it and cannot express a quarter:
+
+| density | a 1 px run actually renders at |
+|---|---|
+| 25% | **0% or 50%**, by parity |
+| 50% | exactly 50%, always |
+| 75% | **50% or 100%**, by parity |
+
+50% is parity-independent and safe at any thickness — which is why `tone`
+has never had this problem. 25% and 75% need **2 px in both axes** to land on
+their nominal density.
+
+The trap is not just that a 1 px rule is wrong, it is that it is wrong
+*by position*: nudging a `grey-25` rule down one pixel flips it between
+invisible and half strength, with nothing in the document to explain why. So
+`check()` should warn when a 25% or 75% mix is used on a `line` with `t < 2`,
+on a `rect` outline with `t < 2`, or on a fill less than 2 px in either
+dimension. That warning is worth more than most of the others, because the
+failure is silent and looks like a rendering bug rather than an authoring
+one.
 
 ## Decision 3: mixed ink is allowed on text, and the ground picks the mix
 
@@ -270,6 +305,34 @@ states them; the folklore does not. Replace the "Designing for six inks"
 bullets with the matrix plus a 3:1 floor, and have `check()` enforce that
 floor as a warning wherever the ground is knowable.
 
+Two errors in `src/display_mcp/prompts/compose.md` go in the same pass: it
+repeats "Yellow is a fill, never text", and it claims an unknown *colour*
+skips the op. It does not — `resolve_ink` falls back to black with a warning
+and the op still draws. Only an unknown op, font or icon is skipped.
+
+### How the named set is stated
+
+The named colours (decision 9) get the same treatment, because the failure
+mode that produced "yellow is a fill, never text" was not a wrong
+observation — yellow on white really is unreadable — but a narrow one
+written as law. A blessed list of colours would repeat that shape exactly.
+
+So the set is presented as **combinations that have been tested, with what
+each turned out to be good for**, never as a whitelist. Every pair of the
+six inks and all three densities stay available; a caller can write a mix
+inline without asking. And the reader gets the method rather than only the
+permission: contrast is the check, ~4.5:1 for body text and 3:1 for large,
+which is what sorted these colours into tiers in the first place. Someone
+evaluating a combination we never tried should be able to do it the same way
+we did.
+
+The measurements are also stated as best-case. They come from the renderer's
+ink approximations and one panel judged in one room. E-paper is reflective,
+so appearance tracks the ambient light in a way an emissive screen does not,
+and it shifts with viewing angle, temperature, refresh history and unit
+variation. The numbers are a good starting point; the reader's own wall
+wins where the two disagree.
+
 ## Decision 5: `tone` stays; it is not the same thing as a palette mix
 
 They look equivalent and are not:
@@ -375,9 +438,113 @@ Two consequences worth knowing:
   `draw_pixel_at` at all. It would become reachable if a future icon were
   compiled as an opaque binary image.
 
+## Decision 8: palette names describe the colour, never the recipe
+
+`mix` is the percentage of `c2`. With `c: black, c2: white` that makes a
+*higher* number *lighter* — the opposite of the print convention, where "25%
+black" is a pale tint. Naming an entry `grey-25` therefore tells the author
+the wrong thing at exactly the moment they are choosing a colour.
+
+This is not hypothetical. Coupon 3 filled its "quiet secondary panel" with
+`grey-25` to sit behind black body text. `grey-25` is 75% black:
+
+| entry | white | vs black text | |
+|---|---|---|---|
+| `grey-25` | 25% | **3.8:1** | large text only |
+| `grey-50` | 50% | 6.5:1 | body text ok |
+| `grey-75` | 75% | **9.3:1** | body text ok |
+
+Judged on the wall: "okay close up though blends together into a dark grey
+further away" — which is 3.8:1 described in words. The panel wanted
+`grey-75`. The convention produced the mistake within hours of being
+invented, and it fooled the author, the reviewer and the coupon.
+
+So palette entries are named for **how they look**, not for their density:
+`grey-light`, `grey-mid`, `grey-dark`. The rest of the palette already works
+this way — `mustard`, `plum`, `navy`, `forest` are names, not recipes — and
+the density belongs inside the entry where the author does not have to
+reason about it. `check()` cannot catch this; only naming can.
+
+## Decision 10: the named set is compiled in, and the palette can override it
+
+A document writes `"c": "navy"` and it works, with no palette at all.
+
+This was first decided the other way, on the grounds that only fonts, icons
+and ops are compiled vocabulary and adding colours would make a rename a
+reflash. That argument does not survive contact with the reason the set
+exists. Fonts and icons *are* compiled vocabulary and the six inks are
+already listed as such; named mixes are the same kind of thing, and "adding
+one is a rebuild" is a cost this project already pays for icons.
+
+The point of the named set is to remove a class of error from the caller. A
+library the caller has to paste recipes from still lets them write `25`
+where they meant `75` and get a silently wrong colour — the exact failure
+decision 8 is about, and the one four coupons went to the wall to eliminate.
+Making the names first-class removes it; documenting them does not.
+
+Resolution order is **base inks → document `palette` → built-in mixes**. So
+the six ink names stay immutable, a document can redefine `navy` or add
+colours the firmware has never heard of, and everything else resolves to the
+tested set for free. The escape hatch that made palette-only attractive is
+preserved without the boilerplate.
+
+Two consequences to hold:
+
+- **The definition no longer travels in `meta.hash`.** A firmware that
+  changed `navy`'s recipe would draw a document differently under an
+  unchanged hash, and a device that had already shown it would 304 and stay
+  stale. This is exactly as true of fonts and icons today, and is the
+  accepted price of compiled vocabulary. The table is therefore a
+  **permanent contract**: these twenty-one names mean these twenty-one
+  recipes, and the way to break one later is to bump the document's `v`
+  rather than to redefine a name in place. (Decided 2026-09-11.)
+
+  That only works if something reads `v`, and as of today nothing does —
+  `store.py` has a lone `setdefault("v", 1)` and neither the firmware nor
+  the renderer looks at it. So the firmware now logs a warning when it meets
+  a version it does not implement, and draws anyway: a wall rendered by a
+  slightly wrong interpreter beats a blank one, and the warning is what
+  makes the mismatch diagnosable instead of baffling.
+- **The table exists twice**, in `display_list.h` and in
+  `display_mcp.render`, and twenty-one entries transcribed between two
+  languages is precisely where a typo hides and never gets noticed. It goes
+  into the differential test alongside `mix_on`: extract the table from the
+  shipped header, compare every name, recipe and density against the Python.
+
+## Known limitation: the contrast check does not model `tone`
+
+`check()`'s 3:1 contrast warning evaluates an op's **solid** ink against the
+sampled ground. It does not account for `tone: "light"`, which knocks half
+the glyph out to `bgc` after the fact. That is a deliberate choice, and the
+arithmetic behind it is worth recording because it looks like an oversight.
+
+Modelling a toned glyph as its blend — the natural fix — puts black
+`tone: light` text on white at **2.98:1**, a hair under the 3:1 floor. That
+is the shipping footer stamp, on the wall since 2026-09-09, judged legible at
+every size including `xs`. A warning that fires on the project's own sample
+is a worse defect than the one it would catch, and it would be telling the
+truth about the arithmetic while being wrong about the panel: a 50% glyph
+keeps its stroke structure, so the eye does not simply average it the way it
+averages a large fill.
+
+The cost of not modelling it is false positives in the other direction —
+toned text over a ground that matches its own ink reports as 1.0:1 when the
+knockout is precisely what makes it visible. Two of those appear in coupon 1
+and one in coupon 3.
+
+Both models are wrong; this one is wrong in the quieter direction. Revisit
+only with a better model of dithered-glyph legibility than "average the
+pixels", which is really a question about the panel rather than about the
+code.
+
 ## Still open
 
-- 25% and 75% — unjudged; decide on the first real build.
+- A closing coupon that names the officially supported set. The user's idea,
+  and the right last step: one page showing every mix that survives, each
+  labelled with the name it will carry in `SPEC.md`, judged on the wall so
+  the names come from the glass rather than from an ink table. `brown`
+  (red+green) is the open case — judged "a bit mustardy but I'd still
+  consider it brown", so it either keeps the name or takes a better one.
 - Whether the palette needs a per-op density override, or whether one entry
   per density (`grey-25`, `grey-50`, `grey-75`) is acceptable. Deferred
   2026-09-10: put a mix in the palette if you want to use it, and revisit

@@ -312,7 +312,10 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
         "display://spec",
         name="spec",
         title="Display list spec",
-        description="The document language: canvas, ops, fonts, icons, six inks, change detection.",
+        description=(
+            "The document language: canvas, ops, fonts, icons, the six inks and "
+            "the named two-ink mixes, change detection."
+        ),
         mime_type="text/markdown",
     )
     def spec_resource() -> str:

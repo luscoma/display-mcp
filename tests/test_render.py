@@ -13,6 +13,7 @@ import pytest
 from PIL import Image, ImageDraw
 
 from display_mcp.render import (
+    BUILTIN_MIXES,
     COLORS,
     FONTS,
     HEIGHT,
@@ -749,6 +750,53 @@ def test_mix_may_reference_an_alias(font_dir):
     assert _share(img, INK["red"], 5, 5, 35, 35) == 0.5
 
 
+def test_builtin_mix_needs_no_palette(font_dir):
+    """The point of decision 10: `"c": "navy"` works on its own."""
+    doc = {"v": 1, "meta": {}, "bg": "white", "ops": [
+        {"op": "rect", "x": 0, "y": 0, "w": 60, "h": 60, "c": "navy"}]}
+    img, problems = render(doc, font_dir)
+    assert problems == []
+    assert _share(img, INK["blue"], 5, 5, 55, 55) == 0.5
+    assert _share(img, INK["black"], 5, 5, 55, 55) == 0.5
+
+
+def test_palette_shadows_a_builtin(font_dir):
+    """Resolution is base inks -> palette -> built-ins, so a document can
+    redefine a built-in name without a firmware change."""
+    palette = {"navy": {"c": "red", "c2": "yellow", "mix": 50}}
+    img, problems = render(_one_rect(palette, "navy", 60, 60), font_dir)
+    assert problems == []
+    assert _share(img, INK["red"], 5, 5, 55, 55) == 0.5
+    assert _share(img, INK["yellow"], 5, 5, 55, 55) == 0.5
+
+
+def test_palette_cannot_shadow_a_base_ink(font_dir):
+    """The six inks are immutable; they resolve before the palette."""
+    palette = {"red": {"c": "blue", "c2": "green", "mix": 50}}
+    img, problems = render(_one_rect(palette, "red", 60, 60), font_dir)
+    assert problems == []
+    assert _share(img, INK["red"], 5, 5, 55, 55) == 1.0
+
+
+def test_builtin_cannot_nest_inside_a_mix(font_dir):
+    """A mix of mixes isn't representable, so a built-in used as c2 warns
+    and contributes only its own base ink — matching resolve_solid()."""
+    palette = {"m": {"c": "white", "c2": "navy", "mix": 50}}
+    img, problems = render(_one_rect(palette, "m", 60, 60), font_dir)
+    assert any("built-in mix" in p for p in problems), problems
+    # navy degrades to black, so the fill is white + black
+    assert _share(img, INK["black"], 5, 5, 55, 55) == 0.5
+
+
+@pytest.mark.parametrize("name", sorted(BUILTIN_MIXES))
+def test_every_builtin_renders_clean(name, font_dir):
+    """No built-in may trip check() when used as a plain fill — a named
+    colour that warns on correct use would be worse than no name at all."""
+    doc = {"v": 1, "meta": {}, "bg": "white", "ops": [
+        {"op": "rect", "x": 100, "y": 100, "w": 80, "h": 80, "c": name}]}
+    assert check(doc, font_dir) == []
+
+
 def test_tone_over_a_mixed_ground_reproduces_it(font_dir):
     """bgc naming a mix is why mixes live in the palette: the knockout is in
     phase with the fill, so it repaints exactly what was underneath."""
@@ -769,3 +817,275 @@ def test_tone_over_a_mixed_ground_reproduces_it(font_dir):
     assert problems == []
     # ground away from the glyphs is still an unbroken 50/50 grey
     assert _share(img, INK["white"], 200, 20, 290, 90) == 0.5
+
+
+# --------------------------------------------------------------------------
+# ink-mixing warnings — docs/plans/ink-mixing.md "still open" / decisions 2-4
+#
+# All three are check()-only, the same way bezel_problems() is: render() on
+# its own reports only what stops a document from drawing correctly, so a
+# bare render() call is unaffected and every test above this block keeps
+# passing unchanged.
+# --------------------------------------------------------------------------
+
+
+def _contrast_msgs(problems):
+    return [p for p in problems if "below 3:1" in p]
+
+
+def _mix_shift_msgs(problems):
+    return [p for p in problems if "luminance gap" in p]
+
+
+def _thin_mix_msgs(problems):
+    return [p for p in problems if "coordinate parity" in p]
+
+
+def test_render_does_not_include_ink_mixing_warnings(font_dir):
+    """The three new warnings are surfaced by check(), not by a bare
+    render() call — mirrors bezel_problems(), which behaves the same way."""
+    doc = {
+        "v": 1, "meta": {}, "bg": "white", "palette": {},
+        "ops": [
+            {"op": "rect", "x": 0, "y": 0, "w": 200, "h": 200, "c": "blue"},
+            {"op": "text", "x": 20, "y": 20, "s": "Hi", "f": "lg", "c": "red"},
+        ],
+    }
+    _, problems = render(doc, font_dir)
+    assert problems == []
+    assert _contrast_msgs(check(doc, font_dir))
+
+
+# ---- warning 1: contrast floor on text/fmt/icon --------------------------
+
+
+def test_contrast_warns_below_3_to_1(font_dir):
+    doc = {
+        "v": 1, "meta": {}, "bg": "white", "palette": {},
+        "ops": [
+            {"op": "rect", "x": 0, "y": 0, "w": 200, "h": 200, "c": "blue"},
+            {"op": "text", "x": 20, "y": 20, "s": "Hi", "f": "lg", "c": "red"},
+        ],
+    }
+    problems = check(doc, font_dir)
+    msgs = _contrast_msgs(problems)
+    assert len(msgs) == 1
+    assert "ops[1] text: red on blue is 1.3:1 (below 3:1)" in msgs[0]
+
+
+def test_contrast_does_not_warn_above_floor(font_dir):
+    """Black on white — the sample's usual case — clears 3:1 comfortably."""
+    doc = {
+        "v": 1, "meta": {}, "bg": "white", "palette": {},
+        "ops": [{"op": "text", "x": 20, "y": 20, "s": "Hi", "f": "lg", "c": "black"}],
+    }
+    assert _contrast_msgs(check(doc, font_dir)) == []
+
+
+def test_contrast_samples_the_ground_a_rect_actually_painted(font_dir):
+    """The ground is read off the real canvas, not the document bg — text
+    over a yellow rect is judged against yellow, not white."""
+    doc = {
+        "v": 1, "meta": {}, "bg": "white", "palette": {},
+        "ops": [
+            {"op": "rect", "x": 0, "y": 0, "w": 400, "h": 200, "c": "yellow"},
+            {"op": "text", "x": 20, "y": 20, "s": "Hi", "f": "lg", "c": "white"},
+        ],
+    }
+    msgs = _contrast_msgs(check(doc, font_dir))
+    assert len(msgs) == 1
+    assert "white on yellow" in msgs[0]
+
+
+def test_contrast_ignores_offcanvas_text(font_dir):
+    doc = {
+        "v": 1, "meta": {}, "bg": "white", "palette": {},
+        "ops": [
+            {"op": "rect", "x": 0, "y": 0, "w": 200, "h": 200, "c": "blue"},
+            {"op": "text", "x": 5000, "y": 20, "s": "Hi", "f": "lg", "c": "red"},
+        ],
+    }
+    assert _contrast_msgs(check(doc, font_dir)) == []
+
+
+def test_contrast_ignores_zero_area_box(font_dir):
+    doc = {
+        "v": 1, "meta": {}, "bg": "white", "palette": {},
+        "ops": [
+            {"op": "rect", "x": 0, "y": 0, "w": 200, "h": 200, "c": "blue"},
+            {"op": "text", "x": 20, "y": 20, "s": "", "f": "lg", "c": "red"},
+        ],
+    }
+    assert _contrast_msgs(check(doc, font_dir)) == []
+
+
+def test_contrast_applies_to_fmt(font_dir):
+    doc = {
+        "v": 1, "meta": {}, "bg": "white", "palette": {},
+        "ops": [
+            {"op": "rect", "x": 0, "y": 0, "w": 200, "h": 200, "c": "blue"},
+            {"op": "fmt", "x": 20, "y": 20, "s": "{time24}", "f": "lg", "c": "red"},
+        ],
+    }
+    assert _contrast_msgs(check(doc, font_dir))
+
+
+def test_contrast_applies_to_icon(font_dir):
+    doc = {
+        "v": 1, "meta": {}, "bg": "white", "palette": {},
+        "ops": [
+            {"op": "rect", "x": 0, "y": 0, "w": 200, "h": 200, "c": "blue"},
+            {"op": "icon", "x": 20, "y": 20, "n": "check", "z": "sm", "c": "red"},
+        ],
+    }
+    assert _contrast_msgs(check(doc, font_dir))
+
+
+def test_contrast_uses_the_mix_average_as_the_effective_colour(font_dir):
+    """A mixed ink is judged by its blend, not by either component alone —
+    grey (black+white, 50%) on white lands right at the 3:1 floor, unlike
+    either black-on-white (12:1) or white-on-white (1:1) alone."""
+    doc = {
+        "v": 1, "meta": {}, "bg": "white",
+        "palette": {"grey": {"c": "black", "c2": "white"}},
+        "ops": [{"op": "text", "x": 20, "y": 20, "s": "Hi", "f": "lg", "c": "grey"}],
+    }
+    msgs = _contrast_msgs(check(doc, font_dir))
+    assert len(msgs) == 1
+    assert "grey on white" in msgs[0]
+
+
+# ---- warning 2: a chromatic mix used as text shifts toward its lighter ink
+
+
+def test_mix_as_text_warns_for_a_large_chromatic_gap(font_dir):
+    doc = {
+        "v": 1, "meta": {}, "bg": "white",
+        "palette": {"mustard": {"c": "black", "c2": "yellow"}},
+        "ops": [{"op": "text", "x": 200, "y": 200, "s": "Hi", "f": "lg", "c": "mustard"}],
+    }
+    msgs = _mix_shift_msgs(check(doc, font_dir))
+    assert len(msgs) == 1
+    assert "'mustard'" in msgs[0] and "black+yellow" in msgs[0]
+    assert "toward yellow" in msgs[0]
+
+
+def test_mix_as_text_exempts_black_and_white(font_dir):
+    """Grey text is the desired shift, not a defect — it is what the
+    shipping footer stamp already relies on."""
+    doc = {
+        "v": 1, "meta": {}, "bg": "black",
+        "palette": {"grey": {"c": "black", "c2": "white"}},
+        "ops": [{"op": "text", "x": 200, "y": 200, "s": "Hi", "f": "lg", "c": "grey"}],
+    }
+    assert _mix_shift_msgs(check(doc, font_dir)) == []
+
+
+def test_mix_as_text_does_not_warn_below_the_gap_threshold(font_dir):
+    """plum (red+blue) has the smallest gap of any chromatic pair, .092 —
+    well under the .2 threshold."""
+    doc = {
+        "v": 1, "meta": {}, "bg": "white",
+        "palette": {"plum": {"c": "red", "c2": "blue"}},
+        "ops": [{"op": "text", "x": 200, "y": 200, "s": "Hi", "f": "lg", "c": "plum"}],
+    }
+    assert _mix_shift_msgs(check(doc, font_dir)) == []
+
+
+def test_mix_as_text_does_not_apply_to_solid_colours(font_dir):
+    doc = {
+        "v": 1, "meta": {}, "bg": "white", "palette": {},
+        "ops": [{"op": "text", "x": 200, "y": 200, "s": "Hi", "f": "lg", "c": "yellow"}],
+    }
+    assert _mix_shift_msgs(check(doc, font_dir)) == []
+
+
+def test_mix_as_text_does_not_apply_to_a_mixed_fill(font_dir):
+    """The shift is specific to glyphs, which are too few pixels to
+    average — a large fill of the same mix is unaffected."""
+    doc = {
+        "v": 1, "meta": {}, "bg": "white",
+        "palette": {"mustard": {"c": "black", "c2": "yellow"}},
+        "ops": [{"op": "rect", "x": 0, "y": 0, "w": 200, "h": 200, "c": "mustard"}],
+    }
+    assert _mix_shift_msgs(check(doc, font_dir)) == []
+
+
+# ---- warning 3: a feature thinner than 2 px cannot carry 25%/75% ---------
+
+
+def test_thin_mix_warns_a_1px_line(font_dir):
+    doc = {
+        "v": 1, "meta": {}, "bg": "white",
+        "palette": {"grey-25": {"c": "black", "c2": "white", "mix": 25}},
+        "ops": [{"op": "line", "x": 10, "y": 10, "x2": 500, "y2": 10, "c": "grey-25", "t": 1}],
+    }
+    msgs = _thin_mix_msgs(check(doc, font_dir))
+    assert len(msgs) == 1
+    assert "ops[0] line: 25% mix on a 1px line renders at 0% or 50%" in msgs[0]
+
+
+def test_thin_mix_does_not_warn_a_2px_line(font_dir):
+    doc = {
+        "v": 1, "meta": {}, "bg": "white",
+        "palette": {"grey-25": {"c": "black", "c2": "white", "mix": 25}},
+        "ops": [{"op": "line", "x": 10, "y": 10, "x2": 500, "y2": 10, "c": "grey-25", "t": 2}],
+    }
+    assert _thin_mix_msgs(check(doc, font_dir)) == []
+
+
+def test_thin_mix_warns_a_1px_rect_outline(font_dir):
+    doc = {
+        "v": 1, "meta": {}, "bg": "white",
+        "palette": {"grey-75": {"c": "black", "c2": "white", "mix": 75}},
+        "ops": [{"op": "rect", "x": 10, "y": 10, "w": 40, "h": 40, "c": "grey-75",
+                  "fill": False, "t": 1}],
+    }
+    msgs = _thin_mix_msgs(check(doc, font_dir))
+    assert len(msgs) == 1
+    assert "75% mix on a 1px rect outline renders at 50% or 100%" in msgs[0]
+
+
+def test_thin_mix_warns_a_filled_rect_thin_in_one_dimension(font_dir):
+    doc = {
+        "v": 1, "meta": {}, "bg": "white",
+        "palette": {"grey-25": {"c": "black", "c2": "white", "mix": 25}},
+        "ops": [{"op": "rect", "x": 10, "y": 10, "w": 1, "h": 40, "c": "grey-25"}],
+    }
+    msgs = _thin_mix_msgs(check(doc, font_dir))
+    assert len(msgs) == 1
+    assert "1x40 fill" in msgs[0]
+
+
+def test_thin_mix_does_not_warn_a_filled_rect_at_least_2px_both_ways(font_dir):
+    doc = {
+        "v": 1, "meta": {}, "bg": "white",
+        "palette": {"grey-25": {"c": "black", "c2": "white", "mix": 25}},
+        "ops": [{"op": "rect", "x": 10, "y": 10, "w": 2, "h": 2, "c": "grey-25"}],
+    }
+    assert _thin_mix_msgs(check(doc, font_dir)) == []
+
+
+def test_thin_mix_does_not_warn_50_percent_at_1px(font_dir):
+    """50% is parity-independent — exact at any thickness, which is why
+    tone: light has never had this problem."""
+    doc = {
+        "v": 1, "meta": {}, "bg": "white",
+        "palette": {"grey": {"c": "black", "c2": "white"}},
+        "ops": [{"op": "line", "x": 10, "y": 10, "x2": 500, "y2": 10, "c": "grey", "t": 1}],
+    }
+    assert _thin_mix_msgs(check(doc, font_dir)) == []
+
+
+def test_thin_mix_does_not_apply_to_solid_colours(font_dir):
+    doc = {
+        "v": 1, "meta": {}, "bg": "white", "palette": {},
+        "ops": [{"op": "line", "x": 10, "y": 10, "x2": 500, "y2": 10, "c": "black", "t": 1}],
+    }
+    assert _thin_mix_msgs(check(doc, font_dir)) == []
+
+
+def test_all_ink_mixing_warnings_clean_on_the_sample(sample_doc, font_dir):
+    """samples/display.json predates ink mixing entirely (no mix in its
+    palette) — check() must stay at zero problems."""
+    assert check(sample_doc, font_dir) == []

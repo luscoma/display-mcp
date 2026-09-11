@@ -143,9 +143,11 @@ not need the spec pasted into it.
 
 **Two renderers, one vocabulary.** The firmware draws the document on the
 panel; `display_mcp.render` draws it as a PNG. They share five font sizes,
-eleven icons, six inks and six ops — and nothing else, which is what keeps
-"what Claude previewed" and "what the wall shows" from drifting. The wrap and
-truncate logic is differentially tested between them.
+eleven icons, six inks plus twenty-one built-in two-ink mixes, and six ops —
+and nothing else, which is what keeps "what Claude previewed" and "what the
+wall shows" from drifting. The wrap and truncate logic is differentially
+tested between them. Colour names, recipes and contrast ratios are in
+[`docs/SPEC.md`](docs/SPEC.md).
 
 ## Running it
 

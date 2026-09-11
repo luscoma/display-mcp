@@ -31,15 +31,17 @@ its text starts 40 px in; copy that.
 ```
 
 `meta.hash` is stamped by `set_display` from `bg` + `palette` + `ops` —
-never set it yourself. `palette` maps your own names onto the six inks so a
-restyle is a one-line edit instead of a find-and-replace through every op;
-`ops` reference either a palette name or an ink name directly in `c`.
+never set it yourself. `palette` maps your own names onto the six inks (or
+onto a two-ink mix) so a restyle is a one-line edit instead of a
+find-and-replace through every op; `ops` reference a base ink, a built-in
+mix name, or your own palette entry directly in `c`.
 
 ## Ops
 
-Every op takes `c` (ink or palette name, default `black`). An unknown op,
-colour, font or icon name logs a warning and that one op is skipped — it
-does not fail the whole render, so check `warnings` anyway.
+Every op takes `c` (a base ink, a built-in mix name, or your own `palette`
+entry, default `black`). An unknown op, font or icon name logs a warning and
+skips that op; an unknown colour is different — it falls back to black with
+a warning and the op still draws. Check `warnings` either way.
 
 - **`rect`** — `x y w h`, `fill` (default true), `t` (outline thickness when
   `fill: false`).
@@ -90,22 +92,58 @@ Eleven names, each valid at exactly one size class:
   `weather-rainy`, `weather-snowy`, `weather-night`
 - `sm` (36 px): `check`, `map-marker`, `clock`, `alert`, `battery`
 
-## The six inks
+## Colours
 
-`black white yellow red blue green` — nothing else exists. Rules, learned
-from what actually reads on this class of panel:
+Six inks — `black white yellow red blue green` — plus any two-ink mix.
+Write `"c": "navy"` with no palette entry needed: twenty-one tested
+pairings are built in (full table with hexes: `docs/SPEC.md` → "The named
+palette"). Redefine one, or invent your own, as a `palette` entry:
+`{"c": ..., "c2": ..., "mix": 25|50|75}`. `mix` is the share of **`c2`**, so
+with `c: black, c2: white` a *higher* number is *lighter* — backwards from
+print habit, and it has fooled everyone who's met it.
 
-- **Yellow is a fill, never text.** Yellow text on white is nearly
-  invisible; use it as a block behind black text instead (see the "now" row
-  in the sample).
-- **Small text is always black.** Blue and green are legible at `lg`/`xl`
-  but turn to mud at `sm`/`xs`.
+The built-in set has three tiers, and the tier tells you what text goes on
+it:
+
+- **Dark grounds — white text.** `navy`, `maroon`, `plum`, `brown`,
+  `forest`, `grey-dark`.
+- **Light grounds — black text.** `cream`, `cream-pale`, `sage`,
+  `sage-pale`, `slate`, `slate-pale`, `pink`, `pink-pale`, `chartreuse`,
+  `grey-light`.
+- **Fills only, ~3–4:1 — no text at all.** `grey-mid`, `mustard`, `orange`,
+  `olive`.
+
+These are tested combinations with a note on what each turned out to be
+good for, **not a whitelist** — every ink pair and every density is legal
+inline, no palette entry required. Judge an untried one the way these were
+judged: contrast is the rule. 3:1 is the floor (every compiled size is WCAG
+large text) and `check()` warns below it. Two results worth holding onto
+because they cut against habit: yellow on white is 1.63:1 and genuinely
+unreadable, but yellow on **black** is 7.42:1 — better than red on white —
+and reads crisply down to `sm`. Coloured small text is fine when the ground
+is right, too: blue on white (7.34:1) is the strongest coloured text there
+is, ahead of red (5.48:1). The ground decides, not the ink. The real trap is
+dark-on-dark: red/blue, red/green, blue/green and black/blue all sit under
+1.7:1 and look reasonable in the editor before vanishing on the wall.
+
+Two things contrast alone doesn't cover:
+
+- **A mixed glyph** (as opposed to a fill) shifts toward its lighter ink —
+  too few pixels to average. `plum`, `brown`, `navy`, `maroon` and `forest`
+  pair two dark inks, so they hold their hue as text; treat the rest as
+  fills and blocks rather than type.
+- **A feature thinner than 2 px can't carry 25% or 75%** — it samples one
+  row of the 2×2 mask and lands at 0/50/100% by coordinate parity. Rules
+  and hairlines want 50%, or make them 2 px wide.
+
+The hexes are this panel's dither average at reading distance in one room's
+light, not a promise — e-paper is reflective and shifts with ambient light,
+angle, temperature and unit variance. Trust the wall over the number.
+
 - **Red is the one accent.** Spend it on a single thing per screen — the
   item that actually matters right now, not every deadline.
 - **No gradients.** Flat fills and real whitespace do the layout work;
   there's no anti-aliasing to hide behind.
-- **On a black background, use white text and yellow icons.** Everything
-  else reads poorly on black.
 
 ## Workflow
 

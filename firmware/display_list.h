@@ -35,6 +35,15 @@ namespace dl {
 
 static const char *const TAG = "display_list";
 
+// The document schema version this firmware implements. `v` is the agreed
+// escape hatch for a future breaking change to the compiled vocabulary --
+// see docs/plans/ink-mixing.md decision 10 -- so it has to actually be
+// checked somewhere or it can never serve that purpose. A mismatch only
+// warns and the document still draws: never refuse to draw, a blank or
+// stale wall is worse than a slightly-wrong interpretation (see
+// draw_display_list).
+static const int DOCUMENT_VERSION = 1;
+
 struct DisplayListAssets {
   // Type scale, keyed by the name the JSON uses: xl, lg, md, sm, xs.
   std::map<std::string, esphome::display::BaseFont *> fonts;
@@ -92,6 +101,67 @@ struct Ink {
   int mix;
 };
 
+/// The named palette (docs/SPEC.md "The named palette"; docs/plans/
+/// ink-mixing.md decision 10): twenty-one tested two-ink mixes, compiled in
+/// so `"c": "navy"` resolves with no palette entry in the document at all.
+/// Resolution order is base inks -> the document's `palette` -> this table
+/// (see resolve_ink/resolve_solid), so a document can still shadow any name
+/// here by declaring its own palette entry under the same key.
+///
+/// This table is diffed against `display_mcp.render`'s copy of it by a
+/// differential test that extracts it from the shipped header with a
+/// regex, so it has to stay machine-readable: one entry per line, in
+/// exactly this `{"name", "c", "c2", mix}` shape, never spread across
+/// lines. `c` and `c2` are always base ink names -- never another mix, by
+/// construction of this table -- so a lookup here is always a leaf.
+struct BuiltinMix { const char *name, *c, *c2; uint8_t mix; };
+static const BuiltinMix BUILTIN_MIXES[] = {
+    {"navy", "black", "blue", 50},
+    {"maroon", "black", "red", 50},
+    {"plum", "red", "blue", 50},
+    {"forest", "black", "green", 50},
+    {"teal", "blue", "green", 50},
+    {"brown", "red", "green", 50},
+    {"grey-dark", "black", "white", 25},
+    {"cream-pale", "yellow", "white", 75},
+    {"cream", "yellow", "white", 50},
+    {"sage-pale", "green", "white", 75},
+    {"slate-pale", "blue", "white", 75},
+    {"pink-pale", "red", "white", 75},
+    {"grey-light", "black", "white", 75},
+    {"sage", "green", "white", 50},
+    {"pink", "red", "white", 50},
+    {"slate", "blue", "white", 50},
+    {"chartreuse", "yellow", "green", 50},
+    {"grey-mid", "black", "white", 50},
+    {"mustard", "black", "yellow", 50},
+    {"orange", "yellow", "red", 50},
+    {"olive", "yellow", "blue", 50},
+};
+static const int N_BUILTIN_MIXES = sizeof(BUILTIN_MIXES) / sizeof(BUILTIN_MIXES[0]);
+
+/// Linear scan of the table above. Only reached once both a base ink name
+/// and a document palette lookup have already missed, so the common path
+/// (base inks, or a document that supplies its own palette) never pays for
+/// this -- and twenty-one short strcmps is cheap even when it is reached,
+/// against a ~20 s panel refresh.
+inline const BuiltinMix *find_builtin(const std::string &name) {
+  for (int i = 0; i < N_BUILTIN_MIXES; i++)
+    if (name == BUILTIN_MIXES[i].name)
+      return &BUILTIN_MIXES[i];
+  return nullptr;
+}
+
+/// Build the Ink for a built-in entry. `c`/`c2` are always base ink names
+/// (see BuiltinMix above), so this needs no alias chasing or palette --
+/// just the same six-name switch every other ink resolves through.
+inline Ink resolve_builtin(const BuiltinMix &m) {
+  esphome::Color a, b;
+  base_color(m.c, a);
+  base_color(m.c2, b);
+  return Ink{a, b, m.mix};
+}
+
 /// Resolve a colour name to a single Color, refusing to land on a palette
 /// mix -- used for a mix's own `c`/`c2`, which may not nest ("a mix of
 /// mixes is not representable in a 2x2 mask", decision 1). Same alias chain
@@ -103,18 +173,31 @@ inline esphome::Color resolve_solid(const char *name, JsonObject palette) {
   for (int hop = 0; hop < 8; hop++) {
     if (base_color(n, c))
       return c;
-    if (palette.isNull())
-      break;
-    auto v = palette[n.c_str()];
-    if (v.template is<JsonObject>()) {
-      ESP_LOGW(TAG, "'%s' is a mix, not a plain colour here; using its base ink", n.c_str());
-      n = v.template as<JsonObject>()["c"] | "black";
+    if (!palette.isNull()) {
+      auto v = palette[n.c_str()];
+      if (v.template is<JsonObject>()) {
+        ESP_LOGW(TAG, "'%s' is a mix, not a plain colour here; using its base ink", n.c_str());
+        n = v.template as<JsonObject>()["c"] | "black";
+        continue;
+      }
+      const char *next = v;
+      if (next != nullptr) {
+        n = next;
+        continue;
+      }
+    }
+    // Base inks and the document's palette both missed this name -- try the
+    // built-in table (decision 10's order: base inks -> palette ->
+    // built-ins) before giving up. A built-in name is still a mix, so the
+    // same "mixes don't nest" rule applies here as to a palette mix object
+    // above: degrade to its own base ink and keep chasing, don't blend it.
+    const BuiltinMix *bm = find_builtin(n);
+    if (bm != nullptr) {
+      ESP_LOGW(TAG, "'%s' is a built-in mix, not a plain colour here; using its base ink", n.c_str());
+      n = bm->c;
       continue;
     }
-    const char *next = v;
-    if (next == nullptr)
-      break;
-    n = next;
+    break;
   }
   ESP_LOGW(TAG, "unknown colour '%s', using black", n.c_str());
   return esphome::Color(0, 0, 0);
@@ -170,15 +253,26 @@ inline Ink resolve_ink(const char *name, JsonObject palette) {
   for (int hop = 0; hop < 8; hop++) {
     if (base_color(n, c))
       return Ink{c, c, 100};
-    if (palette.isNull())
-      break;
-    auto v = palette[n.c_str()];
-    if (v.template is<JsonObject>())
-      return resolve_mix_entry(n.c_str(), v.template as<JsonObject>(), palette);
-    const char *next = v;
-    if (next == nullptr)
-      break;
-    n = next;
+    if (!palette.isNull()) {
+      auto v = palette[n.c_str()];
+      if (v.template is<JsonObject>())
+        return resolve_mix_entry(n.c_str(), v.template as<JsonObject>(), palette);
+      const char *next = v;
+      if (next != nullptr) {
+        n = next;
+        continue;
+      }
+    }
+    // Base inks and the document's palette both missed this name -- fall
+    // through to the built-in named table (decision 10). A document that
+    // declares its own palette entry under the same key already returned
+    // above, so this is only reached for a name the document never
+    // mentions, which is exactly the "no palette entry needed" case the
+    // built-in table exists for.
+    const BuiltinMix *bm = find_builtin(n);
+    if (bm != nullptr)
+      return resolve_builtin(*bm);
+    break;
   }
   ESP_LOGW(TAG, "unknown colour '%s', using black", name ? name : "(null)");
   return Ink{esphome::Color(0, 0, 0), esphome::Color(0, 0, 0), 100};
@@ -466,6 +560,16 @@ inline bool draw_display_list(esphome::display::Display &it, const std::string &
   bool drew = false;
 
   esphome::json::parse_json(body, [&](JsonObject root) -> bool {
+    // `v` is the agreed escape hatch for a future breaking change to the
+    // compiled vocabulary (the named table above included) -- see
+    // docs/plans/ink-mixing.md decision 10. Missing or unrecognised only
+    // warns, naming both the value seen and the version this firmware
+    // implements; the document is drawn regardless, per the rule that
+    // warnings never block a publish.
+    const int doc_v = root["v"] | 0;
+    if (doc_v != DOCUMENT_VERSION)
+      ESP_LOGW(TAG, "document v=%d, firmware implements v=%d; drawing anyway", doc_v, DOCUMENT_VERSION);
+
     JsonObject palette = root["palette"];
     const char *bg_name = root["bg"] | "white";
     const Ink bg_ink = resolve_ink(bg_name, palette);
