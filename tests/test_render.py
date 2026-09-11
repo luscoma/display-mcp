@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 
 import pytest
+from PIL import Image, ImageDraw
 
 from display_mcp.render import (
     COLORS,
@@ -20,6 +21,7 @@ from display_mcp.render import (
     WIDTH,
     bezel_problems,
     check,
+    draw_icon,
     fit_line,
     fonts_available,
     render,
@@ -501,3 +503,87 @@ def test_tone_light_on_icon_halves_ink(font_dir):
 def test_hash_op_is_gone(font_dir):
     _, problems = render({"bg": "white", "ops": [{"op": "hash", "x": 1, "y": 1}]}, font_dir)
     assert any("unknown op 'hash'" in p for p in problems)
+
+
+# --------------------------------------------------------------------------
+# icon containment
+#
+# The firmware draws icons with image->draw(), which blits exactly
+# get_width() x get_height() with the off pixels skipped (chroma_key). A
+# stand-in that spills, or that paints its own background, previews
+# differently from what the panel draws.
+# --------------------------------------------------------------------------
+
+ICON_CASES = [(name, z) for name in sorted(ICONS) for z in sorted(ICONS[name])]
+ICON_IDS = [f"{n}/{z}" for n, z in ICON_CASES]
+
+PAD = 8  # ground left around the box, so spill on any side has room to show
+
+
+def _draw_one(name, size, ground, ink):
+    img = Image.new("RGB", (size + 2 * PAD, size + 2 * PAD), ground)
+    draw_icon(ImageDraw.Draw(img), name, PAD, PAD, size, ink)
+    return img
+
+
+def _spill(img, size, ground):
+    px = img.load()
+    return [
+        (x, y)
+        for y in range(img.height)
+        for x in range(img.width)
+        if not (PAD <= x < PAD + size and PAD <= y < PAD + size) and px[x, y] != ground
+    ]
+
+
+@pytest.mark.parametrize(("name", "z"), ICON_CASES, ids=ICON_IDS)
+def test_icon_paints_nothing_outside_its_box(name, z):
+    size = ICON_SIZES[z]
+    ground, ink = (255, 255, 255), (0, 0, 0)
+    img = _draw_one(name, size, ground, ink)
+    spill = _spill(img, size, ground)
+    assert not spill, f"{len(spill)} px outside {size}x{size}, e.g. {spill[:4]}"
+    px = img.load()
+    inside = sum(
+        1
+        for y in range(PAD, PAD + size)
+        for x in range(PAD, PAD + size)
+        if px[x, y] != ground
+    )
+    assert inside > 0, "drew nothing at all"
+
+
+def test_unknown_icon_placeholder_stays_inside_its_box():
+    size = ICON_SIZES["lg"]
+    ground = (255, 255, 255)
+    img = _draw_one("no-such-icon", size, ground, (0, 0, 0))
+    assert not _spill(img, size, ground)
+
+
+@pytest.mark.parametrize(("name", "z"), ICON_CASES, ids=ICON_IDS)
+def test_icon_paints_only_ink_pixels(name, z):
+    """chroma_key: an icon in ink X on a ground of X leaves no trace.
+
+    Holes — the moon's crescent, the marker's eye, the bang in the alert
+    triangle — must be left unpainted, not filled with white or black.
+    """
+    ink = (156, 46, 42)
+    img = _draw_one(name, ICON_SIZES[z], ink, ink)
+    px = img.load()
+    stray = [
+        (x, y, px[x, y])
+        for y in range(img.height)
+        for x in range(img.width)
+        if px[x, y] != ink
+    ]
+    assert not stray, f"{len(stray)} non-glyph px, e.g. {stray[:4]}"
+
+
+def test_weather_night_is_a_crescent_not_a_disc():
+    """The bite out of the moon is transparent, so the ground shows through."""
+    size = ICON_SIZES["lg"]
+    ground = (255, 255, 255)
+    px = _draw_one("weather-night", size, ground, (0, 0, 0)).load()
+    cx = cy = PAD + size // 2
+    assert px[cx - size // 8, cy] != ground, "left limb should be inked"
+    assert px[cx + size // 8, cy] == ground, "crescent's bite should be untouched"

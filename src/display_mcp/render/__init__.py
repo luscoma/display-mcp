@@ -208,16 +208,28 @@ def wrap_lines(font, s: str, max_w, max_lines: int):
     return [fit_line(font, line, max_w) for line in lines[:max_lines]]
 
 
-def draw_icon(d: ImageDraw.ImageDraw, name: str, x, y, size, fill):
-    """Procedural stand-ins. The panel draws real MDI bitmaps."""
-    s = size
-    cx, cy = x + s / 2, y + s / 2
+def _icon_mask(name: str, size: int) -> Image.Image:
+    """The glyph as a 1-bit `size x size` stencil: 1 wherever the ink goes.
+
+    Every shape is drawn into this tile instead of onto the page, so no
+    helper can paint outside the icon's box however PIL decides to cap a
+    thick line or stroke an ellipse. Holes — the moon's crescent, the
+    marker's eye, the bang in the alert triangle — are punched back to 0
+    rather than painted white: the panel's icons are BINARY images drawn
+    with `transparency: chroma_key`, so their off pixels are skipped, not
+    filled with anything.
+    """
+    s = int(size)
+    mask = Image.new("1", (s, s), 0)
+    d = ImageDraw.Draw(mask)
+    ON, OFF = 1, 0
+    cx = cy = s / 2
     lw = max(2, round(s * 0.09))
 
     def sun(scale=1.0, ox=0.0, oy=0.0):
         r = s * 0.19 * scale
         px, py = cx + ox * s, cy + oy * s
-        d.ellipse([px - r, py - r, px + r, py + r], fill=fill)
+        d.ellipse([px - r, py - r, px + r, py + r], fill=ON)
         for i in range(8):
             a = i * math.pi / 4
             d.line(
@@ -227,7 +239,7 @@ def draw_icon(d: ImageDraw.ImageDraw, name: str, x, y, size, fill):
                     px + math.cos(a) * r * 2.2,
                     py + math.sin(a) * r * 2.2,
                 ],
-                fill=fill,
+                fill=ON,
                 width=lw,
             )
 
@@ -235,10 +247,10 @@ def draw_icon(d: ImageDraw.ImageDraw, name: str, x, y, size, fill):
         w = s * 0.72 * scale
         h = s * 0.42 * scale
         px, py = cx + ox * s, cy + oy * s
-        d.ellipse([px - w / 2, py - h / 2, px - w / 2 + h, py + h / 2], fill=fill)
-        d.ellipse([px + w / 2 - h, py - h / 2, px + w / 2, py + h / 2], fill=fill)
-        d.rectangle([px - w / 2 + h / 2, py - h / 2, px + w / 2 - h / 2, py + h / 2], fill=fill)
-        d.ellipse([px - w * 0.18, py - h * 0.95, px + w * 0.34, py + h * 0.35], fill=fill)
+        d.ellipse([px - w / 2, py - h / 2, px - w / 2 + h, py + h / 2], fill=ON)
+        d.ellipse([px + w / 2 - h, py - h / 2, px + w / 2, py + h / 2], fill=ON)
+        d.rectangle([px - w / 2 + h / 2, py - h / 2, px + w / 2 - h / 2, py + h / 2], fill=ON)
+        d.ellipse([px - w * 0.18, py - h * 0.95, px + w * 0.34, py + h * 0.35], fill=ON)
 
     if name == "weather-sunny":
         sun(1.25)
@@ -251,7 +263,7 @@ def draw_icon(d: ImageDraw.ImageDraw, name: str, x, y, size, fill):
         cloud(oy=-0.10, scale=1.0)
         for i in range(3):
             rx = cx + (i - 1) * s * 0.22
-            d.line([rx, cy + s * 0.20, rx - s * 0.06, cy + s * 0.40], fill=fill, width=lw)
+            d.line([rx, cy + s * 0.20, rx - s * 0.06, cy + s * 0.40], fill=ON, width=lw)
     elif name == "weather-snowy":
         # Same cloud as the other weather glyphs, with a few flake dots
         # instead of rain's diagonal streaks.
@@ -260,58 +272,62 @@ def draw_icon(d: ImageDraw.ImageDraw, name: str, x, y, size, fill):
             fx = cx + (i - 1) * s * 0.24
             fy = cy + s * 0.30 + (i % 2) * s * 0.10
             rr = max(1.8, s * 0.05)
-            d.ellipse([fx - rr, fy - rr, fx + rr, fy + rr], fill=fill)
+            d.ellipse([fx - rr, fy - rr, fx + rr, fy + rr], fill=ON)
     elif name == "weather-night":
         r = s * 0.30
-        d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=fill)
-        box = [cx - r * 0.45, cy - r * 1.30, cx + r * 1.65, cy + r * 0.60]
-        d.ellipse(box, fill=None)
-        d.pieslice(box, 0, 360, fill=(0, 0, 0, 0))
+        d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=ON)
+        # The crescent is the bite an offset disc takes out of that one.
+        d.ellipse([cx - r * 0.45, cy - r * 1.30, cx + r * 1.65, cy + r * 0.60], fill=OFF)
     elif name == "map-marker":
         r = s * 0.26
-        top = y + s * 0.14
-        d.ellipse([cx - r, top, cx + r, top + 2 * r], fill=fill)
+        top = s * 0.14
+        d.ellipse([cx - r, top, cx + r, top + 2 * r], fill=ON)
         d.polygon(
             [
                 (cx - r * 0.78, top + r * 1.35),
                 (cx + r * 0.78, top + r * 1.35),
-                (cx, y + s * 0.92),
+                (cx, s * 0.92),
             ],
-            fill=fill,
+            fill=ON,
         )
         hr = r * 0.38
-        d.ellipse([cx - hr, top + r - hr, cx + hr, top + r + hr], fill=(255, 255, 255))
+        d.ellipse([cx - hr, top + r - hr, cx + hr, top + r + hr], fill=OFF)
     elif name == "check":
-        d.line([x + s * 0.20, y + s * 0.52, x + s * 0.42, y + s * 0.74], fill=fill, width=lw + 1)
-        d.line([x + s * 0.42, y + s * 0.74, x + s * 0.80, y + s * 0.28], fill=fill, width=lw + 1)
+        d.line([s * 0.20, s * 0.52, s * 0.42, s * 0.74], fill=ON, width=lw + 1)
+        d.line([s * 0.42, s * 0.74, s * 0.80, s * 0.28], fill=ON, width=lw + 1)
     elif name == "clock":
         r = s * 0.36
-        d.ellipse([cx - r, cy - r, cx + r, cy + r], outline=fill, width=lw)
-        d.line([cx, cy, cx, cy - r * 0.55], fill=fill, width=lw)
-        d.line([cx, cy, cx + r * 0.45, cy], fill=fill, width=lw)
+        d.ellipse([cx - r, cy - r, cx + r, cy + r], outline=ON, width=lw)
+        d.line([cx, cy, cx, cy - r * 0.55], fill=ON, width=lw)
+        d.line([cx, cy, cx + r * 0.45, cy], fill=ON, width=lw)
     elif name == "alert":
-        d.polygon(
-            [(cx, y + s * 0.14), (x + s * 0.92, y + s * 0.84), (x + s * 0.08, y + s * 0.84)],
-            fill=fill,
-        )
-        d.line([cx, y + s * 0.38, cx, y + s * 0.62], fill=(255, 255, 255), width=lw)
-        d.ellipse(
-            [cx - lw * 0.7, y + s * 0.68, cx + lw * 0.7, y + s * 0.68 + lw * 1.4],
-            fill=(255, 255, 255),
-        )
+        d.polygon([(cx, s * 0.14), (s * 0.92, s * 0.84), (s * 0.08, s * 0.84)], fill=ON)
+        d.line([cx, s * 0.38, cx, s * 0.62], fill=OFF, width=lw)
+        d.ellipse([cx - lw * 0.7, s * 0.68, cx + lw * 0.7, s * 0.68 + lw * 1.4], fill=OFF)
     elif name == "battery":
         bw, bh = s * 0.52, s * 0.76
+        d.rectangle([cx - bw / 2, cy - bh / 2, cx + bw / 2, cy + bh / 2], outline=ON, width=lw)
         d.rectangle(
-            [cx - bw / 2, cy - bh / 2, cx + bw / 2, cy + bh / 2], outline=fill, width=lw
+            [cx - bw * 0.18, cy - bh / 2 - lw * 1.6, cx + bw * 0.18, cy - bh / 2], fill=ON
         )
         d.rectangle(
-            [cx - bw * 0.18, cy - bh / 2 - lw * 1.6, cx + bw * 0.18, cy - bh / 2], fill=fill
-        )
-        d.rectangle(
-            [cx - bw / 2 + lw, cy - bh * 0.10, cx + bw / 2 - lw, cy + bh / 2 - lw], fill=fill
+            [cx - bw / 2 + lw, cy - bh * 0.10, cx + bw / 2 - lw, cy + bh / 2 - lw], fill=ON
         )
     else:
-        d.rectangle([x, y, x + s, y + s], outline=fill, width=lw)
+        d.rectangle([0, 0, s - 1, s - 1], outline=ON, width=lw)
+
+    return mask
+
+
+def draw_icon(d: ImageDraw.ImageDraw, name: str, x, y, size, fill):
+    """Procedural stand-ins. The panel draws real MDI bitmaps.
+
+    Stencilled into a `size x size` tile and blitted at (x, y), the way the
+    firmware's `image->draw()` blits exactly get_width() x get_height():
+    nothing lands outside [x, x+size) x [y, y+size), and the pixels the
+    glyph does not set are left as they were.
+    """
+    d.bitmap((x, y), _icon_mask(name, size), fill=fill)
 
 
 def render_hash(doc: dict[str, Any]) -> str:
