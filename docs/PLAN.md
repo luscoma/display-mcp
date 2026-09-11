@@ -39,7 +39,7 @@ display-mcp/
     cli.py                  `display-mcp-cli check|stamp|render <file>`
     prompts/compose.md      the compose_display prompt text
   tests/
-  samples/display.json      the sample document (hash 21a77f4c46f1534d)
+  samples/display.json      the sample document (hash 3cd62aa76e731d2d)
   docs/
     PLAN.md                 this file
     SPEC.md                 carried over from the earlier repo, unchanged
@@ -174,7 +174,7 @@ Access AUD tag and team domain.
 
 ## Tests
 
-- `render_hash(samples/display.json) == "21a77f4c46f1534d"`.
+- `render_hash(samples/display.json) == "3cd62aa76e731d2d"`.
 - wrap/fit cases from the spec (multibyte truncation, overlong single word,
   exact fit, empty) as pytest fixtures, so a later C++ diff has something to
   run against.

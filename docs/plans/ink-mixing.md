@@ -333,7 +333,41 @@ and it shifts with viewing angle, temperature, refresh history and unit
 variation. The numbers are a good starting point; the reader's own wall
 wins where the two disagree.
 
-## Decision 5: `tone` stays; it is not the same thing as a palette mix
+## Decision 5 (superseded): `tone` is removed
+
+**Reversed 2026-09-11.** `tone` is gone from the firmware, the renderer and
+the documentation. The argument below was that it differs from a palette mix
+because it resolves against `bgc` rather than naming a second ink outright.
+That is true and turns out not to matter, because the difference is only ever
+visible when it is a bug.
+
+Rendered both ways and diffed, on the page background and on a filled rect
+with `bgc` naming it correctly, `tone: "light"` is **pixel-identical** to
+drawing the same glyph in a 50% mix of its ink and `bgc`. The only case where
+the two differ is when `bgc` does *not* match what is underneath — and there
+`tone` speckles the background into the fill, which is the footgun the spec
+already warned about. A mix cannot do it, because a mix only ever touches
+glyph pixels while `tone` repaints the whole glyph box.
+
+So it was redundant when used correctly and uniquely dangerous when not. The
+adaptivity that justified it — `bgc` defaulting to the document `bg`, so
+toned text follows a changed background — is the same mechanism that causes
+the speckle, and is not worth a second concept in the vocabulary.
+
+Removed outright rather than deprecated: a parser that keeps a removed
+feature alive is just a slower removal, and a deprecation note in `SPEC.md`
+preserves exactly the confusion that prompted this.
+
+The document version stays at **1**. Removing an op attribute is a breaking
+change and the agreed mechanism for one is a version bump, but this panel has
+a single user and no third-party documents in circulation, so bumping it
+would fire a warning on every document that exists in order to report
+something already known. The unknown-version machinery stays in the firmware
+for a future break that earns it. (Decided 2026-09-11.)
+
+The original reasoning follows, for the record.
+
+### Original: `tone` stays; it is not the same thing as a palette mix
 
 They look equivalent and are not:
 
@@ -511,31 +545,49 @@ Two consequences to hold:
   into the differential test alongside `mix_on`: extract the table from the
   shipped header, compare every name, recipe and density against the Python.
 
-## Known limitation: the contrast check does not model `tone`
+## Decision 11: a dithered glyph is judged by its better ink, not its blend
 
-`check()`'s 3:1 contrast warning evaluates an op's **solid** ink against the
-sampled ground. It does not account for `tone: "light"`, which knocks half
-the glyph out to `bgc` after the fact. That is a deliberate choice, and the
-arithmetic behind it is worth recording because it looks like an oversight.
+`check()`'s 3:1 contrast warning first used the **blend** of a mixed ink —
+the colour the dither averages to. That is right for a fill and wrong for a
+glyph, and the measurements say so.
 
-Modelling a toned glyph as its blend — the natural fix — puts black
-`tone: light` text on white at **2.98:1**, a hair under the 3:1 floor. That
-is the shipping footer stamp, on the wall since 2026-09-09, judged legible at
-every size including `xs`. A warning that fires on the project's own sample
-is a worse defect than the one it would catch, and it would be telling the
-truth about the arithmetic while being wrong about the panel: a 50% glyph
-keeps its stroke structure, so the eye does not simply average it the way it
-averages a large fill.
+A dithered glyph is drawn in two colours, one on some pixels and one on the
+rest. It is discernible if **either** stands out from the ground, because the
+contrasting pixels alone draw the letterform. So:
 
-The cost of not modelling it is false positives in the other direction —
-toned text over a ground that matches its own ink reports as 1.0:1 when the
-knockout is precisely what makes it visible. Two of those appear in coupon 1
-and one in coupon 3.
+    contrast = max(ratio(ink.a, ground), ratio(ink.b, ground))
 
-Both models are wrong; this one is wrong in the quieter direction. Revisit
-only with a better model of dithered-glyph legibility than "average the
-pixels", which is really a question about the panel rather than about the
-code.
+Against every case the panel has actually answered:
+
+| case | blend | **max** | the wall |
+|---|---|---|---|
+| black/white 50 on white (the footer stamp) | 3.0 | **12.1** | legible |
+| black/white 50 on black | 4.1 | **12.1** | legible |
+| white/black 50 on black | 4.1 | **12.1** | legible |
+| red/white 50 on pink | 1.0 | **2.4** | poor |
+| yellow/white 50 on white | 1.3 | **1.6** | poor |
+| | 4/5 | **5/5** | |
+
+The blend model warns on the project's own shipping footer at 2.98:1 — true
+about the arithmetic, wrong about the panel, because a 50% glyph keeps its
+stroke structure and is not averaged the way a large fill is. Solid inks are
+unaffected: `max` over two identical colours is that colour.
+
+### And a second check, because contrast cannot see everything
+
+Contrast measures *marginal* legibility. It cannot detect *absolute*
+invisibility, and there is a real instance: a glyph drawn over a ground that
+is a mix of its own two inks lands in phase with it and becomes pixel-
+identical to its background. Every contrast model scores that a comfortable
+4.1:1 and passes it, correctly — contrast is not what is wrong.
+
+So rather than model mask phase, observe the result: snapshot the op's box,
+draw, compare, and warn if not one pixel changed. That is more reliable than
+reasoning about phase and it generalises to anything else that draws nothing
+— text in its ground's own colour, an icon that never appears.
+
+The two divide cleanly. **Contrast catches marginal, drew-nothing catches
+absolute.**
 
 ## Still open
 

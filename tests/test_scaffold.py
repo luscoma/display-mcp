@@ -31,7 +31,7 @@ BUNDLED = {
 
 
 def test_sample_hash(sample_doc):
-    assert render_hash(sample_doc) == "21a77f4c46f1534d"
+    assert render_hash(sample_doc) == "3cd62aa76e731d2d"
 
 
 @pytest.mark.parametrize("source", BUNDLED, ids=lambda p: p.name)

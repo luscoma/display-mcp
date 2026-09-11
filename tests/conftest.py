@@ -4,7 +4,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SAMPLE = ROOT / "samples" / "display.json"
-SAMPLE_HASH = "21a77f4c46f1534d"
+SAMPLE_HASH = "3cd62aa76e731d2d"
 
 
 @pytest.fixture

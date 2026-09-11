@@ -227,14 +227,17 @@ def _contrast_ratio(rgb_a: tuple, rgb_b: tuple) -> float:
     return (lighter + 0.05) / (darker + 0.05)
 
 
-def _effective_rgb(ink: Ink) -> tuple:
-    """What the eye integrates at reading distance: the mix average for a
-    mixed ink, the ink itself when solid (docs/plans/ink-mixing.md decision
-    3 — a glyph is too few pixels to read as anything but its blend)."""
-    if ink.solid:
-        return ink.a
-    t = ink.mix / 100
-    return tuple(round(a + (b - a) * t) for a, b in zip(ink.a, ink.b, strict=True))
+def _clip_to_canvas(box: tuple) -> tuple | None:
+    """Clip a box to the canvas as ints. None when there is no on-canvas
+    area at all — an op drawn off-screen, a zero-size box (an empty
+    string) — so callers skip rather than warn on those, per the
+    false-positive list in the ink-mixing plan."""
+    x0, y0, x1, y1 = box
+    x0, y0 = max(0, int(x0)), max(0, int(y0))
+    x1, y1 = min(WIDTH, int(x1)), min(HEIGHT, int(y1))
+    if x1 <= x0 or y1 <= y0:
+        return None
+    return x0, y0, x1, y1
 
 
 def _dominant_ground(img: Image.Image, box: tuple) -> tuple | None:
@@ -244,11 +247,10 @@ def _dominant_ground(img: Image.Image, box: tuple) -> tuple | None:
     a zero-size box (an empty string) — so callers skip rather than warn on
     those, per the false-positive list in the ink-mixing plan.
     """
-    x0, y0, x1, y1 = box
-    x0, y0 = max(0, int(x0)), max(0, int(y0))
-    x1, y1 = min(WIDTH, int(x1)), min(HEIGHT, int(y1))
-    if x1 <= x0 or y1 <= y0:
+    clipped = _clip_to_canvas(box)
+    if clipped is None:
         return None
+    x0, y0, x1, y1 = clipped
     px = img.load()
     counts = Counter(px[x, y] for y in range(y0, y1) for x in range(x0, x1))
     return counts.most_common(1)[0][0]
@@ -379,9 +381,17 @@ class Ctx:
         return self.table["black"]
 
     def font(self, name: str, where: str = ""):
+        """Resolve a font name, or None when it isn't compiled in.
+
+        Mirrors the firmware's `assets.fonts.find()` miss: `text` and `fmt`
+        both `skipped++; continue` there rather than draw with a substitute
+        face, so a caller returning None here must abandon the op the same
+        way rather than fall back to `md` — a fallback would draw in the
+        preview something the panel never puts on the wall.
+        """
         if name not in self.fonts:
             self.problems.append(f"{where}: unknown font {name!r}")
-            return self.fonts["md"]
+            return None
         return self.fonts[name]
 
 
@@ -555,14 +565,12 @@ def render_hash(doc: dict[str, Any]) -> str:
 
     Must stay byte-identical to `document_id()` in firmware/display_list.h;
     the panel compares its own reading of meta.hash against what we stamp.
-    samples/display.json hashes to 21a77f4c46f1534d.
+    samples/display.json hashes to 3cd62aa76e731d2d.
     """
     core = {k: doc.get(k) for k in ("bg", "palette", "ops")}
     canon = json.dumps(core, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canon.encode()).hexdigest()[:16]
 
-
-TONES = ("light",)
 
 FIELD_RE = re.compile(r"\{([a-z0-9_]+)\}")
 
@@ -648,46 +656,6 @@ def paint(img: Image.Image, ink: Ink, draw_fn) -> None:
                 ip[xx, yy] = ink.b if mix_on(xx, yy, ink.mix) else ink.a
 
 
-def _apply_tone_box(img, ctx, op, where, doc, x0, y0, x1, y1) -> None:
-    """The checkerboard itself, over one box. Shared by text, fmt and icon.
-
-    `tone: light` is a 50% mix with whatever `bgc` names (decision 5), so it
-    runs off the same mask as everything else. Because the phase is absolute,
-    a `bgc` that is itself a mix reproduces the fill underneath exactly
-    instead of speckling it.
-    """
-    tone = op.get("tone")
-    if tone is None:
-        return
-    if tone not in TONES:
-        ctx.problems.append(f"{where}: unknown tone {tone!r} (drawn at full ink)")
-        return
-    bg = ctx.ink(op.get("bgc", doc.get("bg", "white")), where)
-    px = img.load()
-    x0, y0 = max(0, int(x0)), max(0, int(y0))
-    x1, y1 = min(WIDTH, int(x1)), min(HEIGHT, int(y1))
-    for yy in range(y0, y1):
-        for xx in range(x0, x1):
-            if mix_on(xx, yy, 50):
-                px[xx, yy] = bg.b if mix_on(xx, yy, bg.mix) else bg.a
-
-
-def _apply_tone(img, d, ctx, op, where, drawn, font, anchor, doc) -> None:
-    """tone: "light" — clear every other pixel of the drawn text's box to the
-    background, which reads as a lighter tone on a six-ink panel that has no
-    grey. `bgc` names what is underneath; default is the document bg, so
-    text on a filled rect must set bgc or it gets speckled with bg.
-    Mirrors lighten_box() in display_list.h.
-    """
-    if op.get("tone") is None:
-        return
-    for x, y, text in drawn:
-        if not text:
-            continue
-        x0, y0, x1, y1 = d.textbbox((x, y), text, font=font, anchor=anchor)
-        _apply_tone_box(img, ctx, op, where, doc, x0, y0, x1 + 1, y1 + 1)
-
-
 def _check_contrast(img, ctx: Ctx, ink: Ink, fg_name: str, where: str, boxes: list[tuple]) -> None:
     """Warning: 3:1 contrast floor for text/fmt/icon against what is actually
     behind it (docs/plans/ink-mixing.md decision 4).
@@ -698,16 +666,22 @@ def _check_contrast(img, ctx: Ctx, ink: Ink, fg_name: str, where: str, boxes: li
     size. `boxes` lets a wrapped text block check each line's own ground;
     the worst line is what gets reported. A no-op unless `ctx.warn_ink`
     (set by check(), not by a bare render() call -- see Ctx.__init__).
+
+    A dithered glyph is legible if *either* of its two inks stands out from
+    the ground — the contrasting pixels alone draw the letterform — so the
+    effective contrast of a mixed ink is `max(contrast(a, ground),
+    contrast(b, ground))`, not the contrast of their blend. Solid ink is
+    unaffected: `max` over two identical colours is just that colour's
+    contrast.
     """
     if not ctx.warn_ink:
         return
-    fg = _effective_rgb(ink)
     worst = None
     for box in boxes:
         bg = _dominant_ground(img, box)
         if bg is None:
             continue
-        ratio = _contrast_ratio(fg, bg)
+        ratio = max(_contrast_ratio(ink.a, bg), _contrast_ratio(ink.b, bg))
         if worst is None or ratio < worst[0]:
             worst = (ratio, bg)
     if worst is None:
@@ -717,6 +691,51 @@ def _check_contrast(img, ctx: Ctx, ink: Ink, fg_name: str, where: str, boxes: li
         ctx.problems.append(
             f"{where}: {fg_name} on {ctx.name_of(bg)} is {ratio:.1f}:1 "
             "(below 3:1) — will be hard to read"
+        )
+
+
+def _union_box(boxes: list[tuple]) -> tuple:
+    """The smallest box containing every box in `boxes` — a wrapped text
+    block's lines land at different y (and, centred/right-aligned, x)
+    positions, so the op's own bounding box for the drew-nothing check is
+    their union, not any single line's."""
+    xs0, ys0, xs1, ys1 = zip(*boxes, strict=True)
+    return min(xs0), min(ys0), max(xs1), max(ys1)
+
+
+def _snapshot(img: Image.Image, box: tuple) -> tuple | None:
+    """Crop `img` to `box` (clipped to the canvas) for a before/after diff.
+
+    Returns `(clipped_box, pixel bytes)`, or None when the box has no
+    on-canvas area — same skip rule as `_dominant_ground`, and for the same
+    reason: an off-screen op drawing nothing is not interesting.
+    """
+    clipped = _clip_to_canvas(box)
+    if clipped is None:
+        return None
+    return clipped, img.crop(clipped).tobytes()
+
+
+def _check_drew_nothing(img: Image.Image, ctx: Ctx, before: tuple | None, where: str) -> None:
+    """Warning: the op changed not one pixel inside its own box
+    (docs/plans/ink-mixing.md, "What the glass showed" / the contrast-check
+    limitation this replaces).
+
+    Contrast measures marginal legibility and cannot see absolute
+    invisibility: text drawn over a ground that is a mix of the same two
+    inks becomes pixel-identical to its background and vanishes completely,
+    while still scoring a comfortable contrast ratio. Rather than model
+    that, observe it — snapshot the op's box before drawing, draw, and diff.
+    A no-op unless `ctx.warn_ink`, or when the op had no on-canvas area to
+    begin with (`before` is None).
+    """
+    if not ctx.warn_ink or before is None:
+        return
+    clipped, before_bytes = before
+    if img.crop(clipped).tobytes() == before_bytes:
+        ctx.problems.append(
+            f"{where}: drew nothing visible — every pixel in its box already "
+            "matched what is behind it"
         )
 
 
@@ -863,6 +882,10 @@ def render(
         elif kind == "text":
             c_name = op.get("c", "black")
             f = ctx.font(op.get("f", "md"), where)
+            if f is None:
+                # Matches the firmware's `skipped++; continue`: abandon the
+                # op cleanly, nothing drawn, no tone/contrast checks run.
+                continue
             anchor = ANCHOR.get(op.get("a", "left"), "la")
             max_w = op.get("w")
             if op.get("wrap"):
@@ -876,20 +899,20 @@ def render(
                 ]
                 _check_contrast(img, ctx, ink, c_name, where, boxes)
                 _check_mix_as_text(ctx, ink, c_name, where)
-                drawn = []
+                snap = _snapshot(img, _union_box(boxes)) if boxes else None
                 for _x, ly, line in positions:
                     paint(img, ink, lambda dr, col, ly=ly, line=line: dr.text(
                         (op["x"], ly), line, font=f, fill=col, anchor=anchor))
-                    drawn.append((op["x"], ly, line))
-                _apply_tone(img, d, ctx, op, where, drawn, f, anchor, doc)
+                _check_drew_nothing(img, ctx, snap, where)
             else:
                 text = fit_line(f, op["s"], max_w)
                 box = d.textbbox((op["x"], op["y"]), text, font=f, anchor=anchor)
                 _check_contrast(img, ctx, ink, c_name, where, [box])
                 _check_mix_as_text(ctx, ink, c_name, where)
+                snap = _snapshot(img, box)
                 paint(img, ink, lambda dr, col: dr.text(
                     (op["x"], op["y"]), text, font=f, fill=col, anchor=anchor))
-                _apply_tone(img, d, ctx, op, where, [(op["x"], op["y"], text)], f, anchor, doc)
+                _check_drew_nothing(img, ctx, snap, where)
 
         elif kind == "fmt":
             # text without wrap whose `s` is a template of system fields. The
@@ -897,6 +920,12 @@ def render(
             # how the line is drawn, never what it says.
             c_name = op.get("c", "black")
             f = ctx.font(op.get("f", "xs"), where)
+            if f is None:
+                # Same abandonment as `text`, and it matches the firmware:
+                # the header checks the font before it ever calls
+                # expand_fmt(), so an unknown-field warning never fires
+                # either when the font is also bad.
+                continue
             anchor = ANCHOR.get(op.get("a", "left"), "la")
             text, unknown = expand_fields(op.get("s", ""), fields)
             for field_name in unknown:
@@ -904,9 +933,10 @@ def render(
             box = d.textbbox((op["x"], op["y"]), text, font=f, anchor=anchor)
             _check_contrast(img, ctx, ink, c_name, where, [box])
             _check_mix_as_text(ctx, ink, c_name, where)
+            snap = _snapshot(img, box)
             paint(img, ink, lambda dr, col: dr.text(
                 (op["x"], op["y"]), text, font=f, fill=col, anchor=anchor))
-            _apply_tone(img, d, ctx, op, where, [(op["x"], op["y"], text)], f, anchor, doc)
+            _check_drew_nothing(img, ctx, snap, where)
 
         elif kind == "icon":
             c_name = op.get("c", "black")
@@ -917,10 +947,12 @@ def render(
                 ctx.problems.append(f"{where}: {key!r} is not compiled in")
             size = ICON_SIZES.get(z, 36)
             x, y = op["x"], op["y"]
-            _check_contrast(img, ctx, ink, c_name, where, [(x, y, x + size, y + size)])
+            box = (x, y, x + size, y + size)
+            _check_contrast(img, ctx, ink, c_name, where, [box])
             _check_mix_as_text(ctx, ink, c_name, where)
+            snap = _snapshot(img, box)
             paint(img, ink, lambda dr, col: draw_icon(dr, name, op["x"], op["y"], size, col))
-            _apply_tone_box(img, ctx, op, where, doc, x, y, x + size, y + size)
+            _check_drew_nothing(img, ctx, snap, where)
 
         else:
             ctx.problems.append(f"{where}: unknown op {kind!r}")

@@ -246,7 +246,7 @@ async def test_sample_resource(mcp):
     async with Client(mcp) as c:
         result = await c.read_resource("display://sample")
     doc = json.loads(result.contents[0].text)
-    assert doc["meta"]["hash"] == "21a77f4c46f1534d"
+    assert doc["meta"]["hash"] == "3cd62aa76e731d2d"
 
 
 async def test_current_resource(mcp, store, sample_doc):

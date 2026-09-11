@@ -112,14 +112,19 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
     def set_display(document: dict[str, Any], name: str = "default") -> dict[str, Any]:
         """Publish a display-list document so the panel serves it on its next fetch.
 
-        The panel wakes roughly once an hour; a fetch that gets a 304
-        (unchanged) costs it about 0.15 mAh, a full refresh about 1.5 mAh —
-        ten times as much. Use `validate` and `preview` to check a draft
-        first rather than publishing repeatedly to see what changed.
+        `name` must match `^[a-z0-9-]{1,32}$` — lowercase letters, digits
+        and hyphens, 1 to 32 characters. The panel wakes roughly once an
+        hour; a fetch that gets a 304 (unchanged) costs it about 0.15 mAh,
+        a full refresh about 1.5 mAh — ten times as much. Use `validate`
+        and `preview` to check a draft first rather than publishing
+        repeatedly to see what changed.
         `meta.hash` is stamped here from `bg` + `palette` + `ops`; do not set
-        it yourself, it is overwritten. Renderer warnings (unknown icon,
-        off-canvas op, clipped text, ...) never block the publish, but seeing
-        one back is almost always a mistake worth fixing rather than shipping.
+        it yourself, it is overwritten (`meta.generated` is stamped too;
+        anything else under `meta` is yours and is ignored). Renderer
+        warnings (unknown op/font/icon/colour, off-canvas placement, low
+        contrast, ...) never block the publish, but seeing one back is
+        almost always a mistake worth fixing rather than shipping — see
+        `validate` for the full list of what is and isn't checked.
         """
         try:
             validate_name(name)
@@ -150,9 +155,15 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
         a draft to check it before spending a `set_display` call on it — a
         wasted publish either changes nothing (same hash) or forces the panel
         into a ~1.5 mAh redraw versus the ~0.15 mAh a 304 would have cost, so
-        drafting here first is the cheap step. This is the same renderer
-        `validate` and the panel's own hashing agree with, so what you see
-        here is what ends up on the wall (ink-approximated, not pure RGB).
+        drafting here first is the cheap step. This is the same renderer that
+        backs `validate` and that the panel's own hashing has to agree with,
+        so what you see here is what ends up on the wall (ink-approximated,
+        not pure RGB) — with one exception: a mix is a 1 px checkerboard of
+        two inks, and most image viewers scale this PNG down to fit, which
+        aliases each mix to a solid patch of just one of its two inks. Judge
+        layout and weight from this image; judge colour from the named
+        palette table and from `validate`'s contrast warnings, not from the
+        pixels you see here.
         """
         try:
             validate_name(name)
@@ -176,12 +187,27 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
         """Check a draft document. Nothing is rendered to an image, published, or stored.
 
         Returns the hash `set_display` would stamp, the op count, the
-        minified byte size, and any renderer warnings (unknown icon/colour/op
-        name, off-canvas placement, clipped or truncated text, text or icons
-        inside the 24 px band the printed bezel covers). Warnings
-        never block a publish, but they are almost always worth fixing —
-        run this (or `preview`) before every `set_display` rather than
-        finding out from the panel a fetch later.
+        minified byte size, and every renderer warning. What is actually
+        checked: unknown op/font/icon/colour name; a malformed mix entry
+        (missing `c`/`c2`, `c2` equal to `c`, a `mix` outside 25/50/75);
+        an op placed off-canvas (`x`/`y`, and `x+w`/`y+h` for a rect,
+        `x2`/`y2` for a line); a `text`, `fmt` or `icon` op anchored inside
+        the 24 px band the printed bezel covers; `text`/`fmt`/`icon`
+        contrast below 3:1 against what is actually behind it; a chromatic
+        (non-black/white) mix used as text, which shifts toward its
+        lighter ink; a 25%/75% mix on a feature thinner than 2 px, which
+        can't carry the density; an unknown `{field}` in a `fmt` template;
+        an op that changed not one pixel of its own box; a `meta.hash`
+        present but stale.
+
+        What it does **not** check: it does not warn when text is
+        ellipsised or word-wrap runs past the canvas edge — set `w` on
+        anything of unknown length, and look at `preview` to see the
+        actual line breaks.
+
+        Warnings never block a publish, but they are almost always worth
+        fixing — run this (or `preview`) before every `set_display` rather
+        than finding out from the panel a fetch later.
         """
         problems = render.check(document, settings.font_dir)
         op_count = len(document.get("ops") or [])
@@ -325,7 +351,7 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
         "display://sample",
         name="sample",
         title="Sample display document",
-        description="A known-good display-list document (hash 21a77f4c46f1534d) to start from.",
+        description="A known-good display-list document (hash 3cd62aa76e731d2d) to start from.",
         mime_type="application/json",
     )
     def sample_resource() -> str:

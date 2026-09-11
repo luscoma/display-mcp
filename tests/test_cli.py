@@ -9,7 +9,7 @@ from pathlib import Path
 from display_mcp import cli
 from display_mcp.render import render_hash
 
-SAMPLE_HASH = "21a77f4c46f1534d"
+SAMPLE_HASH = "3cd62aa76e731d2d"
 SAMPLE = Path(__file__).resolve().parents[1] / "samples" / "display.json"
 
 

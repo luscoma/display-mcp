@@ -73,14 +73,13 @@ inline bool base_color(const std::string &n, esphome::Color &out) {
 
 // Decision 2 (docs/plans/ink-mixing.md): one 2x2 Bayer mask, three
 // densities, absolute (panel-space, never op-relative) phase, so adjacent
-// fills and knockouts tile seamlessly and a tone knockout can reproduce a
-// mixed ground exactly.
+// fills reproduce a mixed ground exactly regardless of which op painted it.
 //
 //     B = | 0 2 |     mix_on(x, y, pct) picks the second ink (c2/b)
 //         | 3 1 |     wherever B[y&1][x&1] < pct / 25 (integer division).
 //
-// Bit-identity check at pct=50 (threshold 2), which every existing document
-// depends on via lighten_rect's `((px + py) & 1) == 0`:
+// Bit-identity check at pct=50 (threshold 2), confirming this matches the
+// plain `((px + py) & 1) == 0` checkerboard:
 //
 //     (x&1,y&1)=(0,0): B=0, 0<2 -> true   | px+py even -> true
 //     (x&1,y&1)=(1,0): B=2, 2<2 -> false  | px+py odd  -> false
@@ -493,43 +492,6 @@ inline std::string expand_fmt(const std::string &tpl, const std::string &doc_has
   return s;
 }
 
-/// `tone: "light"`: the panel has six inks and no grey, so a lighter text
-/// weight is a 1 px checkerboard of the local background knocked out of the
-/// glyphs -- always at a fixed 50% (decision 5: tone is sugar for "mix with
-/// bgc at 50%", not a separate density). `bg` may itself be a mix, in which
-/// case each knocked-out pixel takes whichever of bg's two inks its own
-/// mix_on() would have painted there; absolute phase means that reproduces
-/// the mixed ground exactly instead of speckling. get_text_bounds() does the
-/// TextAlign and x_offset math the way print() does, so the box lands on the
-/// ink for any alignment.
-inline void lighten_rect(esphome::display::Display &it, int x1, int y1, int w, int h, Ink bg) {
-  const int x0 = std::max(x1, 0), y0 = std::max(y1, 0);
-  const int xe = std::min(x1 + w, it.get_width()), ye = std::min(y1 + h, it.get_height());
-  for (int py = y0; py < ye; py++)
-    for (int px = x0; px < xe; px++)
-      if (mix_on(px, py, 50))
-        it.draw_pixel_at(px, py, mix_on(px, py, bg.mix) ? bg.b : bg.a);
-}
-
-inline void lighten_box(esphome::display::Display &it, int x, int y, const char *text,
-                        esphome::display::BaseFont *font, esphome::display::TextAlign align,
-                        Ink bg) {
-  int x1 = 0, y1 = 0, w = 0, h = 0;
-  it.get_text_bounds(x, y, text, font, align, &x1, &y1, &w, &h);
-  lighten_rect(it, x1, y1, w, h, bg);
-}
-
-/// `tone` attribute -> should the glyphs be lightened. Unknown values warn
-/// and draw at full ink; never a skipped op.
-inline bool tone_is_light(const char *tone) {
-  if (tone == nullptr || *tone == '\0')
-    return false;
-  if (!strcmp(tone, "light"))
-    return true;
-  ESP_LOGW(TAG, "unknown tone '%s', drawing full ink", tone);
-  return false;
-}
-
 /// Identity of what a document *draws*, or empty if it carries none.
 ///
 /// meta.hash covers bg + palette + ops only, so a fresh `meta.generated`
@@ -638,9 +600,6 @@ inline bool draw_display_list(esphome::display::Display &it, const std::string &
         const int max_w = o["w"] | 0;
         const auto align = align_of(o["a"] | "left");
 
-        const bool light = tone_is_light(o["tone"] | "");
-        const Ink local_bg = resolve_ink(o["bgc"] | bg_name, palette);
-
         if ((o["wrap"] | false) && max_w > 0) {
           const int lines = o["lines"] | 2;
           const int lh = o["lh"] | static_cast<int>(font_height(font) * 1.24f);
@@ -648,14 +607,10 @@ inline bool draw_display_list(esphome::display::Display &it, const std::string &
           for (size_t i = 0; i < out.size(); i++) {
             const int ly = y + static_cast<int>(i) * lh;
             mix.print(x, ly, font, c.a, align, out[i].c_str());
-            if (light)
-              lighten_box(it, x, ly, out[i].c_str(), font, align, local_bg);
           }
         } else {
           const std::string line = fit_line(font, s, max_w);
           mix.print(x, y, font, c.a, align, line.c_str());
-          if (light)
-            lighten_box(it, x, y, line.c_str(), font, align, local_bg);
         }
 
       } else if (!strcmp(kind, "fmt")) {
@@ -674,8 +629,6 @@ inline bool draw_display_list(esphome::display::Display &it, const std::string &
         const int x = o["x"] | 0, y = o["y"] | 0;
         const auto align = align_of(o["a"] | "left");
         mix.print(x, y, font, c.a, align, s.c_str());
-        if (tone_is_light(o["tone"] | ""))
-          lighten_box(it, x, y, s.c_str(), font, align, resolve_ink(o["bgc"] | bg_name, palette));
 
       } else if (!strcmp(kind, "icon")) {
         std::string key = std::string(o["n"] | "") + "/" + std::string(o["z"] | "sm");
@@ -691,8 +644,6 @@ inline bool draw_display_list(esphome::display::Display &it, const std::string &
         mix.add_ink(off.a, off);
         const int ix = o["x"] | 0, iy = o["y"] | 0;
         iit->second->draw(ix, iy, &mix, c.a, off.a);
-        if (tone_is_light(o["tone"] | ""))
-          lighten_rect(it, ix, iy, iit->second->get_width(), iit->second->get_height(), off);
 
       } else {
         ESP_LOGW(TAG, "unknown op '%s'", kind);

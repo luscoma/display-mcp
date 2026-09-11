@@ -28,7 +28,7 @@ a redraw does. It runs for months on a battery.
 </p>
 
 That is [`samples/display.json`](samples/display.json) — 56 ops, 4.4 KB, hash
-`21a77f4c46f1534d` — rendered by the same code the preview tool uses. Every op
+`3cd62aa76e731d2d` — rendered by the same code the preview tool uses. Every op
 in the vocabulary appears in it, so it is the best thing to copy and edit.
 The vocabulary itself is in [`docs/SPEC.md`](docs/SPEC.md).
 

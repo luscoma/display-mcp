@@ -33,7 +33,7 @@ from display_mcp.render import (
     wrap_lines,
 )
 
-SAMPLE_HASH = "21a77f4c46f1534d"
+SAMPLE_HASH = "3cd62aa76e731d2d"
 
 
 # --------------------------------------------------------------------------
@@ -339,6 +339,33 @@ def test_unknown_font_is_one_problem_no_raise(font_dir):
     assert "unknown font" in problems[0]
 
 
+def test_unknown_font_skips_the_op_nothing_drawn(font_dir):
+    """Finding 1: the firmware's `text`/`fmt` branches `skipped++; continue`
+    on an unknown font — nothing is drawn on the panel. The renderer used to
+    warn and still draw with the `md` fallback, which meant the preview
+    showed text the wall never would. It must now abandon the op cleanly:
+    the warning stays, but the canvas is untouched."""
+    doc = {
+        "bg": "white",
+        "ops": [{"op": "text", "x": 100, "y": 100, "s": "hi", "f": "huge"}],
+    }
+    img, problems = render(doc, font_dir)
+    assert len(problems) == 1
+    assert "unknown font" in problems[0]
+    # Nothing drawn: pixel-identical to the same doc with no ops at all.
+    blank_img, _ = render({"bg": "white", "ops": []}, font_dir)
+    assert img.tobytes() == blank_img.tobytes()
+
+    fmt_doc = {
+        "bg": "white",
+        "ops": [{"op": "fmt", "x": 100, "y": 100, "s": "{time}", "f": "huge"}],
+    }
+    fmt_img, fmt_problems = render(fmt_doc, font_dir)
+    assert len(fmt_problems) == 1
+    assert "unknown font" in fmt_problems[0]
+    assert fmt_img.tobytes() == blank_img.tobytes()
+
+
 # --------------------------------------------------------------------------
 # check(): the bezel margin
 # --------------------------------------------------------------------------
@@ -449,59 +476,36 @@ def test_fmt_op_substitutes_fields(font_dir):
     assert render_hash(doc) != render_hash(moved)
 
 
-def test_fmt_unknown_field_and_font_are_warnings(font_dir):
-    doc = {"bg": "white", "ops": [{"op": "fmt", "x": 20, "y": 1550, "s": "{nope}", "f": "huge"}]}
+def test_fmt_unknown_field_is_a_warning(font_dir):
+    doc = {"bg": "white", "ops": [{"op": "fmt", "x": 20, "y": 1550, "s": "{nope}"}]}
     _, problems = render(doc, font_dir)
     assert any("unknown field {nope}" in p for p in problems)
-    assert any("unknown font" in p for p in problems)
 
 
-def test_tone_light_halves_ink_and_warns_on_unknown(font_dir):
+def test_fmt_unknown_font_skips_before_field_expansion(font_dir):
+    """Finding 1: firmware checks the font first and never reaches
+    expand_fmt() when it's bad, so a `fmt` op with both an unknown font and
+    an unknown field warns about the font only — the same op-abandonment as
+    `text`. (Previously this warned about both, because the renderer kept
+    going past the bad font with the `md` fallback; that was the bug.)"""
+    doc = {"bg": "white", "ops": [{"op": "fmt", "x": 20, "y": 1550, "s": "{nope}", "f": "huge"}]}
+    _, problems = render(doc, font_dir)
+    assert problems == ["ops[0] fmt: unknown font 'huge'"]
+
+
+def test_stale_tone_key_is_ignored_and_draws_full_ink(font_dir):
+    """`tone` no longer exists. An op that still carries the key draws at
+    full ink, silently — no warning, and no different from the same op
+    without the key."""
     full = {"bg": "white", "ops": [{"op": "text", "x": 20, "y": 1550, "s": "Rendered", "f": "xs"}]}
-    light_op = {"op": "text", "x": 20, "y": 1550, "s": "Rendered", "f": "xs", "tone": "light"}
-    light = {"bg": "white", "ops": [light_op]}
+    with_stale_tone = {
+        "bg": "white",
+        "ops": [{"op": "text", "x": 20, "y": 1550, "s": "Rendered", "f": "xs", "tone": "light"}],
+    }
     img_full, p1 = render(full, font_dir)
-    img_light, p2 = render(light, font_dir)
+    img_stale, p2 = render(with_stale_tone, font_dir)
     assert p1 == [] and p2 == []
-    a = _footer_ink(img_full, 20, 1545, 200, 1585)
-    b = _footer_ink(img_light, 20, 1545, 200, 1585)
-    assert 0.35 * a < b < 0.65 * a
-    bad = {"bg": "white", "ops": [{"op": "fmt", "x": 20, "y": 1550, "s": "{hash}", "tone": "bold"}]}
-    _, problems = render(bad, font_dir)
-    assert any("unknown tone" in p for p in problems)
-
-
-def test_tone_light_uses_bgc_on_a_filled_rect(font_dir):
-    def doc(tone):
-        op = {"op": "text", "x": 20, "y": 1550, "s": "Rendered", "f": "xs", "c": "white"}
-        op["bgc"] = "black"
-        if tone:
-            op["tone"] = tone
-        rect = {"op": "rect", "x": 0, "y": 1500, "w": 400, "h": 100, "c": "black"}
-        return {"bg": "white", "ops": [rect, op]}
-
-    full, p1 = render(doc(None), font_dir)
-    light, p2 = render(doc("light"), font_dir)
-    assert p1 == [] and p2 == []
-    black = full.getpixel((5, 1505))
-    white = full.getpixel((5, 5))
-    box = [(x, y) for x in range(20, 200) for y in range(1545, 1585)]
-    # Where the full render was black, the light one must still be black:
-    # the overlay used bgc, never the document bg. (Pillow antialiases
-    # glyph edges, so intermediate shades exist here; the panel has none.)
-    assert all(light.getpixel(pt) == black for pt in box if full.getpixel(pt) == black)
-    n_full = sum(1 for pt in box if full.getpixel(pt) == white)
-    n_light = sum(1 for pt in box if light.getpixel(pt) == white)
-    assert 0.35 * n_full < n_light < 0.65 * n_full
-
-
-def test_tone_light_on_icon_halves_ink(font_dir):
-    full = {"bg": "white", "ops": [{"op": "icon", "x": 100, "y": 100, "n": "battery", "z": "sm"}]}
-    light = {"bg": "white", "ops": [{"op": "icon", "x": 100, "y": 100, "n": "battery", "z": "sm",
-                                     "tone": "light"}]}
-    a = _footer_ink(render(full, font_dir)[0], 100, 100, 136, 136)
-    b = _footer_ink(render(light, font_dir)[0], 100, 100, 136, 136)
-    assert 0.35 * a < b < 0.65 * a
+    assert img_full.tobytes() == img_stale.tobytes()
 
 
 def test_hash_op_is_gone(font_dir):
@@ -797,28 +801,6 @@ def test_every_builtin_renders_clean(name, font_dir):
     assert check(doc, font_dir) == []
 
 
-def test_tone_over_a_mixed_ground_reproduces_it(font_dir):
-    """bgc naming a mix is why mixes live in the palette: the knockout is in
-    phase with the fill, so it repaints exactly what was underneath."""
-    doc = {
-        "v": 1,
-        "meta": {},
-        "bg": "white",
-        "palette": {"grey": {"c": "black", "c2": "white"}},
-        "ops": [
-            {"op": "rect", "x": 0, "y": 0, "w": 300, "h": 100, "c": "grey"},
-            {
-                "op": "text", "x": 20, "y": 20, "s": "Hi", "f": "lg",
-                "c": "black", "tone": "light", "bgc": "grey",
-            },
-        ],
-    }
-    img, problems = render(doc, font_dir)
-    assert problems == []
-    # ground away from the glyphs is still an unbroken 50/50 grey
-    assert _share(img, INK["white"], 200, 20, 290, 90) == 0.5
-
-
 # --------------------------------------------------------------------------
 # ink-mixing warnings — docs/plans/ink-mixing.md "still open" / decisions 2-4
 #
@@ -941,18 +923,67 @@ def test_contrast_applies_to_icon(font_dir):
     assert _contrast_msgs(check(doc, font_dir))
 
 
-def test_contrast_uses_the_mix_average_as_the_effective_colour(font_dir):
-    """A mixed ink is judged by its blend, not by either component alone —
-    grey (black+white, 50%) on white lands right at the 3:1 floor, unlike
-    either black-on-white (12:1) or white-on-white (1:1) alone."""
+def test_contrast_does_not_warn_a_grey_mix_on_white(font_dir):
+    """Fixed by the max model. black+white 50% on white is the shipping
+    footer stamp, legible on the wall — the old blend model scored it
+    2.97:1 and warned on the project's own sample
+    (docs/plans/ink-mixing.md, "Known limitation"). A dithered glyph is
+    legible if either of its two inks stands out from the ground, so the
+    effective ratio is max(contrast(black, white), contrast(white, white))
+    = 12.06:1, comfortably above the floor."""
     doc = {
         "v": 1, "meta": {}, "bg": "white",
         "palette": {"grey": {"c": "black", "c2": "white"}},
         "ops": [{"op": "text", "x": 20, "y": 20, "s": "Hi", "f": "lg", "c": "grey"}],
     }
+    assert _contrast_msgs(check(doc, font_dir)) == []
+
+
+def test_contrast_still_warns_a_mix_whose_both_inks_are_poor(font_dir):
+    """The fix targets the check, it does not turn it off: yellow+white 50%
+    on white has neither component clearing the floor (yellow-on-white and
+    white-on-white are both poor alone), so max is poor too."""
+    doc = {
+        "v": 1, "meta": {}, "bg": "white",
+        "palette": {"pale": {"c": "yellow", "c2": "white"}},
+        "ops": [{"op": "text", "x": 20, "y": 20, "s": "Hi", "f": "lg", "c": "pale"}],
+    }
     msgs = _contrast_msgs(check(doc, font_dir))
     assert len(msgs) == 1
-    assert "grey on white" in msgs[0]
+    assert "pale on white" in msgs[0]
+    assert "1.6:1" in msgs[0]
+
+
+def test_contrast_max_model_reproduces_the_five_measured_cases():
+    """The five rows of docs/plans/ink-mixing.md's contrast table — the
+    cases with physical evidence behind them, and what makes `max` the
+    defensible fix rather than a preference. `ground` for a mixed ground
+    ("pink") is the average of its two inks, the way a large fill reads at
+    a distance (decision 3); the ink under test is always the raw (a, b)
+    pair, `max` never a blend."""
+    from display_mcp.render import _contrast_ratio
+
+    def avg(a, b):
+        return tuple(round((x + y) / 2) for x, y in zip(a, b, strict=True))
+
+    black, white = INK["black"], INK["white"]
+    yellow, red = INK["yellow"], INK["red"]
+    pink_ground = avg(red, white)
+
+    # (ink a, ink b, ground, blend ratio, max ratio, legible on the wall)
+    cases = [
+        (black, white, white, 3.0, 12.1, True),  # black/white 50 on white (footer stamp)
+        (black, white, black, 4.1, 12.1, True),  # black/white 50 on black
+        (white, black, black, 4.1, 12.1, True),  # white/black 50 on black
+        (red, white, pink_ground, 1.0, 2.4, False),  # red/white 50 on pink
+        (yellow, white, white, 1.3, 1.6, False),  # yellow/white 50 on white
+    ]
+    for a, b, ground, want_blend, want_max, legible in cases:
+        blend_ratio = _contrast_ratio(avg(a, b), ground)
+        max_ratio = max(_contrast_ratio(a, ground), _contrast_ratio(b, ground))
+        assert round(blend_ratio, 1) == pytest.approx(want_blend, abs=0.05)
+        assert round(max_ratio, 1) == pytest.approx(want_max, abs=0.05)
+        assert (max_ratio >= 3.0) == legible
 
 
 # ---- warning 2: a chromatic mix used as text shifts toward its lighter ink
@@ -1083,6 +1114,110 @@ def test_thin_mix_does_not_apply_to_solid_colours(font_dir):
         "ops": [{"op": "line", "x": 10, "y": 10, "x2": 500, "y2": 10, "c": "black", "t": 1}],
     }
     assert _thin_mix_msgs(check(doc, font_dir)) == []
+
+
+# ---- warning 4: the op drew nothing ---------------------------------------
+#
+# Contrast measures marginal legibility, not absolute invisibility. A mixed
+# ink drawn over a ground that is the same two-ink mix, in phase, is
+# pixel-identical to what was already there — and scores a comfortable
+# contrast ratio while being completely invisible. Rather than model that,
+# check() observes it directly: snapshot the op's box, draw, diff.
+
+
+def _drew_nothing_msgs(problems):
+    return [p for p in problems if "drew nothing" in p]
+
+
+def test_drew_nothing_warns_text_on_a_matching_mixed_ground(font_dir):
+    """The case docs/plans/ink-mixing.md's "What the glass showed" records:
+    a mix used as both the fill and the text colour is in phase with
+    itself, so the glyph vanishes into its own ground."""
+    doc = {
+        "v": 1, "meta": {}, "bg": "white",
+        "palette": {"grey": {"c": "black", "c2": "white"}},
+        "ops": [
+            {"op": "rect", "x": 0, "y": 0, "w": 300, "h": 100, "c": "grey"},
+            {"op": "text", "x": 20, "y": 20, "s": "Hi", "f": "lg", "c": "grey"},
+        ],
+    }
+    msgs = _drew_nothing_msgs(check(doc, font_dir))
+    assert len(msgs) == 1
+    assert "ops[1] text" in msgs[0]
+
+
+def test_drew_nothing_warns_icon_in_its_grounds_own_colour(font_dir):
+    """Generalises past dithering: solid text/icon in exactly its ground's
+    colour is just as invisible, and the same observed check catches it."""
+    doc = {
+        "v": 1, "meta": {}, "bg": "white", "palette": {},
+        "ops": [
+            {"op": "rect", "x": 0, "y": 0, "w": 200, "h": 200, "c": "black"},
+            {"op": "icon", "x": 20, "y": 20, "n": "check", "z": "sm", "c": "black"},
+        ],
+    }
+    msgs = _drew_nothing_msgs(check(doc, font_dir))
+    assert len(msgs) == 1
+    assert "ops[1] icon" in msgs[0]
+
+
+def test_drew_nothing_warns_fmt_on_a_matching_mixed_ground(font_dir):
+    doc = {
+        "v": 1, "meta": {}, "bg": "white",
+        "palette": {"grey": {"c": "black", "c2": "white"}},
+        "ops": [
+            {"op": "rect", "x": 0, "y": 0, "w": 300, "h": 100, "c": "grey"},
+            {"op": "fmt", "x": 20, "y": 20, "s": "{time24}", "f": "lg", "c": "grey"},
+        ],
+    }
+    msgs = _drew_nothing_msgs(check(doc, font_dir))
+    assert len(msgs) == 1
+    assert "ops[1] fmt" in msgs[0]
+
+
+def test_drew_nothing_stays_quiet_for_normal_text(font_dir):
+    """The common case — text against a ground it actually contrasts with —
+    must never trip this."""
+    doc = {
+        "v": 1, "meta": {}, "bg": "white", "palette": {},
+        "ops": [{"op": "text", "x": 20, "y": 20, "s": "Hi", "f": "lg", "c": "black"}],
+    }
+    assert _drew_nothing_msgs(check(doc, font_dir)) == []
+
+
+def test_drew_nothing_stays_quiet_when_the_mix_does_not_match_the_ground(font_dir):
+    """Same mixed ink, different ground: the glyph is visibly dithered
+    against the plain white page, so nothing should fire."""
+    doc = {
+        "v": 1, "meta": {}, "bg": "white",
+        "palette": {"grey": {"c": "black", "c2": "white"}},
+        "ops": [{"op": "text", "x": 20, "y": 20, "s": "Hi", "f": "lg", "c": "grey"}],
+    }
+    assert _drew_nothing_msgs(check(doc, font_dir)) == []
+
+
+def test_drew_nothing_stays_quiet_off_canvas(font_dir):
+    """An off-screen op drawing nothing is not interesting — same skip rule
+    as the contrast check's zero-area box."""
+    doc = {
+        "v": 1, "meta": {}, "bg": "white", "palette": {},
+        "ops": [{"op": "text", "x": 5000, "y": 20, "s": "Hi", "f": "lg", "c": "black"}],
+    }
+    assert _drew_nothing_msgs(check(doc, font_dir)) == []
+
+
+def test_drew_nothing_is_check_only(font_dir):
+    """Like the other ink warnings, a bare render() call never sees it."""
+    doc = {
+        "v": 1, "meta": {}, "bg": "white", "palette": {},
+        "ops": [
+            {"op": "rect", "x": 0, "y": 0, "w": 200, "h": 200, "c": "black"},
+            {"op": "icon", "x": 20, "y": 20, "n": "check", "z": "sm", "c": "black"},
+        ],
+    }
+    _, problems = render(doc, font_dir)
+    assert problems == []
+    assert _drew_nothing_msgs(check(doc, font_dir))
 
 
 def test_all_ink_mixing_warnings_clean_on_the_sample(sample_doc, font_dir):

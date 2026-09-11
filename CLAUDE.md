@@ -13,7 +13,7 @@ semantics.
 - `src/display_mcp/store.py`, `panel.py`, `main.py`, `config.py` core
 - `src/display_mcp/mcp_server.py`, `auth.py`, `prompts/` the MCP side
 - `deploy/` systemd unit, setup.sh, fonts fetch
-- `samples/display.json` known-good document, hash `21a77f4c46f1534d`
+- `samples/display.json` known-good document, hash `3cd62aa76e731d2d`
 - `firmware/` ESPHome project, the source of truth for the panel:
   `epaper-schedule.yaml`, `display_list.h`, `fetch_and_watch.py`.
   `secrets.yaml` and `.esphome/` live there too and are gitignored.

@@ -2,7 +2,7 @@
 
 A few KB of JSON describing what to draw. The firmware is a renderer, not a
 design: layout lives entirely in the document, so changing the dashboard is a
-file edit. Only the **vocabulary** — five font sizes, eleven icons, seven ops —
+file edit. Only the **vocabulary** — five font sizes, eleven icons, six ops —
 is compiled in, and changing that is a rebuild.
 
 Two implementations must agree:
@@ -20,7 +20,7 @@ The wrap and truncate logic is differentially tested between them (see
 ```json
 {
   "v": 1,
-  "meta": { "generated": "...", "ttl": 3600, "hash": "21a77f4c46f1534d" },
+  "meta": { "generated": "...", "hash": "3cd62aa76e731d2d" },
   "bg": "white",
   "palette": { "accent": "red", "work": "blue" },
   "ops": [ ... ]
@@ -28,7 +28,11 @@ The wrap and truncate logic is differentially tested between them (see
 ```
 
 `meta.hash` is the identity of what the document *draws* — see *Change
-detection*. `set_display` stamps it; for a file on disk, `display-mcp-cli stamp`.
+detection*. `set_display` stamps it, and also stamps `meta.generated`; for
+a file on disk, `display-mcp-cli stamp` writes `meta.hash` only. Anything
+else under `meta` is the author's and is read by nothing here — in
+particular there is no `ttl`: the wake interval is the panel's own hourly
+schedule, not something the document controls.
 
 `palette` maps your names onto the six inks, so restyling is one line rather
 than a find-and-replace through every op. Aliases resolve up to 8 hops; a
@@ -59,7 +63,7 @@ not `c`.
 | `circle` | `x y r` · `fill` (default true) · `t` | `x,y` is the centre |
 | `text` | `x y s f` · `a` · `w` · `wrap` · `lines` · `lh` | see below |
 | `icon` | `x y n z` · `bgc` | `n` = MDI name, `z` = size class, `x,y` = top-left |
-| `fmt` | `x y s` · `f` · `a` · `bgc` · `tone` | `text` without wrap whose `s` is a template of system fields: `{hash}` `{hash16}` `{time}` `{time24}`; `f` defaults to `xs` |
+| `fmt` | `x y s` · `f` · `a` | `text` without wrap whose `s` is a template of system fields: `{hash}` `{hash16}` `{time}` `{time24}` `{battery}` `{battv}`; `f` defaults to `xs` |
 
 ### text
 
@@ -81,8 +85,10 @@ Icons are Material Design Icons compiled in **by name**, so there are no
 codepoints to get wrong. Only the eleven in the YAML exist; anything else logs
 and skips.
 
-`bgc` is the colour drawn behind the glyph, defaulting to the document `bg`.
-It only matters if you drop `transparency: chroma_key` from an image entry.
+`bgc` is accepted but ignored: every compiled icon is transparent
+(`transparency: chroma_key`), so the pixels its glyph doesn't set are left
+alone and whatever is already on the canvas shows through, regardless of
+what `bgc` says.
 
 ### fmt
 
@@ -101,13 +107,15 @@ the line is drawn, never what it says:
 
 An unknown `{field}` is left literal and is a warning from `validate`, so
 new fields can be added to the firmware and the preview without breaking
-older documents. The footer the sample uses:
+older documents. The footer the sample uses, with the stamp — hash, time,
+battery — drawn in `grey-mid` since it is secondary to the date line
+beside it:
 
 ```json
 {"op": "text", "x": 48,   "y": 1552, "s": "Updated: 6:31 AM", "f": "xs"}
-{"op": "fmt",  "x": 1045, "y": 1552, "s": "{hash}@{time24}", "f": "xs", "a": "right", "tone": "light"}
-{"op": "icon", "x": 1058, "y": 1545, "n": "battery", "z": "sm", "tone": "light"}
-{"op": "fmt",  "x": 1100, "y": 1552, "s": "{battery}", "f": "xs", "tone": "light"}
+{"op": "fmt",  "x": 1045, "y": 1552, "s": "{hash}@{time24}", "f": "xs", "a": "right", "c": "grey-mid"}
+{"op": "icon", "x": 1058, "y": 1545, "n": "battery", "z": "sm", "c": "grey-mid"}
+{"op": "fmt",  "x": 1100, "y": 1552, "s": "{battery}", "f": "xs", "c": "grey-mid"}
 ```
 
 The percentage is left-aligned after the icon so its varying width never
@@ -116,15 +124,6 @@ reason.
 
 A 304 never draws, so the stamp stays at the last real draw; that is the
 point of it.
-
-### tone
-
-`text`, `fmt` and `icon` accept `tone: "light"`: the glyphs are drawn, then every
-other pixel of their box is cleared to the background, which reads as a
-lighter tone on a panel that has no grey. `bgc` names what is underneath
-(default: the document `bg`); **text on a filled rect must set `bgc`** or
-the overlay speckles the document background into the fill. An unknown
-`tone` is a warning and draws at full ink.
 
 ## Vocabulary
 
@@ -175,9 +174,6 @@ Two things bite if you don't know them:
   depending on its coordinate parity, at 75% at 50% or 100%. Only 50% is
   parity-independent. Rules and hairlines want 50%, or 2 px.
 
-`tone: "light"` is the same mask at 50% against `bgc`, which is why it has
-never hit either problem.
-
 ## The named palette
 
 These are **built in** — write `"c": "navy"` and it works, no palette entry
@@ -190,7 +186,19 @@ Names resolve **base inks → document `palette` → built-in mixes**, so the si
 ink names are immutable, and a document that declares its own `navy` shadows
 the one below.
 
-**Dark grounds — white text reads on these**
+The tiers below answer one question: **what text reads well when this colour
+fills the space behind it** — a rect, a bar, a panel. That is not the same
+question as whether the colour works *as* the text itself, and the two can
+disagree sharply. `grey-mid` is a bad colour to put text on — black text over
+it is only 4.1:1 — while `grey-mid` used *as* the text, sitting on the white
+page, is 12.1:1, which is exactly what the footer stamp is. A mixed glyph is
+legible when **either** of its two inks stands out from whatever is behind
+it, because those pixels alone draw the letterform; a fill has to carry a
+whole colour against whatever sits on top of it. So read a tier as advice
+about backgrounds, and judge a mix used as text by its own contrast against
+whatever it's sitting on.
+
+**Dark backgrounds — put white text on these**
 
 | name | recipe | hex | | name | recipe | hex |
 |---|---|---|---|---|---|---|
@@ -199,7 +207,7 @@ the one below.
 | `plum` | red+blue 50 | `#653655` | | `grey-dark` | black+white 25 | `#50504E` |
 | `forest` | black+green 50 | `#344631` | | | | |
 
-**Light grounds — black text reads on these**
+**Light backgrounds — put black text on these**
 
 | name | recipe | hex | | name | recipe | hex |
 |---|---|---|---|---|---|---|
@@ -209,7 +217,7 @@ the one below.
 | `slate-pale` | blue+white 75 | `#B2B6C2` | | `slate` | blue+white 50 | `#868EAC` |
 | `pink-pale` | red+white 75 | `#CEB2AC` | | `chartreuse` | yellow+green 50 | `#8B8C37` |
 
-**Fills only — 3–4:1, so blocks and bars, never text**
+**Mid-tone — don't put text on these; black and white both fall short (3–4:1)**
 
 | name | recipe | hex | | name | recipe | hex |
 |---|---|---|---|---|---|---|
@@ -246,8 +254,9 @@ The real trap is **dark on dark**: red/blue 1.34, red/green 1.23, blue/green
 document and vanish on the wall.
 
 Yellow is not a fill-only ink — it is 1.63:1 on white and 7.42:1 on black,
-better than red on white. The problem was always the ground. Likewise small
-coloured text reads fine; blue on white (7.34) beats red (5.48).
+better than red on white. The problem was always the background, not the
+ink. Likewise small coloured text reads fine; blue on white (7.34) beats red
+(5.48).
 
 Two things contrast doesn't cover:
 
@@ -261,8 +270,12 @@ Two things contrast doesn't cover:
 
 ## Workflow
 
-The CLI and the server share one renderer (`display_mcp.render`), so what
-`check` reports and what `preview` returns cannot drift apart.
+This is the local CLI loop — for working on a file on disk without the MCP
+tools attached (firmware development, offline checks, CI). An MCP caller
+does not have a shell and instead runs `validate` → `preview` →
+`set_display` → `status`, exactly as `compose_display` describes; the CLI
+and the server share one renderer (`display_mcp.render`), so what `check`
+reports and what `preview` returns cannot drift apart between the two paths.
 
 ```bash
 display-mcp-cli stamp display.json                   # write meta.hash
@@ -291,7 +304,7 @@ canon = json.dumps(core, sort_keys=True, separators=(",", ":"))
 h     = hashlib.sha256(canon.encode()).hexdigest()[:16]
 ```
 
-Serve that same value as the ETag (`ETag: "21a77f4c46f1534d"`) and put it in
+Serve that same value as the ETag (`ETag: "3cd62aa76e731d2d"`) and put it in
 `meta.hash`. Then:
 
 - The device sends `If-None-Match` with the id it is currently showing. A
@@ -330,11 +343,14 @@ different interfaces.
 | `127.0.0.1:8001/mcp` | Claude writes here, via a Cloudflare Tunnel |
 | `<host-lan-ip>:8080/display.json` | the panel reads here, LAN only |
 
-Three tools: `set_display(document)` validates, stamps `meta.hash` and writes
-atomically; `preview()` returns a PNG rendered by the same `display_mcp.render`, so
-what Claude sees and what `--check` reports cannot disagree; `status()` says
-whether the panel has collected it — `panel_last_status: 304` is the healthy
-answer.
+Six tools: `set_display(document)` validates, stamps `meta.hash` and
+`meta.generated`, and writes atomically; `validate(document)` runs the same
+checks without rendering or publishing; `preview(document)` returns a PNG
+rendered by the same `display_mcp.render`, so what Claude sees and what
+`validate` reports cannot disagree; `get_display(name)` returns what's
+currently published; `status(name)` says whether the panel has collected it
+— `recent_fetch_status: 304` is the healthy answer; `clear_display(name)`
+unpublishes.
 
 The panel endpoint is read-only and unauthenticated on purpose. The worst case
 is a neighbour reading your schedule; everything that *writes* is behind

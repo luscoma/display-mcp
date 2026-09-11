@@ -23,18 +23,21 @@ its text starts 40 px in; copy that.
 ```json
 {
   "v": 1,
-  "meta": { "generated": "...", "ttl": 3600, "title": "..." },
+  "meta": {},
   "bg": "white",
   "palette": { "accent": "red", "work": "blue" },
   "ops": [ ... ]
 }
 ```
 
-`meta.hash` is stamped by `set_display` from `bg` + `palette` + `ops` —
-never set it yourself. `palette` maps your own names onto the six inks (or
-onto a two-ink mix) so a restyle is a one-line edit instead of a
-find-and-replace through every op; `ops` reference a base ink, a built-in
-mix name, or your own palette entry directly in `c`.
+`set_display` stamps `meta.hash` (from `bg` + `palette` + `ops`) and
+`meta.generated` — never set either yourself, both are overwritten.
+Anything else you put under `meta` is yours and is ignored by everything
+that reads the document: there is no `ttl` — the panel wakes on its own
+hourly schedule, not one the document sets. `palette` maps your own names
+onto the six inks (or onto a two-ink mix) so a restyle is a one-line edit
+instead of a find-and-replace through every op; `ops` reference a base ink,
+a built-in mix name, or your own palette entry directly in `c`.
 
 ## Ops
 
@@ -48,7 +51,7 @@ a warning and the op still draws. Check `warnings` either way.
 - **`line`** — `x y x2 y2`, `t` (thickness; works on horizontal/vertical
   lines, diagonals only thicken vertically).
 - **`circle`** — `x y r` is the centre and radius, `fill` (default true), `t`.
-- **`text`** — `x y s f`, `a` (`left`/`center`/`right`, default `left`,
+- **`text`** — `x y s f` (`f` defaults to `md`), `a` (`left`/`center`/`right`, default `left`,
   changes what `x` means — not `y`), `w` (max width), `wrap` (bool), `lines`
   (default 2 when wrapping), `lh` (line height override). `x,y` is the top
   of the glyph box, not its baseline.
@@ -57,32 +60,42 @@ a warning and the op still draws. Check `warnings` either way.
     if it overruns, every line clipped to `w`.
   - Always set `w` on anything sourced from a calendar or a list — you
     don't control how long those strings get.
-- **`icon`** — `x y n z`, `bgc` (background behind the glyph, default `bg`).
-  `x,y` is the top-left of the icon's box. `n` is the MDI name below; only
-  these eleven exist, anything else is skipped.
-- **`fmt`** — `x y s`, `f` (default `xs`), `a`, `c`, `bgc`, `tone`. Like
+- **`icon`** — `x y n z`. `x,y` is the top-left of the icon's box. `n` is the
+  MDI name below; only these eleven exist, anything else is skipped.
+- **`fmt`** — `x y s`, `f` (default `xs`), `a`, `c`. Like
   `text` but `s` is a template of system fields: `{hash}` (last 5 of the
   document's hash), `{hash16}`, `{time}` (`1:43 PM`, when the panel drew
   it), `{time24}`, `{battery}` (`82%`), `{battv}`. Never type the hash, the
-  time or the battery yourself. The standard footer: `"Updated: 6:31 AM"`
-  as text at the left, and at the right in `xs` with `tone: "light"`: a
-  right-aligned `fmt` `"{hash}@{time24}"` at x 1045, the `battery` icon at
-  x 1058, and a left-aligned `fmt` `"{battery}"` at x 1100.
-- **`tone: "light"`** on `text`, `fmt` or `icon` draws at half ink
-  (checkerboard) for secondary information. Set `bgc` when it sits on a
-  filled rect.
+  time or the battery yourself. The standard footer:
+
+  ```json
+  {"op": "text", "x": 48,   "y": 1552, "s": "Updated: 6:31 AM", "f": "xs"}
+  {"op": "fmt",  "x": 1045, "y": 1552, "s": "{hash}@{time24}", "f": "xs", "a": "right", "c": "grey-mid"}
+  {"op": "icon", "x": 1058, "y": 1545, "n": "battery", "z": "sm", "c": "grey-mid"}
+  {"op": "fmt",  "x": 1100, "y": 1552, "s": "{battery}", "f": "xs", "c": "grey-mid"}
+  ```
 
 ## Type scale
 
 Fixed, compiled into the firmware — five sizes, nothing between them:
 
-| name | px | weight |
-|---|---|---|
-| `xl` | 84 | bold |
-| `lg` | 48 | bold |
-| `md` | 36 | regular |
-| `sm` | 28 | regular |
-| `xs` | 22 | bold |
+| name | px | weight | default line height |
+|---|---|---|---|
+| `xl` | 84 | bold | 104 |
+| `lg` | 48 | bold | 60 |
+| `md` | 36 | regular | 45 |
+| `sm` | 28 | regular | 35 |
+| `xs` | 22 | bold | 27 |
+
+Default line height is `round(size * 1.24)` — what wrapped `text` uses when
+you don't set `lh`, so it's also what to stack lines by hand: a `lg` title
+over an `md` subtitle sits the second line's `y` at `title_y + 60`.
+
+Aligning a **36 px (`sm`) icon** beside a line of text at the same `y`: the
+icon's own box doesn't share the text's metrics, so centre it by eye against
+each size with this offset from the text op's `y` — `lg` → `y+6`, `md` →
+`y`, `sm` → `y−4`, `xs` → `y−7`. (Not meaningful for `xl`, which dwarfs a 36
+px icon.)
 
 ## Icons
 
@@ -94,37 +107,49 @@ Eleven names, each valid at exactly one size class:
 
 ## Colours
 
+**The one hard rule: 3:1 contrast is the floor.** Every compiled font size
+is WCAG large text (even `xs`, 22 px bold), so anything under 3:1 against
+what's actually behind it is a `validate`/`check()` warning, not a matter
+of taste.
+
 Six inks — `black white yellow red blue green` — plus any two-ink mix.
 Write `"c": "navy"` with no palette entry needed: twenty-one tested
-pairings are built in (full table with hexes: `docs/SPEC.md` → "The named
-palette"). Redefine one, or invent your own, as a `palette` entry:
+pairings are built in (full table with hexes: the `display://spec`
+resource → "The named palette"). Redefine one, or invent your own, as a
+`palette` entry:
 `{"c": ..., "c2": ..., "mix": 25|50|75}`. `mix` is the share of **`c2`**, so
 with `c: black, c2: white` a *higher* number is *lighter* — backwards from
 print habit, and it has fooled everyone who's met it.
 
-The built-in set has three tiers, and the tier tells you what text goes on
-it:
+The built-in set has three tiers, for what text goes **on top of** each one
+as a fill:
 
-- **Dark grounds — white text.** `navy`, `maroon`, `plum`, `brown`,
-  `forest`, `grey-dark`.
-- **Light grounds — black text.** `cream`, `cream-pale`, `sage`,
+- **Dark backgrounds — white text.** `navy`, `teal`, `maroon`, `plum`,
+  `brown`, `forest`, `grey-dark`.
+- **Light backgrounds — black text.** `cream`, `cream-pale`, `sage`,
   `sage-pale`, `slate`, `slate-pale`, `pink`, `pink-pale`, `chartreuse`,
   `grey-light`.
-- **Fills only, ~3–4:1 — no text at all.** `grey-mid`, `mustard`, `orange`,
-  `olive`.
+- **Mid-tone, ~3–4:1 — don't put text on these.** `grey-mid`, `mustard`,
+  `orange`, `olive`.
+
+These tiers are about a colour used **behind** something. Using one *as* text
+is a different question with a different answer: a mixed glyph reads when
+either of its inks stands out from what is behind it, so `grey-mid` is a bad
+background (4.1:1 under black text) and good text on the white page (12.1:1)
+— which is what the footer stamp is.
 
 These are tested combinations with a note on what each turned out to be
 good for, **not a whitelist** — every ink pair and every density is legal
 inline, no palette entry required. Judge an untried one the way these were
-judged: contrast is the rule. 3:1 is the floor (every compiled size is WCAG
-large text) and `check()` warns below it. Two results worth holding onto
+judged, against the 3:1 floor above. Two results worth holding onto
 because they cut against habit: yellow on white is 1.63:1 and genuinely
 unreadable, but yellow on **black** is 7.42:1 — better than red on white —
-and reads crisply down to `sm`. Coloured small text is fine when the ground
-is right, too: blue on white (7.34:1) is the strongest coloured text there
-is, ahead of red (5.48:1). The ground decides, not the ink. The real trap is
-dark-on-dark: red/blue, red/green, blue/green and black/blue all sit under
-1.7:1 and look reasonable in the editor before vanishing on the wall.
+and reads crisply down to `sm`. Coloured small text is fine when the
+background is right, too: blue on white (7.34:1) is the strongest coloured
+text there is, ahead of red (5.48:1). The background decides, not the ink.
+The real trap is dark-on-dark: red/blue, red/green, blue/green and
+black/blue all sit under 1.7:1 and look reasonable in the editor before
+vanishing on the wall.
 
 Two things contrast alone doesn't cover:
 
@@ -156,13 +181,13 @@ angle, temperature and unit variance. Trust the wall over the number.
    changes nothing (same hash) or costs the panel a ~1.5 mAh full redraw
    next time it wakes versus ~0.15 mAh for a 304 it would otherwise get.
 3. `set_display(document, name=...)` — publish once you're satisfied.
-4. `status(name=...)` — confirm the panel actually picked it up.
-   `recent_fetch_status: 304` means it already had this exact document
-   (only possible right after a publish that didn't change anything);
-   `200` means it just redrew. Give it until the next hourly wake before
-   worrying that `first_fetch_at` hasn't moved.
+4. `status(name=...)` — confirm the panel actually picked it up. A `200`
+   means the panel fetched and redrew; every wake after that is a `304`,
+   which is what you want — it is the steady state, not a one-time
+   coincidence right after publishing. If `first_fetch_at` is older than
+   `published_at`, the panel just hasn't woken since; give it an hour
+   before worrying.
 
-Start from `display://sample` (`display://sample` resource, or
-`get_display`/`display://current/{name}` if a display is already published)
-and edit rather than building from a blank ops list — it already follows
-the ink rules above and is close in size to what you'll draw.
+If `name` already has something published, start from that instead of the
+sample — `get_display` or `display://current/{name}` — and edit it rather
+than building from a blank ops list.
