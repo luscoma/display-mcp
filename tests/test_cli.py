@@ -6,6 +6,9 @@ import copy
 import json
 from pathlib import Path
 
+import pytest
+from PIL import Image
+
 from display_mcp import cli
 from display_mcp.render import render_hash
 
@@ -151,21 +154,36 @@ def test_render_writes_png(font_dir, tmp_path, capsys, sample_doc):
     assert code == 0
     assert out_png.exists()
     assert "wrote" in out
-    from PIL import Image
-
     img = Image.open(out_png)
     assert img.size == (1200, 1600)
 
 
-def test_render_ideal_flag(font_dir, tmp_path, capsys, sample_doc):
+def test_cli_render_is_dithered(font_dir, tmp_path, capsys, sample_doc):
+    """The CLI keeps the panel's own output — it is the surface for checking
+    against firmware, and the flat mode exists only for the MCP preview,
+    whose reader cannot zoom. A stray `dithered_colors=False` in cmd_render
+    would break the parity story with nothing else to catch it.
+    """
+    doc = copy.deepcopy(sample_doc)
+    doc["ops"] = [{"op": "rect", "x": 0, "y": 0, "w": 200, "h": 200, "c": "grey-mid"}]
     f = tmp_path / "doc.json"
-    f.write_text(json.dumps(sample_doc))
+    f.write_text(json.dumps(doc))
     out_png = tmp_path / "out.png"
-    code, out, err = _run(
-        ["render", str(f), "-o", str(out_png), "--ideal", "--font-dir", str(font_dir)], capsys
-    )
-    assert code == 0
-    assert out_png.exists()
+    _run(["render", str(f), "-o", str(out_png), "--font-dir", str(font_dir)], capsys)
+    px = Image.open(out_png).convert("RGB")
+    assert set(px.crop((20, 20, 180, 180)).get_flattened_data()) == {(32, 32, 32), (222, 222, 216)}
+
+
+def test_render_has_no_ideal_flag(tmp_path):
+    """`--ideal` (pure framebuffer RGB) is gone; INK is the only colour table.
+
+    It was CLI-only, so no MCP caller could ever reach it, and the six-ink
+    invariant it nominally guarded is covered in INK mode by
+    test_render_emits_only_the_six_inks. Pinned so the flag is not revived
+    without revisiting that; docs/PLAN.md records the reversal.
+    """
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(["render", str(tmp_path / "doc.json"), "--ideal"])
 
 
 def test_render_missing_fonts_exits_2(tmp_path, capsys, sample_doc):

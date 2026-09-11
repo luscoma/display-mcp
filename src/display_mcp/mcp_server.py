@@ -23,7 +23,7 @@ from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ResourceNotFoundError, ToolError
 from mcp.server.mcpserver.utilities.types import Image
 from mcp.server.transport_security import TransportSecuritySettings
-from mcp.types import ToolAnnotations
+from mcp.types import ContentBlock, TextContent, ToolAnnotations
 from starlette.types import ASGIApp
 
 from . import render
@@ -37,6 +37,26 @@ _PACKAGE_DIR = Path(__file__).parent
 _PROMPTS_DIR = _PACKAGE_DIR / "prompts"
 # parents[2]: src/display_mcp/mcp_server.py -> src/display_mcp -> src -> repo root.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# What `preview` says about the image it just produced. The old caveat lived in
+# the tool docstring, which is read once at tool-discovery time and a long way
+# from the picture; a reader looking at an aliased swatch believed the pixels
+# instead. These ride in the response, next to the image, and each says only
+# what is true of the image actually returned.
+_FLAT_NOTE = (
+    "Colours are ink-approximated, and each mix is drawn as the single colour it "
+    "averages to. The panel instead dithers a 1 px checkerboard of two inks, so "
+    "small text in a mix reads lighter than it looks here, and a 25%/75% mix on a "
+    "feature under 2 px cannot hold its density. Any warnings below are measured "
+    "against that real dithered output, not against this image."
+)
+_DITHERED_NOTE = (
+    "Colours are ink-approximated and mixes are drawn as the real 1 px checkerboard "
+    "of two inks the panel lays down. Do not judge colour from this image: scaling "
+    "it down aliases each mix to a solid patch of just one of its inks, which makes "
+    "order-swapped mixes look like different colours and unrelated mixes look "
+    "identical. Re-run without `dithered_colors` to see what these mixes average to."
+)
 
 COMPOSE_PROMPT = (_PROMPTS_DIR / "compose.md").read_text()
 
@@ -148,32 +168,53 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
             open_world_hint=False,
         )
     )
-    def preview(document: dict[str, Any] | None = None, name: str = "default") -> Image:
-        """Render a PNG the way the panel will draw it. Publishes nothing.
+    def preview(
+        document: dict[str, Any] | None = None,
+        name: str = "default",
+        dithered_colors: bool = False,
+    ) -> list[ContentBlock]:
+        """Render a PNG of how the panel will draw this, plus its warnings.
+        Publishes nothing.
 
         Omit `document` to see what is currently published under `name`; pass
         a draft to check it before spending a `set_display` call on it — a
         wasted publish either changes nothing (same hash) or forces the panel
         into a ~1.5 mAh redraw versus the ~0.15 mAh a 304 would have cost, so
-        drafting here first is the cheap step. This is the same renderer that
-        backs `validate` and that the panel's own hashing has to agree with,
-        so what you see here is what ends up on the wall (ink-approximated,
-        not pure RGB) — with one exception: a mix is a 1 px checkerboard of
-        two inks, and most image viewers scale this PNG down to fit, which
-        aliases each mix to a solid patch of just one of its two inks. Judge
-        layout and weight from this image; judge colour from the named
-        palette table and from `validate`'s contrast warnings, not from the
-        pixels you see here.
+        drafting here first is the cheap step. Colours are ink-approximated:
+        this is roughly what the Spectra 6 glass shows, not the pure RGB the
+        driver writes.
+
+        Each mix is drawn as the single colour it averages to — the hex in
+        the named-palette table — rather than as the 1 px checkerboard of two
+        inks the panel lays down, so the colours in the image are the colours
+        you asked for. Set `dithered_colors` only if you have been asked for
+        a preview closer to what the panel really draws. The text block
+        returned with the image explains the trade-off for whichever mode ran
+        and carries the warnings `validate` would give you.
         """
         try:
             validate_name(name)
             doc = store.get(name).doc if document is None else document
         except DisplayError as exc:
             raise ToolError(str(exc)) from exc
-        image, _problems = render.render(doc, settings.font_dir)
+        image, _problems = render.render(doc, settings.font_dir, dithered_colors=dithered_colors)
         buf = io.BytesIO()
         image.save(buf, format="PNG")
-        return Image(data=buf.getvalue(), format="png")
+        # Warnings come from check() rather than from the render above. On a
+        # flat canvas they cannot be computed at all — render() rejects
+        # warn_ink there, because the checks that read pixels back would be
+        # measuring an image the panel never draws — and check() adds the
+        # bezel and stale-hash checks that no render() produces. Sourcing
+        # them here is also what makes preview and validate agree word for
+        # word.
+        problems = render.check(doc, settings.font_dir)
+        note = _DITHERED_NOTE if dithered_colors else _FLAT_NOTE
+        if problems:
+            note = "\n".join([note, "", *(f"- {p}" for p in problems)])
+        return [
+            Image(data=buf.getvalue(), format="png").to_image_content(),
+            TextContent(type="text", text=note),
+        ]
 
     @mcp.tool(
         annotations=ToolAnnotations(

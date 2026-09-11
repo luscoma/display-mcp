@@ -122,7 +122,7 @@ class FakeStore:
 
 
 def fake_render(
-    doc: dict[str, Any], font_dir: Path, ideal: bool = False
+    doc: dict[str, Any], font_dir: Path, dithered_colors: bool = True
 ) -> tuple[PILImage.Image, list[str]]:
     """Stand-in for `display_mcp.render.render`: no fonts, no real drawing."""
     problems: list[str] = []

@@ -83,7 +83,7 @@ sequenceDiagram
     M->>S: render + check
     S-->>C: warnings, if any
     C->>M: preview(draft)
-    S-->>C: PNG of what the wall would show
+    S-->>C: PNG (mixes flattened) + warnings
     end
 
     C->>M: set_display(doc)
@@ -134,8 +134,8 @@ full refresh on every wake — roughly half the battery life.
 | [`deploy/`](deploy/) | the systemd unit and `setup.sh`, which is idempotent and reversible |
 | [`mount/`](mount/) | the printed bezel the panel hangs behind, in an ordinary picture frame |
 
-**Six MCP tools.** `set_display` publishes, `preview` renders a PNG so a
-session can look before it commits, `validate` checks a draft, `get_display`
+**Six MCP tools.** `set_display` publishes, `preview` renders a PNG plus the
+warnings, so a session can look before it commits, `validate` checks a draft, `get_display`
 reads back what is live, `status` reports whether the panel collected it, and
 `clear_display` takes a display down. `compose_display` is a prompt carrying
 the op vocabulary and the six-ink design rules, so a scheduled session does
@@ -146,7 +146,11 @@ panel; `display_mcp.render` draws it as a PNG. They share five font sizes,
 eleven icons, six inks plus twenty-one built-in two-ink mixes, and six ops —
 and nothing else, which is what keeps "what Claude previewed" and "what the
 wall shows" from drifting. The wrap and truncate logic is differentially
-tested between them. Colour names, recipes and contrast ratios are in
+tested between them. The one deliberate divergence is colour: the panel
+dithers a mix as a 1 px checkerboard of two inks, and `preview` paints the
+single colour that fuses to, because a checkerboard aliases to one of its
+inks in any viewer that scales the image down. See
+[`docs/plans/preview-flat-colour.md`](docs/plans/preview-flat-colour.md). Colour names, recipes and contrast ratios are in
 [`docs/SPEC.md`](docs/SPEC.md).
 
 ## Running it

@@ -8,8 +8,9 @@
         write meta.hash back into the file (indent=2, trailing newline),
         print it.
 
-    display-mcp-cli render <file> [-o out.png] [--ideal] [--font-dir DIR]
-        render to a PNG and also print what `check` prints.
+    display-mcp-cli render <file> [-o out.png] [--font-dir DIR]
+        render to a PNG the way the panel draws it, mixes dithered, and
+        also print what `check` prints.
 
     display-mcp-cli publish <file> [--name NAME] [--url URL]
         publish through the MCP endpoint (default http://127.0.0.1:8001/mcp,
@@ -99,7 +100,7 @@ def cmd_render(args: argparse.Namespace) -> int:
     if not _require_fonts(font_dir):
         return 2
     doc = _load(args.file)
-    img, _ = render(doc, font_dir, ideal=args.ideal)
+    img, _ = render(doc, font_dir)
     problems = check(doc, font_dir)
     if not (doc.get("meta") or {}).get("hash"):
         problems.append(_NO_HASH_WARNING)
@@ -162,7 +163,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_render = sub.add_parser("render", help="render to a PNG")
     p_render.add_argument("file")
     p_render.add_argument("-o", "--output", default="preview.png")
-    p_render.add_argument("--ideal", action="store_true", help="pure RGB instead of ink colours")
     p_render.add_argument("--font-dir")
     p_render.set_defaults(func=cmd_render)
 

@@ -114,6 +114,56 @@ async def test_preview_draft_does_not_publish(mcp, store, sample_doc):
     assert store.names() == []  # a draft preview publishes nothing
 
 
+async def test_preview_returns_the_right_note_beside_the_image(mcp, sample_doc):
+    """The caveat rides in the response, not only in the tool docstring.
+
+    A docstring is read once at tool-discovery time and a long way from the
+    picture; a reader looking at an aliased swatch believed the pixels
+    instead, called it a renderer bug, and redesigned around it.
+
+    These assert on the constants rather than on substrings of the prose:
+    what is being pinned is that each mode gets its own note, not any
+    particular wording. The dithered note has to differ because it re-opens
+    the aliasing trap the flat note says has been closed — the flat text
+    would be a lie about that image.
+    """
+    async with Client(mcp) as c:
+        flat = await c.call_tool("preview", {"document": sample_doc})
+        dithered = await c.call_tool("preview", {"document": sample_doc, "dithered_colors": True})
+    for result, want in ((flat, mcp_server._FLAT_NOTE), (dithered, mcp_server._DITHERED_NOTE)):
+        assert [b.type for b in result.content] == ["image", "text"]
+        assert result.content[1].text.startswith(want)
+    assert mcp_server._FLAT_NOTE != mcp_server._DITHERED_NOTE
+
+
+def test_the_two_notes_each_describe_their_own_image():
+    """The one place wording is pinned, because these two sentences are the
+    whole point of the change: the flat note must not claim the image is
+    what the panel draws, and the dithered note must warn that scaling it
+    aliases each mix."""
+    assert "averages to" in mcp_server._FLAT_NOTE
+    assert "reads lighter" in mcp_server._FLAT_NOTE
+    assert "Do not judge colour from this image" in mcp_server._DITHERED_NOTE
+    assert "aliases" in mcp_server._DITHERED_NOTE
+
+
+async def test_preview_warnings_are_the_ones_validate_reports(mcp):
+    """Sourced from check(), so preview and validate cannot disagree.
+
+    This pins the plumbing; that the warnings describe the *dithered* panel
+    rather than the flat image is pinned for real in
+    tests/test_mcp_preview_render.py, which does not stub the renderer out.
+    """
+    doc = {"v": 1, "bg": "white", "ops": "not a list"}
+    async with Client(mcp) as c:
+        preview = await c.call_tool("preview", {"document": doc})
+        validate = await c.call_tool("validate", {"document": doc})
+    warnings = validate.structured_content["warnings"]
+    assert warnings
+    for w in warnings:
+        assert f"- {w}" in preview.content[1].text
+
+
 async def test_preview_no_document_and_nothing_published_is_error(mcp):
     async with Client(mcp) as c:
         result = await c.call_tool("preview", {})

@@ -176,10 +176,21 @@ angle, temperature and unit variance. Trust the wall over the number.
    catches structural problems and gives you the hash/op count/byte size
    up front.
 2. `preview(document=...)` — renders the actual PNG, ink-approximated the
-   way the panel will look on the wall. Look at it before publishing;
-   the panel wakes roughly once an hour, and a wasted `set_display` either
-   changes nothing (same hash) or costs the panel a ~1.5 mAh full redraw
-   next time it wakes versus ~0.15 mAh for a 304 it would otherwise get.
+   way the panel will look on the wall, and returns `validate`'s warnings
+   with it. Look at it before publishing; the panel wakes roughly once an
+   hour, and a wasted `set_display` either changes nothing (same hash) or
+   costs the panel a ~1.5 mAh full redraw next time it wakes versus
+   ~0.15 mAh for a 304 it would otherwise get.
+
+   Each mix is drawn as the single colour it averages to — the hex in the
+   table above — rather than the 1 px checkerboard the panel dithers, so
+   the colours in the image are the colours you asked for and you can judge
+   them directly. The two caveats above still apply and are not visible in
+   the image: mixed *text* reads lighter than the swatch, and a 25%/75% mix
+   on a sub-2px feature can't hold its density. That is what the warnings
+   are for. Pass `dithered_colors=True` only if you specifically need to
+   see the real dither — that image aliases badly when scaled and is the
+   wrong one to judge colour from.
 3. `set_display(document, name=...)` — publish once you're satisfied.
 4. `status(name=...)` — confirm the panel actually picked it up. A `200`
    means the panel fetched and redrew; every wake after that is a `304`,

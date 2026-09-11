@@ -20,7 +20,7 @@ Public surface (final):
     ICON_SIZES               {size class: pixel size}
     COLORS                   the six ink names
     render_hash(doc) -> str  sha256 of canonical {bg, palette, ops}, first 16 hex
-    render(doc, font_dir, ideal=False) -> (PIL.Image.Image, list[str])
+    render(doc, font_dir, dithered_colors=True) -> (PIL.Image.Image, list[str])
     check(doc, font_dir) -> list[str]   problems only, no image
     fit_line(font, s, max_w) / wrap_lines(font, s, max_w, max_lines)
     fonts_available(font_dir) -> bool
@@ -76,17 +76,10 @@ ICON_SIZES = {"sm": 36, "md": 56, "lg": 88}
 # bars are meant to run full bleed and are not.
 BEZEL_MARGIN = 24
 
-# What the driver writes into the framebuffer.
-IDEAL = {
-    "black": (0, 0, 0),
-    "white": (255, 255, 255),
-    "yellow": (255, 255, 0),
-    "red": (255, 0, 0),
-    "blue": (0, 0, 255),
-    "green": (0, 255, 0),
-}
-
-# Roughly what those inks look like on a Spectra 6 panel.
+# Roughly what those inks look like on a Spectra 6 panel. This is the only
+# colour table: the panel is the thing being previewed, so an approximation
+# of the glass beats the pure framebuffer RGB the driver writes (the old
+# `--ideal` mode, removed — it was CLI-only and no MCP caller could reach it).
 INK = {
     "black": (32, 32, 32),
     "white": (222, 222, 216),
@@ -208,6 +201,28 @@ class Ink(NamedTuple):
     def solid(self) -> bool:
         return self.a == self.b
 
+    @property
+    def avg(self) -> tuple:
+        """The single colour this mix averages to over a large enough area.
+
+        What the eye integrates a dithered fill into, and what the panel's
+        glass actually shows for anything bigger than a few pixels. For a
+        solid ink `mix` is 100 and `a == b`, so this returns that ink
+        unchanged and needs no special case.
+
+        This is the colour `render(dithered_colors=False)` paints, and it
+        reproduces every hex in the named-palette table in docs/SPEC.md
+        exactly — tests/test_render.py pins that, so the table cannot drift
+        away from the renderer.
+
+        It is honest for a fill and optimistic for a glyph: a few pixels of
+        stroke cannot average two inks, so text reads shifted toward the
+        lighter one. That gap is what _check_mix_as_text() warns about, and
+        it is why a flat preview has to carry its warnings with it.
+        """
+        w = self.mix / 100
+        return tuple(round(self.a[i] * (1 - w) + self.b[i] * w) for i in range(3))
+
 
 def _luminance(rgb: tuple) -> float:
     """WCAG relative luminance of an (r, g, b) triple, channels 0-255."""
@@ -292,11 +307,9 @@ def _grounds(img: Image.Image, box: tuple) -> list[tuple[tuple[float, ...], Coun
 
 
 class Ctx:
-    def __init__(
-        self, doc: dict[str, Any], font_dir: Path, ideal: bool = False, warn_ink: bool = False
-    ):
+    def __init__(self, doc: dict[str, Any], font_dir: Path, warn_ink: bool = False):
         self.palette = doc.get("palette") or {}
-        self.table = IDEAL if ideal else INK
+        self.table = INK
         self.table_rev = {v: k for k, v in self.table.items()}
         self.fonts = _load_fonts(Path(font_dir))
         self.problems: list[str] = []
@@ -304,14 +317,20 @@ class Ctx:
         # mix as text, sub-2px density) are check()-only, the same way
         # bezel_problems() is check()-only — render() on its own reports
         # only what stops a document from drawing correctly. Gated so a bare
-        # render() call (previews, tests, cli --ideal) is unaffected.
+        # render() call is unaffected.
         self.warn_ink = warn_ink
 
     def name_of(self, rgb: tuple) -> str:
-        """Reverse-lookup a raw canvas pixel to its ink name. Every pixel the
-        renderer ever paints is one of the six table entries verbatim — a
-        mix interleaves two solid inks, it never averages them on canvas —
-        so this always resolves for real pixels."""
+        """Reverse-lookup a raw canvas pixel to its ink name. Every pixel a
+        *dithered* render paints is one of the six table entries verbatim —
+        a mix interleaves two solid inks, it never averages them on canvas —
+        so this always resolves for real pixels.
+
+        `render(dithered_colors=False)` does paint blends, which have no ink
+        name. It cannot reach here: every caller is behind `warn_ink`, and
+        render() rejects `warn_ink` on a flat canvas for exactly this
+        reason. The `"ink"` fallback is therefore unreachable, and kept only
+        so a stray colour degrades a message rather than raising."""
         return self.table_rev.get(rgb, "ink")
 
     def ground_name(self, counts: Counter) -> str:
@@ -670,7 +689,7 @@ def draw_on(img: Image.Image) -> ImageDraw.ImageDraw:
     return d
 
 
-def paint(img: Image.Image, ink: Ink, draw_fn) -> None:
+def paint(img: Image.Image, ink: Ink, draw_fn, dithered_colors: bool = True) -> None:
     """Run `draw_fn(draw, colour)`, interleaving two inks if `ink` is a mix.
 
     The firmware hands `print()` and the shape primitives a proxy Display
@@ -682,9 +701,13 @@ def paint(img: Image.Image, ink: Ink, draw_fn) -> None:
 
     A solid ink draws straight onto the page, so every document that exists
     today takes exactly the path it took before and cannot shift by a pixel.
+
+    With `dithered_colors=False` a mix is laid down once in `ink.avg`
+    instead: the same single-draw path a solid ink takes, so the geometry is
+    identical and only the colour differs.
     """
-    if ink.solid:
-        draw_fn(draw_on(img), ink.a)
+    if ink.solid or not dithered_colors:
+        draw_fn(draw_on(img), ink.avg)
         return
     stencil = Image.new("1", img.size, 0)
     draw_fn(draw_on(stencil), 1)
@@ -867,30 +890,58 @@ def _check_thin_mix(ctx: Ctx, ink: Ink, where: str, feature: str, **dims) -> Non
 def render(
     doc: dict[str, Any],
     font_dir: Path,
-    ideal: bool = False,
+    *,
     now: datetime | None = None,
     warn_ink: bool = False,
+    dithered_colors: bool = True,
 ):
     """Return (PIL image, problems). Never raises on a bad op; it reports it.
+
+    Everything after `font_dir` is keyword-only: docs/PLAN.md calls this
+    surface final, and the three flags have grown and shuffled since, so an
+    out-of-tree `render(doc, dir, True)` should fail loudly rather than
+    quietly mean something new.
 
     `warn_ink` adds the three ink-mixing authoring warnings (contrast floor,
     chromatic mix as text, sub-2px density) to `problems`; it is off by
     default so every existing caller of render() is unaffected, and check()
     is the one caller that turns it on.
+
+    `dithered_colors` defaults to True — the panel's own behaviour, and what
+    the firmware is diffed against, so check() and the CLI get it without
+    asking. False paints every mix as its `Ink.avg` instead. Only the MCP
+    `preview` tool sets that, because its reader is judging a design rather
+    than a framebuffer, and a 1px checkerboard aliases to a solid patch of
+    one ink under any viewer that scales the PNG down.
+
+    The two are mutually exclusive, and rejected rather than documented.
+    `warn_ink` measures the canvas — _check_contrast() fuses the ground it
+    samples, _check_drew_nothing() diffs raw pixels — so on a flat canvas it
+    is measuring an image the panel never draws. It also feeds a blend to
+    Ctx.name_of(), which can only name the six inks, so the warning comes
+    out as "white on ink is 3.0:1". Forbidding the combination is what keeps
+    that invariant true; take the warnings from check(), which always
+    renders dithered and adds the bezel and stale-hash checks besides.
     """
-    ctx = Ctx(doc, font_dir, ideal, warn_ink)
+    if warn_ink and not dithered_colors:
+        raise ValueError("warn_ink measures the canvas, so it needs the dithered one")
+    ctx = Ctx(doc, font_dir, warn_ink)
     # The panel's fill() is a framebuffer memset that never reaches
     # draw_pixel_at, so a mixed bg is one ink laid down and the other
     # interleaved over it — see decision 6.
     bg_ink = ctx.ink(doc.get("bg", "white"), "bg")
-    img = Image.new("RGB", (WIDTH, HEIGHT), bg_ink.a)
-    if not bg_ink.solid:
+    img = Image.new("RGB", (WIDTH, HEIGHT), bg_ink.a if dithered_colors else bg_ink.avg)
+    if not bg_ink.solid and dithered_colors:
         ip = img.load()
         for yy in range(HEIGHT):
             for xx in range(WIDTH):
                 if mix_on(xx, yy, bg_ink.mix):
                     ip[xx, yy] = bg_ink.b
     d = draw_on(img)
+
+    def paint_op(ink: Ink, draw_fn) -> None:
+        """`paint()` with this render's canvas and colour mode already bound."""
+        paint(img, ink, draw_fn, dithered_colors)
 
     fields = system_fields(doc, now)
 
@@ -903,12 +954,12 @@ def render(
             x, y, w, h = op["x"], op["y"], op["w"], op["h"]
             if op.get("fill", True):
                 _check_thin_mix(ctx, ink, where, "fill", w=w, h=h)
-                paint(img, ink, lambda dr, col: dr.rectangle(
+                paint_op(ink, lambda dr, col: dr.rectangle(
                     [x, y, x + w - 1, y + h - 1], fill=col))
             else:
                 t = op.get("t", 1)
                 _check_thin_mix(ctx, ink, where, "outline", t=t)
-                paint(img, ink, lambda dr, col: dr.rectangle(
+                paint_op(ink, lambda dr, col: dr.rectangle(
                     [x, y, x + w - 1, y + h - 1], outline=col, width=t))
             xr, yr = x + w, y + h
             if not (-64 <= xr <= WIDTH + 64):
@@ -919,7 +970,7 @@ def render(
         elif kind == "line":
             t = op.get("t", 1)
             _check_thin_mix(ctx, ink, where, "line", t=t)
-            paint(img, ink, lambda dr, col: dr.line(
+            paint_op(ink, lambda dr, col: dr.line(
                 [op["x"], op["y"], op["x2"], op["y2"]], fill=col, width=t))
             x2, y2 = op.get("x2"), op.get("y2")
             if isinstance(x2, (int, float)) and not (-64 <= x2 <= WIDTH + 64):
@@ -931,10 +982,10 @@ def render(
             x, y, r = op["x"], op["y"], op["r"]
             box = [x - r, y - r, x + r, y + r]
             if op.get("fill", True):
-                paint(img, ink, lambda dr, col: dr.ellipse(box, fill=col))
+                paint_op(ink, lambda dr, col: dr.ellipse(box, fill=col))
             else:
                 t = op.get("t", 1)
-                paint(img, ink, lambda dr, col: dr.ellipse(box, outline=col, width=t))
+                paint_op(ink, lambda dr, col: dr.ellipse(box, outline=col, width=t))
 
         elif kind == "text":
             c_name = op.get("c", "black")
@@ -958,7 +1009,7 @@ def render(
                 _check_mix_as_text(ctx, ink, c_name, where)
                 snap = _snapshot(img, _union_box(boxes)) if boxes else None
                 for _x, ly, line in positions:
-                    paint(img, ink, lambda dr, col, ly=ly, line=line: dr.text(
+                    paint_op(ink, lambda dr, col, ly=ly, line=line: dr.text(
                         (op["x"], ly), line, font=f, fill=col, anchor=anchor))
                 _check_drew_nothing(img, ctx, snap, where)
             else:
@@ -967,7 +1018,7 @@ def render(
                 _check_contrast(img, ctx, ink, c_name, where, [box])
                 _check_mix_as_text(ctx, ink, c_name, where)
                 snap = _snapshot(img, box)
-                paint(img, ink, lambda dr, col: dr.text(
+                paint_op(ink, lambda dr, col: dr.text(
                     (op["x"], op["y"]), text, font=f, fill=col, anchor=anchor))
                 _check_drew_nothing(img, ctx, snap, where)
 
@@ -991,7 +1042,7 @@ def render(
             _check_contrast(img, ctx, ink, c_name, where, [box])
             _check_mix_as_text(ctx, ink, c_name, where)
             snap = _snapshot(img, box)
-            paint(img, ink, lambda dr, col: dr.text(
+            paint_op(ink, lambda dr, col: dr.text(
                 (op["x"], op["y"]), text, font=f, fill=col, anchor=anchor))
             _check_drew_nothing(img, ctx, snap, where)
 
@@ -1008,7 +1059,7 @@ def render(
             _check_contrast(img, ctx, ink, c_name, where, [box])
             _check_mix_as_text(ctx, ink, c_name, where)
             snap = _snapshot(img, box)
-            paint(img, ink, lambda dr, col: draw_icon(dr, name, op["x"], op["y"], size, col))
+            paint_op(ink, lambda dr, col: draw_icon(dr, name, op["x"], op["y"], size, col))
             _check_drew_nothing(img, ctx, snap, where)
 
         else:

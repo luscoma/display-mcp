@@ -19,7 +19,7 @@ bit-identical. That repo is superseded entirely; this one is authoritative.
 | Displays | keyed by name from day one; `default` is the alias for `/display.json` |
 | Tools | `set_display`, `preview` (published or draft), `validate`, `get_display`, `status`, `clear_display`; resources `spec`, `current`, `sample`; prompt `compose_display` |
 | Status | per display: `published_at`, `first_fetch_at` (first 200 for the current hash), `recent_fetch_at` + `recent_fetch_status` + `recent_fetch_ip`. Persisted. |
-| Preview colours | ink approximation only; the pure-RGB `--ideal` mode stays a CLI flag |
+| Preview colours | ink approximation only. The pure-RGB `--ideal` mode is **removed** (2026-09-11), reversing the original decision to keep it as a CLI flag: it was CLI-only, so no MCP caller could reach it, and INK is now the single colour table. `preview` additionally draws each mix as the colour it averages to rather than the 1 px checkerboard the panel dithers — `render(dithered_colors=...)`, default True everywhere else. See docs/plans/preview-flat-colour.md |
 
 ## Layout
 
@@ -108,9 +108,10 @@ errors.
 ## Renderer (`display_mcp.render`)
 
 Straight port of `dlpreview.py` with the same public surface:
-`render(doc, ideal=False) -> (PIL.Image, problems)`, `render_hash(doc)`,
-`fit_line`, `wrap_lines`. Same Instrument Sans Regular/Bold pair, same
-variable-font "Bold" instance selection, same ink and ideal tables.
+`render(doc, dithered_colors=True) -> (PIL.Image, problems)`,
+`render_hash(doc)`, `fit_line`, `wrap_lines`. Same Instrument Sans
+Regular/Bold pair, same variable-font "Bold" instance selection, same ink
+table (the ideal table is gone — see "Preview colours" above).
 
 Fixes carried in during the port:
 
@@ -132,7 +133,7 @@ preview beats publishing three times).
 | Tool | Args | Returns |
 |---|---|---|
 | `set_display` | `document`, `name="default"` | `{name, hash, etag, ops, bytes, warnings}` |
-| `preview` | `document?`, `name="default"` | PNG. No document → what is published; with one → render the draft, publish nothing |
+| `preview` | `document?`, `name="default"`, `dithered_colors=False` | PNG **and** a text block: a note on how colour was rendered, then `check()`'s warnings. No document → what is published; with one → render the draft, publish nothing |
 | `validate` | `document` | `{hash, ops, bytes, warnings}` |
 | `get_display` | `name="default"` | the published document, or an error if none |
 | `status` | `name?` | one display, or all: `{published, hash, ops, bytes, published_at, first_fetch_at, recent_fetch_at, recent_fetch_status, recent_fetch_ip}`; timestamps are ISO 8601 plus a matching `*_ago` string |

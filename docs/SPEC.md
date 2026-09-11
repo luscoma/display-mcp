@@ -196,7 +196,9 @@ These are **built in** — write `"c": "navy"` and it works, no palette entry
 needed. They are combinations that have been drawn on a real panel and
 judged, grouped by what each turned out to be good for. The hex is what the
 dither averages to at reading distance — not a colour the panel makes at any
-single pixel.
+single pixel. It is also exactly what the MCP `preview` tool paints for that
+name — a test renders all twenty-one and compares them against this table,
+parsed from this file, so the two cannot drift apart.
 
 Names resolve **base inks → document `palette` → built-in mixes**, so the six
 ink names are immutable, and a document that declares its own `navy` shadows
@@ -300,12 +302,18 @@ display-mcp-cli stamp display.json                   # write meta.hash
 display-mcp-cli render display.json -o preview.png   # look at it
 display-mcp-cli publish display.json     # on the host: publish via the loopback MCP endpoint
 display-mcp-cli check display.json                   # validate, no render
-display-mcp-cli render display.json --ideal          # pure RGB instead of ink colours
 ```
 
-The default render uses approximate *ink* colours, so the preview looks like
-the wall rather than like a screen. Icons are procedural stand-ins — good for
-judging layout and weight, not icon artwork.
+The render uses approximate *ink* colours, so it looks like the wall rather
+than like a screen. Icons are procedural stand-ins — good for judging layout
+and weight, not icon artwork.
+
+The CLI always dithers mixes the way the panel does, which is what you want
+when checking against firmware. Be aware that a 1 px checkerboard aliases to
+a solid patch of just one of its two inks in any viewer that scales the PNG
+down, so zoom to 100% before judging a mix's colour. The MCP `preview` tool
+defaults to the opposite trade-off — it flattens each mix to the hex in the
+named-palette table above — because its reader cannot zoom.
 
 Then publish it with `set_display`, or drop it at the URL in
 `firmware/epaper-schedule.yaml` and press *Fetch and draw*.
@@ -364,8 +372,8 @@ different interfaces.
 Six tools: `set_display(document)` validates, stamps `meta.hash` and
 `meta.generated`, and writes atomically; `validate(document)` runs the same
 checks without rendering or publishing; `preview(document)` returns a PNG
-rendered by the same `display_mcp.render`, so what Claude sees and what
-`validate` reports cannot disagree; `get_display(name)` returns what's
+plus `check()`'s warnings — the same `display_mcp.render` behind both, so
+what Claude sees and what `validate` reports cannot disagree; `get_display(name)` returns what's
 currently published; `status(name)` says whether the panel has collected it
 — `recent_fetch_status: 304` is the healthy answer; `clear_display(name)`
 unpublishes.

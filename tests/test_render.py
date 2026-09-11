@@ -8,6 +8,8 @@ fixture) if fonts/ hasn't been populated with the Instrument Sans pair.
 from __future__ import annotations
 
 import copy
+import re
+from pathlib import Path
 
 import pytest
 from PIL import Image, ImageDraw
@@ -19,9 +21,10 @@ from display_mcp.render import (
     HEIGHT,
     ICON_SIZES,
     ICONS,
-    IDEAL,
     INK,
     WIDTH,
+    Ink,
+    _grounds,
     bezel_problems,
     check,
     draw_icon,
@@ -34,6 +37,7 @@ from display_mcp.render import (
 )
 
 SAMPLE_HASH = "3cd62aa76e731d2d"
+ROOT = Path(__file__).resolve().parents[1]
 
 
 # --------------------------------------------------------------------------
@@ -613,13 +617,6 @@ def test_render_emits_only_the_six_inks(sample_doc, font_dir):
     px = img.load()
     strays = {px[x, y] for y in range(HEIGHT) for x in range(WIDTH)} - six
     assert not strays, f"{len(strays)} colours the panel cannot make, e.g. {list(strays)[:4]}"
-
-
-def test_ideal_render_emits_only_the_six_inks(sample_doc, font_dir):
-    img, _ = render(sample_doc, font_dir, ideal=True)
-    px = img.load()
-    strays = {px[x, y] for y in range(HEIGHT) for x in range(WIDTH)} - set(IDEAL.values())
-    assert not strays, f"{len(strays)} blended colours, e.g. {list(strays)[:4]}"
 
 
 # --------------------------------------------------------------------------
@@ -1337,3 +1334,196 @@ def test_all_ink_mixing_warnings_clean_on_the_sample(sample_doc, font_dir):
     """samples/display.json predates ink mixing entirely (no mix in its
     palette) — check() must stay at zero problems."""
     assert check(sample_doc, font_dir) == []
+
+
+# --------------------------------------------------------------------------
+# flat colours — render(dithered_colors=False), the MCP preview's mode
+# --------------------------------------------------------------------------
+
+
+def _spec_palette_hexes():
+    """The named-palette table in docs/SPEC.md, as {name: (c, c2, mix, hex)}.
+
+    Parsed rather than duplicated: the point of the test below is that the
+    published table and the renderer cannot drift apart, which a second copy
+    of the numbers here would defeat.
+    """
+    spec = (ROOT / "docs" / "SPEC.md").read_text()
+    rows = re.findall(r"`([a-z-]+)` \| (\w+)\+(\w+) (\d+) \| `#([0-9A-F]{6})`", spec)
+    return {n: (a, b, int(p), h.lower()) for n, a, b, p, h in rows}
+
+
+def test_spec_table_covers_every_builtin_mix():
+    """Guard for the test below, which is parametrised over BUILTIN_MIXES.
+
+    A name missing from SPEC.md fails loudly on its own (the lookup raises).
+    The direction that would pass in silence is the other one: a mix dropped
+    from BUILTIN_MIXES simply vanishes from the parametrisation while
+    SPEC.md still advertises it. Set equality catches both, and catches a
+    reformatted table too — the regex wants uppercase hex, so a changed row
+    drops out of the dict rather than matching loosely.
+    """
+    assert set(_spec_palette_hexes()) == set(BUILTIN_MIXES)
+
+
+@pytest.mark.parametrize("name", sorted(BUILTIN_MIXES))
+def test_flat_render_matches_the_documented_hex(name, font_dir):
+    """A flat mix is exactly the hex docs/SPEC.md publishes for it.
+
+    This is what makes the table load-bearing: `preview` shows these
+    colours, the docs promise these colours, and neither can move without
+    the other. It also pins the recipe, so a mix cannot be redefined in
+    BUILTIN_MIXES while SPEC.md still advertises the old blend.
+    """
+    c, c2, pct, want = _spec_palette_hexes()[name]
+    assert BUILTIN_MIXES[name] == (c, c2, pct)
+    img, problems = render(_one_rect({}, name), font_dir, dithered_colors=False)
+    assert problems == []
+    got = {img.load()[x, y] for y in range(40) for x in range(40)}
+    assert got == {tuple(int(want[i : i + 2], 16) for i in (0, 2, 4))}
+
+
+def test_flat_render_lays_down_one_colour_not_a_checkerboard(font_dir):
+    """The whole point: no dither to alias. A flat fill is uniform."""
+    img, _ = render(_one_rect({}, "teal"), font_dir, dithered_colors=False)
+    assert _share(img, img.load()[0, 0], 0, 0, 40, 40) == 1.0
+
+
+def test_flat_render_leaves_solid_inks_untouched(sample_doc, font_dir):
+    """Ink.avg of a solid is that ink, so a document with no mixes must be
+    byte-identical in both modes.
+
+    The sample is nearly that document and drives text, icons and lines
+    through paint_op rather than the single rect these tests mostly use —
+    but its footer stamp is `grey-mid`, a built-in mix (SPEC.md: black text
+    on white reads 12.1:1 there). Swapping that one colour for a solid ink
+    is what makes the document mix-free.
+    """
+    doc = copy.deepcopy(sample_doc)
+    for op in doc["ops"]:
+        if op.get("c") == "grey-mid":
+            op["c"] = "black"
+    assert all(op.get("c") != "grey-mid" for op in doc["ops"])
+    dithered, _ = render(doc, font_dir)
+    flat, _ = render(doc, font_dir, dithered_colors=False)
+    assert dithered.tobytes() == flat.tobytes()
+
+
+def test_ink_order_cannot_change_a_flat_mix(font_dir):
+    """The bug this mode exists to kill.
+
+    A 50% checkerboard of two inks is symmetric, so {c: blue, c2: green} and
+    {c: green, c2: blue} are the same colour. Dithered they differ by one
+    pixel of phase, which a viewer that scales the PNG down resolves to
+    *opposite* solid inks — dark green versus blue-violet — and they read as
+    unrelated colours. Flat, they are byte-identical.
+    """
+    ab = _one_rect({"m": {"c": "blue", "c2": "green", "mix": 50}}, "m")
+    ba = _one_rect({"m": {"c": "green", "c2": "blue", "mix": 50}}, "m")
+    flat_ab, _ = render(ab, font_dir, dithered_colors=False)
+    flat_ba, _ = render(ba, font_dir, dithered_colors=False)
+    assert flat_ab.tobytes() == flat_ba.tobytes()
+    # ... and dithered they are genuinely one pixel out of phase, which is
+    # correct and is exactly what aliases.
+    dith_ab, _ = render(ab, font_dir)
+    dith_ba, _ = render(ba, font_dir)
+    assert dith_ab.tobytes() != dith_ba.tobytes()
+    assert _share(dith_ab, INK["green"], 0, 0, 40, 40) == 0.5
+    assert _share(dith_ba, INK["green"], 0, 0, 40, 40) == 0.5
+
+
+def test_dithering_is_still_the_default(font_dir):
+    """render() defaults to what the panel does, so check(), the CLI and the
+    firmware-parity tests get the real thing without asking."""
+    img, _ = render(_one_rect({}, "teal"), font_dir)
+    assert _share(img, INK["green"], 0, 0, 40, 40) == 0.5
+    assert _share(img, INK["blue"], 0, 0, 40, 40) == 0.5
+
+
+def test_flat_mixed_background_is_uniform(font_dir):
+    """The bg takes its own code path (a memset, not draw_pixel_at), so it
+    needs its own guard against the interleave loop running anyway."""
+    doc = {"v": 1, "meta": {}, "bg": "grey-mid", "palette": {}, "ops": []}
+    img, _ = render(doc, font_dir, dithered_colors=False)
+    assert _share(img, (127, 127, 124), 0, 0, WIDTH, HEIGHT) == 1.0
+
+
+def test_ink_avg_agrees_with_the_ground_fusing_in_grounds(font_dir):
+    """`Ink.avg` and `_grounds` compute the same physics by different routes.
+
+    `Ink.avg` blends from the colour spec (two inks and a density) and is
+    what a flat preview *paints*; `_grounds` averages the real pixels in a
+    2x2 mask tile and is what `check()` *measures* contrast against. Neither
+    can use the other — `_grounds` is handed arbitrary canvas pixels and has
+    no Ink to consult, `Ink.avg` runs before anything is painted — so the
+    agreement is a coincidence of two formulas rather than one definition,
+    and nothing else would notice if they drifted apart.
+
+    It matters because they meet in `preview`: the image is painted at
+    Ink.avg and the warnings shipped beside it are judged against the fused
+    ground. Drift means showing a colour we are not judging you against,
+    which is the failure this whole tool change exists to remove.
+    """
+    for name in BUILTIN_MIXES:
+        img, _ = render(_one_rect({}, name), font_dir)
+        grounds = _grounds(img, (4, 4, 36, 36))
+        assert len(grounds) == 1, f"{name}: a uniform fill should fuse to one colour"
+        fused, _counts = grounds[0]
+        spec = Ink(INK[BUILTIN_MIXES[name][0]], INK[BUILTIN_MIXES[name][1]], BUILTIN_MIXES[name][2])
+        assert tuple(round(v) for v in fused) == spec.avg, name
+
+
+def test_warn_ink_is_rejected_on_a_flat_canvas(font_dir):
+    """The combination has no valid caller and used to produce garbled
+    warnings — a fused blend has no ink name, so the message came out as
+    "white on ink is 3.0:1". Rejecting it is what keeps Ctx.name_of's
+    invariant true rather than merely documented."""
+    with pytest.raises(ValueError, match="dithered"):
+        render(_one_rect({}, "teal"), font_dir, warn_ink=True, dithered_colors=False)
+
+
+def test_flat_and_dithered_differ_in_colour_only_never_geometry(font_dir):
+    """paint() claims a flat mix takes the same single-draw path a solid ink
+    does, so flattening cannot move a pixel.
+
+    Every op type that reaches paint_op, all drawn in `navy` (black+blue).
+    Neither of its inks is the white page, so "differs from the background"
+    is a faithful stencil in both modes — with a mix containing white, like
+    `grey-mid`, half the dithered pixels are the background colour and the
+    comparison measures the mix rather than the geometry.
+    """
+    doc = {
+        "v": 1,
+        "meta": {},
+        "bg": "white",
+        "palette": {},
+        "ops": [
+            {"op": "rect", "x": 40, "y": 40, "w": 300, "h": 120, "c": "navy"},
+            {"op": "rect", "x": 40, "y": 200, "w": 300, "h": 120, "t": 4, "c": "navy"},
+            {"op": "line", "x": 40, "y": 360, "x2": 340, "y2": 420, "t": 5, "c": "navy"},
+            {"op": "circle", "x": 500, "y": 120, "r": 60, "c": "navy"},
+            {"op": "circle", "x": 500, "y": 300, "r": 60, "t": 3, "c": "navy"},
+            {"op": "text", "x": 40, "y": 470, "s": "Geometry", "f": "xl", "c": "navy"},
+            {"op": "text", "x": 40, "y": 600, "w": 300, "s": "A wrapped block of text "
+             "that runs to several lines", "f": "md", "c": "navy"},
+            {"op": "fmt", "x": 40, "y": 800, "s": "hash {hash}", "f": "sm", "c": "navy"},
+            {"op": "icon", "x": 700, "y": 120, "n": "weather-sunny", "z": "lg", "c": "navy"},
+            {"op": "icon", "x": 700, "y": 300, "n": "check", "z": "sm", "c": "navy"},
+        ],
+    }
+    dithered, pd = render(doc, font_dir)
+    flat, pf = render(doc, font_dir, dithered_colors=False)
+    assert pd == pf == []
+    white = INK["white"]
+    dp, fp = dithered.load(), flat.load()
+    drawn_d = {(x, y) for y in range(HEIGHT) for x in range(WIDTH) if dp[x, y] != white}
+    drawn_f = {(x, y) for y in range(HEIGHT) for x in range(WIDTH) if fp[x, y] != white}
+    assert drawn_d and drawn_d == drawn_f
+
+
+def test_render_no_longer_exposes_the_ideal_table(font_dir):
+    """The flag's removal is pinned in test_cli; this pins the table, which
+    is the half that a future caller could still reach."""
+    import display_mcp.render as mod
+
+    assert not hasattr(mod, "IDEAL")
