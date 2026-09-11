@@ -240,8 +240,30 @@ def _clip_to_canvas(box: tuple) -> tuple | None:
     return x0, y0, x1, y1
 
 
-def _dominant_ground(img: Image.Image, box: tuple) -> tuple | None:
-    """Most common pixel colour under `box`, clipped to the canvas.
+def _grounds(img: Image.Image, box: tuple) -> list[tuple[tuple[float, ...], Counter]] | None:
+    """The ground colour(s) under `box`, sampled at the scale the eye fuses at.
+
+    A dither is two inks a pixel apart and fuses into one colour at reading
+    distance; two regions side by side do not. So the sample is taken per
+    2x2 mask tile — the mask's whole period (decision 2), 0.34 mm on the
+    glass — averaging each tile into the colour it fuses to, and then taking
+    the tile colour covering most of the box. Tiles align to the mask's own
+    absolute phase, so a mixed fill sampled anywhere yields whole periods.
+
+    That is `most_common` as it was always meant to work; what was wrong
+    before was the scale, not the idea. Sampled per pixel, a 50% mix is two
+    colours tied 50/50 and the tie-break decided whether white text on
+    `grey-mid` scored 12.06:1 or 1.00:1. Sampled per tile there is no tie to
+    break: every tile of that mix is the same fused grey. Sampling the
+    canvas rather than reading the ink also means the density is whatever
+    was really painted, parity trap (decision 2) included.
+
+    When tile colours genuinely tie — a box sitting half on one rect and
+    half on another — every tied colour comes back rather than one of them,
+    so the caller can judge against the harder half instead of flipping a
+    coin. Each comes with the tally of the inks behind it, because a fused
+    colour is generally not an ink and the warning still has to name what is
+    behind the text.
 
     None when the box has no on-canvas area at all — an op drawn off-screen,
     a zero-size box (an empty string) — so callers skip rather than warn on
@@ -252,8 +274,21 @@ def _dominant_ground(img: Image.Image, box: tuple) -> tuple | None:
         return None
     x0, y0, x1, y1 = clipped
     px = img.load()
-    counts = Counter(px[x, y] for y in range(y0, y1) for x in range(x0, x1))
-    return counts.most_common(1)[0][0]
+    tiles: Counter = Counter()
+    inks: dict[tuple, Counter] = {}
+    for ty in range(y0 - (y0 % 2), y1, 2):
+        for tx in range(x0 - (x0 % 2), x1, 2):
+            cell = Counter(
+                px[x, y]
+                for y in range(max(ty, y0), min(ty + 2, y1))
+                for x in range(max(tx, x0), min(tx + 2, x1))
+            )
+            n = sum(cell.values())
+            fused = tuple(sum(c[i] * k for c, k in cell.items()) / n for i in range(3))
+            tiles[fused] += n
+            inks.setdefault(fused, Counter()).update(cell)
+    most = max(tiles.values())
+    return [(fused, inks[fused]) for fused, n in tiles.items() if n == most]
 
 
 class Ctx:
@@ -278,6 +313,14 @@ class Ctx:
         mix interleaves two solid inks, it never averages them on canvas —
         so this always resolves for real pixels."""
         return self.table_rev.get(rgb, "ink")
+
+    def ground_name(self, counts: Counter) -> str:
+        """Name a sampled ground for a warning message: a solid one by its
+        ink name, a dithered one as `black+white`. Ordered by how much of
+        the ground each ink covers, darker ink first on a tie, so a 50/50
+        mix is always named the same way round."""
+        inks = sorted(counts, key=lambda c: (-counts[c], _luminance(c)))
+        return "+".join(self.name_of(c) for c in inks)
 
     def ink(self, name: str, where: str = "") -> Ink:
         """Resolve a colour name to an Ink, following palette aliases.
@@ -673,23 +716,37 @@ def _check_contrast(img, ctx: Ctx, ink: Ink, fg_name: str, where: str, boxes: li
     contrast(b, ground))`, not the contrast of their blend. Solid ink is
     unaffected: `max` over two identical colours is just that colour's
     contrast.
+
+    The ground is measured the other way round, as the single colour it
+    fuses to (`_grounds`). The two sides are asymmetric because the physics
+    is: "a large fill averages the two; a 3 px stem has too few pixels to
+    average" (decision 3). `max` on the ground as well would pass nearly
+    anything — one lucky pairing out of four would carry the op — and in
+    particular it would pass the one mixed-ground case the wall has judged,
+    red/white 50 on pink, which is poor precisely because the letterform
+    fuses to the colour the ground fuses to even though every pixel of it
+    differs from the pixel beneath.
     """
     if not ctx.warn_ink:
         return
     worst = None
     for box in boxes:
-        bg = _dominant_ground(img, box)
-        if bg is None:
+        grounds = _grounds(img, box)
+        if grounds is None:
             continue
-        ratio = max(_contrast_ratio(ink.a, bg), _contrast_ratio(ink.b, bg))
-        if worst is None or ratio < worst[0]:
-            worst = (ratio, bg)
+        for bg, counts in grounds:
+            ratio = max(_contrast_ratio(ink.a, bg), _contrast_ratio(ink.b, bg))
+            if worst is None or ratio < worst[0]:
+                worst = (ratio, counts)
     if worst is None:
         return
-    ratio, bg = worst
+    ratio, counts = worst
     if ratio < 3.0:
+        # Floored, not rounded, so a ratio just under the floor cannot print
+        # as "3.0:1 (below 3:1)" — white on `grey-mid` is 2.95 and does.
+        shown = int(ratio * 10) / 10
         ctx.problems.append(
-            f"{where}: {fg_name} on {ctx.name_of(bg)} is {ratio:.1f}:1 "
+            f"{where}: {fg_name} on {ctx.ground_name(counts)} is {shown:.1f}:1 "
             "(below 3:1) — will be hard to read"
         )
 
@@ -707,7 +764,7 @@ def _snapshot(img: Image.Image, box: tuple) -> tuple | None:
     """Crop `img` to `box` (clipped to the canvas) for a before/after diff.
 
     Returns `(clipped_box, pixel bytes)`, or None when the box has no
-    on-canvas area — same skip rule as `_dominant_ground`, and for the same
+    on-canvas area — same skip rule as `_grounds`, and for the same
     reason: an off-screen op drawing nothing is not interesting.
     """
     clipped = _clip_to_canvas(box)

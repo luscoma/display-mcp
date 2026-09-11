@@ -573,6 +573,47 @@ about the arithmetic, wrong about the panel, because a 50% glyph keeps its
 stroke structure and is not averaged the way a large fill is. Solid inks are
 unaffected: `max` over two identical colours is that colour.
 
+### The ground gets the opposite treatment, for the same reason
+
+Added 2026-09-11, finishing the model. `max` is right for the glyph and
+wrong for the ground, and the asymmetry is not a fudge — it is the sentence
+from decision 3: *a large fill averages the two; a 3 px stem has too few
+pixels to average.* A ground is a fill. It fuses. So a mixed ground is
+judged as the one colour it fuses to, and only the glyph gets to pick its
+better ink.
+
+The implementation first sampled the ground as the **most common pixel**
+under the op's box, which on a 50% mix is a coin toss: the two inks are
+tied 50/50 and the tie-break alone decided the answer. White `lg` text on
+`grey-mid` scored **12.06:1 (silent)** or **1.00:1 (warns)** depending on
+which way the tie fell — it happened to fall on black, so `check()` said
+nothing. Neither number is the truth. Fused, the ground is `#7F7F7C` and
+the ratio is **2.95:1**, which is what SPEC.md's mid-tone tier has been
+publishing for that colour all along; the check simply could not reproduce
+its own spec.
+
+`max` on the ground as well was the tempting symmetry and it is wrong. It
+takes the best of four pairings, so almost nothing would warn — and it
+passes the one mixed-ground case the wall has judged. **red/white 50 on
+pink** (the table above, "poor") is the proof: paint it and every pixel of
+the glyph differs from the pixel beneath it, because the mask has absolute
+phase and the two mixes land in counter-phase. No per-pixel rule, however
+careful, can fault it. It is poor because the letterform fuses to the same
+colour the ground fuses to. Fusing the ground scores it 2.4:1 and warns.
+
+What "fuses" means is a matter of scale, and getting that wrong costs a
+false positive: averaging the whole box would fuse two *regions* the eye
+resolves perfectly well. `samples/display.json` ops[43] is a white `check`
+icon that sits on a green rect and overlaps the white page at one edge —
+box-averaged it warns at 2.8:1 against a mid colour that is nowhere on the
+canvas. So the sample is per **2x2 mask tile**, the mask's whole period
+(decision 2) and 0.34 mm on the glass, aligned to the mask's own absolute
+phase; tiles are fused, and then the tile colour covering most of the box
+wins. Most-common was never the wrong idea, only the wrong scale. Where
+tile colours genuinely tie — a box sitting half on one rect, half on
+another — the harder half is the answer rather than either coin face, the
+same rule a wrapped text block already follows across its lines.
+
 ### And a second check, because contrast cannot see everything
 
 Contrast measures *marginal* legibility. It cannot detect *absolute*

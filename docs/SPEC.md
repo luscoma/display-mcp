@@ -210,7 +210,9 @@ it is only 4.1:1 — while `grey-mid` used *as* the text, sitting on the white
 page, is 12.1:1, which is exactly what the footer stamp is. A mixed glyph is
 legible when **either** of its two inks stands out from whatever is behind
 it, because those pixels alone draw the letterform; a fill has to carry a
-whole colour against whatever sits on top of it. So read a tier as advice
+whole colour against whatever sits on top of it. A mixed *background* is
+therefore judged as the single colour it fuses to — the hex in these tables
+— since a fill has pixels enough to average and a glyph does not. So read a tier as advice
 about backgrounds, and judge a mix used as text by its own contrast against
 whatever it's sitting on.
 

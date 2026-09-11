@@ -986,6 +986,119 @@ def test_contrast_max_model_reproduces_the_five_measured_cases():
         assert (max_ratio >= 3.0) == legible
 
 
+def _grey_doc(order):
+    """White `lg` text on a 50% black+white rect, with the mix declared in
+    the given ink order. The two orders paint the same ground (a 50%
+    checkerboard either way), so they must be judged the same."""
+    a, b = order
+    return {
+        "v": 1, "meta": {}, "bg": "white",
+        "palette": {"grey-mid": {"c": a, "c2": b}},
+        "ops": [
+            {"op": "rect", "x": 0, "y": 0, "w": 400, "h": 200, "c": "grey-mid", "fill": True},
+            {"op": "text", "x": 20, "y": 20, "s": "Hi", "f": "lg", "c": "white"},
+        ],
+    }
+
+
+def test_contrast_ground_is_the_colour_a_mix_fuses_to(font_dir):
+    """A mixed ground is judged as the single colour it fuses to, not as
+    whichever of its inks happened to win a tie.
+
+    White text on `grey-mid` is the case: sampled per pixel the ground is
+    black and white tied 50/50, and the tie-break alone decided between
+    12.06:1 (silent) and 1.00:1 (warns). Neither is the answer. The ground
+    is a fill, and a fill averages its two inks (decision 3), so the ground
+    is `#7F7F7C` and the ratio is 2.95 — which is the number SPEC.md's
+    mid-tone tier already published for this colour."""
+    msgs = _contrast_msgs(check(_grey_doc(("black", "white")), font_dir))
+    assert len(msgs) == 1
+    assert "white on black+white is 2.9:1" in msgs[0]
+
+
+def test_contrast_ground_does_not_depend_on_ink_order(font_dir):
+    """The same ground written the other way round is the same ground."""
+    assert _contrast_msgs(check(_grey_doc(("black", "white")), font_dir)) == _contrast_msgs(
+        check(_grey_doc(("white", "black")), font_dir)
+    )
+
+
+def test_contrast_warns_red_white_50_on_pink(font_dir):
+    """The one mixed-ground case the wall has actually judged, and it judged
+    it poor: docs/plans/ink-mixing.md decision 11, `red/white 50 on pink`,
+    2.4:1. Every pixel of that glyph differs from the pixel beneath it — the
+    dither lands in counter-phase — so no per-pixel rule catches it. It
+    fails because the letterform fuses to the colour the ground fuses to."""
+    doc = {
+        "v": 1, "meta": {}, "bg": "white",
+        "palette": {"pink": {"c": "white", "c2": "red"}, "ink": {"c": "red", "c2": "white"}},
+        "ops": [
+            {"op": "rect", "x": 0, "y": 0, "w": 400, "h": 200, "c": "pink", "fill": True},
+            {"op": "text", "x": 20, "y": 20, "s": "Hi", "f": "lg", "c": "ink"},
+        ],
+    }
+    msgs = _contrast_msgs(check(doc, font_dir))
+    assert len(msgs) == 1
+    assert "2.4:1" in msgs[0]
+
+
+def test_contrast_does_not_warn_a_mix_on_a_ground_that_suits_it(font_dir):
+    """The other side of the same rule: `pink` on `navy` is decision 3's
+    "genuine pink" — neither of its inks matches either of the ground's, and
+    fusing the ground does not change that."""
+    doc = {
+        "v": 1, "meta": {}, "bg": "white",
+        "palette": {"pink": {"c": "white", "c2": "red"}, "navy": {"c": "black", "c2": "blue"}},
+        "ops": [
+            {"op": "rect", "x": 0, "y": 0, "w": 400, "h": 200, "c": "navy", "fill": True},
+            {"op": "text", "x": 20, "y": 20, "s": "Hi", "f": "lg", "c": "pink"},
+        ],
+    }
+    assert _contrast_msgs(check(doc, font_dir)) == []
+
+
+def test_contrast_does_not_fuse_two_regions_the_eye_can_resolve(font_dir):
+    """Fusing is a property of a 1 px dither, not of a box that happens to
+    hold two colours. White text sitting mostly on a green rect, overlapping
+    the white page at one edge, is judged against green (4.4:1) — averaging
+    the whole box instead would invent a mid colour that is nowhere on the
+    canvas and warn at 2.8:1. samples/display.json ops[43] is exactly this
+    shape, which is how the case was found."""
+    doc = {
+        "v": 1, "meta": {}, "bg": "white", "palette": {},
+        "ops": [
+            {"op": "rect", "x": 0, "y": 0, "w": 400, "h": 100, "c": "green", "fill": True},
+            {"op": "text", "x": 20, "y": 20, "s": "Hi", "f": "lg", "c": "white"},
+        ],
+    }
+    assert _contrast_msgs(check(doc, font_dir)) == []
+
+
+def test_contrast_judges_a_tied_ground_by_its_harder_half(font_dir):
+    """When a box really does sit half on one ground and half on another,
+    there is no majority to pick and no reason to flip a coin. Both halves
+    hold text, so the harder half is the answer — the same rule the wrapped
+    text block already follows across its lines."""
+    # "Hi" at lg spans x 20..68, so a blue rect ending at x=44 covers
+    # exactly half of it and the white page covers the rest.
+    doc = {
+        "v": 1, "meta": {}, "bg": "white", "palette": {},
+        "ops": [
+            {"op": "rect", "x": 0, "y": 0, "w": 44, "h": 200, "c": "blue", "fill": True},
+            {"op": "text", "x": 20, "y": 20, "s": "Hi", "f": "lg", "c": "white"},
+        ],
+    }
+    msgs = _contrast_msgs(check(doc, font_dir))
+    assert len(msgs) == 1
+    assert "white on white is 1.0:1" in msgs[0]
+
+
+def test_contrast_ratio_is_floored_not_rounded(font_dir):
+    """A ratio just under the floor must not print as "3.0:1 (below 3:1)"."""
+    msgs = _contrast_msgs(check(_grey_doc(("black", "white")), font_dir))
+    assert "3.0:1" not in msgs[0]
+
+
 # ---- warning 2: a chromatic mix used as text shifts toward its lighter ink
 
 
