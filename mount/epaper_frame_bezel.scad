@@ -79,6 +79,7 @@ aa_h       = 270.4;
 aa_off     = 3.0;        // glass edge to active area, three edges
 aa_off_fpc = 11.3;       // glass edge to active area, FPC edge
 panel_fit  = 1.6;        // total pocket clearance around the glass (0.8 a side; was 0.6 until the -0.05 joints closed the ring up)
+pocket_shift = 0.5;      // pocket moved this far away from the FPC edge, so the extra clearance is all at the top and the notch wall keeps its 2.9
 bump_t     = 1.2;        // fan-out area stands this far off the BACK of the glass
 bump_w     = 11.0;       // ... over this strip along the FPC edge (mock-up)
 fpc_fold_t = 1.8;        // the folded flex stands this far off the back of the glass (mock-up)
@@ -231,7 +232,7 @@ module ring(ft = face_t, th = thick) {
   difference() {
     translate([0, 0, -th]) linear_extrude(th) rrect(Wout, Hout, outer_r);
     // panel pocket, open to the back
-    translate([0, glass_cy, -th - 1])
+    translate([0, glass_cy + pocket_shift, -th - 1])
       linear_extrude(th - ft + 1) square([pocket_w, pocket_h], center = true);
     // window
     translate([0, aa_cy, -ft - 1])
