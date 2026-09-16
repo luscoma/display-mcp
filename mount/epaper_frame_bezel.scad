@@ -196,7 +196,7 @@ final_rot = (fpc_side == "bottom") ? 0 : (fpc_side == "top") ? 180 : (fpc_side =
 echo(str("rabbet ", Wr, " x ", Hr, " mm; spacer outer ", Wout, " x ", Hout, " x ", thick));
 echo(str("window (back) ", win_w, " x ", win_h, "; front opening ", win_w + 2*bevel, " x ", win_h + 2*bevel));
 echo(str("lip over glass: sides ", lip_side, " top ", lip_top, " fpc ", lip_bot));
-echo(str("wall: sides ", gap_side - panel_fit/2, " top ", gap_top - panel_fit/2, " fpc ", gap_bot - panel_fit/2, " (", gap_bot - fpc_notch_out, " left outside the notch)"));
+echo(str("wall: sides ", gap_side - panel_fit/2, " top ", gap_top - panel_fit/2 - pocket_shift, " fpc ", gap_bot - panel_fit/2 + pocket_shift, " (", gap_bot - fpc_notch_out, " left outside the notch)"));
 echo(str("visible bezel with ", frame_lip, " mm lip: sides ", gap_side + lip_side - frame_lip + rabbet_fit/2, " top ", gap_top + lip_top - frame_lip + rabbet_fit/2, " fpc ", gap_bot + lip_bot - frame_lip + rabbet_fit/2));
 echo(str("notch x ", notch_x0, " .. ", notch_x1, "; tail x ", tail_x0, " .. ", tail_x1));
 if (thick > rabbet_depth + 0.05)
