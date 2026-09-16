@@ -115,6 +115,8 @@ The second print (all three fixes in) went together and fits the frame. Its
 one finding: the dovetails were loose at 0.15 mm fit in PETG. The fit
 ladder (`part = "joints"`: one tab, sockets at 0.10 / 0.05 / 0 / −0.05)
 settled it on 2026-09-10: **−0.05** seats right, so `tab_fit` is −0.05.
+With the joints closed the ring no longer spreads, and the glass pocket
+was tight, so `panel_fit` went from 0.6 to 1.6 (0.8 a side) on 2026-09-15.
 The socket is cut 0.05 smaller than the tab and the print's own inside
 corners take up the rest. That number is specific to PETG on this printer;
 the ladder exists so anyone changing either prints it first rather than

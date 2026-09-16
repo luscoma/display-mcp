@@ -108,7 +108,8 @@ second ladder) prints:
   default; left/right swap the rabbet dimensions for a landscape hang.
 - **Your frame's lip overhang** only changes the visible bezel widths, not
   the part; `frame_lip` is mock-up only.
-- The glass has 0.3 mm of float behind the face plate. The spacer's back is
+- The glass has 0.3 mm of float behind the face plate and 0.8 mm a side in
+  the pocket (raised from 0.3 once the -0.05 dovetails closed the ring up). The spacer's back is
   2.0 mm behind the glass, so nothing presses on the panel; if it ticks, a
   strip of 2 mm foam tape on the backing board over the top dead border
   (not the ribbon edge) settles it.
