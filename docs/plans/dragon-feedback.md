@@ -192,11 +192,14 @@ The store already records requests for names nothing is published under
   panel has asked for. That is the answer to "which name is the panel
   configured to request": the server cannot read the firmware's `dl_url`,
   but it can say what has actually been asked for and when.
-- `set_display`'s return adds `recent_fetch_at`, `recent_fetch_ago` (of the
-  previous record, which `publish()` keeps) and a `note`: *"no panel has
-  ever fetched 'charizard'; recent fetches: default 12m ago"* when the name
-  has no record, `null` otherwise. Catching the mistake in the ack is what
-  the report asked for, and it costs one dictionary lookup.
+- `set_display`'s return adds `recent_fetch_at` and `recent_fetch_ago`,
+  taken from the record `publish()` keeps across a publish. `null` means no
+  panel has ever asked for this name, and that is the whole signal: the
+  docstring, `guide()` and `docs/PLAN.md` say so in one sentence each, and
+  point at `status()` for the names that *have* been fetched. No prose
+  `note` in the ack — the field is the fact, and a sentence restating it
+  would be a second thing to keep true. (Decided 2026-09-18; an earlier
+  draft had the note.)
 
 ### D8. `copy_display(source, name)`
 
@@ -394,7 +397,7 @@ vocabulary entry is a red test, not a partial feature.
 | A4 | `validate: the effective colour of every name, and the byte ceiling` | `mcp_server.py`; `docs/PLAN.md` tool table | `colors` covers bg, every op colour and every palette key; a mix reports its `Ink.avg` hex; an unknown name is in `warnings` and not in `colors`; `max_bytes == MAX_DOC_BYTES` | §4c, §4e |
 | A5 | `preview: an optional 100 px grid` | `render/__init__.py` (`grid_overlay`); `mcp_server.py` | grid pixels appear only with `grid=True`; `render()` output is unchanged; the note names the overlay; six-ink test still passes | §4a |
 | A6 | `swatches: every named colour as a chip, and the sheet is a document` | `render/__init__.py` (`swatch_document`); `mcp_server.py`; `cli.py` (`swatches`); `ink-mixing.md` "Still open" | the sheet validates clean; every ink and built-in appears once; a document's palette entries are appended; flat pixel at each chip equals the SPEC hex | §4b, §4d, ink-mixing.md's closing coupon |
-| A7 | `store, mcp: say who has been fetching` | `store.py` (`fetched_names`); `mcp_server.py` (`status` `requested`, `set_display` note); `tests/fakes.py`; `docs/PLAN.md` | an unpublished fetched name shows in `status()`; publishing a never-fetched name returns the note; publishing a fetched name returns `null`; `names()` is unchanged | §5b, §5c |
+| A7 | `store, mcp: say who has been fetching` | `store.py` (`fetched_names`); `mcp_server.py` (`status` `requested`, `set_display` `recent_fetch_*`, docstrings); `prompts/compose.md`; `tests/fakes.py`; `docs/PLAN.md` | an unpublished fetched name shows in `status()`; publishing a never-fetched name returns `recent_fetch_at: null`; publishing a fetched name returns its last fetch; `names()` is unchanged | §5b, §5c |
 | A8 | `mcp: copy_display` | `mcp_server.py`; `tests/test_mcp.py`; `docs/PLAN.md` | copy has the same hash and a newer `generated`; unknown source is a `ToolError` | §5d |
 
 A1 goes first because it is the bug and nothing depends on it. A3 before
