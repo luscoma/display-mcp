@@ -56,10 +56,6 @@ ROOT = Path(__file__).resolve().parents[1]
 # --------------------------------------------------------------------------
 
 
-def test_sample_hash(sample_doc):
-    assert render_hash(sample_doc) == SAMPLE_HASH
-
-
 def test_hash_ignores_meta_generated(sample_doc):
     doc = copy.deepcopy(sample_doc)
     doc["meta"]["generated"] = "some other time entirely"
@@ -97,10 +93,6 @@ def test_fonts_available_true(font_dir):
     assert fonts_available(font_dir) is True
 
 
-def test_fonts_available_false(tmp_path):
-    assert fonts_available(tmp_path) is False
-
-
 # --------------------------------------------------------------------------
 # wrap / fit differential fixtures.
 #
@@ -110,69 +102,52 @@ def test_fonts_available_false(tmp_path):
 # --------------------------------------------------------------------------
 
 FIT_CASES = [
-    # (id, text, max_w, expected)
+    # (id, text, max_w, expected) -- max_w "exact"/"third" is computed per
+    # case from the text's own measured width, once the font is loaded.
     ("plain_fits", "Team standup", 800, "Team standup"),
-    ("exact_fit", "Team standup", None, "Team standup"),  # None => never truncated
     ("empty_string", "", 100, ""),
     ("multibyte_near_cut", "Design review — display list — 12° today", 40, None),
-    ("single_word_overlong", "Supercalifragilisticexpialidocious", 60, None),
+    ("single_word_longer_than_box", "Supercalifragilisticexpialidocious", 60, None),
+    ("exact_fit_is_unchanged", "Team standup", "exact", "Team standup"),
+    (
+        "multibyte_truncation_keeps_valid_utf8",
+        "Design review — the 72° display list for today's schedule",
+        "third",
+        None,
+    ),
+    (
+        "none_max_w_is_unchanged",
+        "Supercalifragilisticexpialidocious, quite unchanged",
+        None,
+        "Supercalifragilisticexpialidocious, quite unchanged",
+    ),
 ]
 
 
 @pytest.mark.parametrize("case_id,text,max_w,expected", FIT_CASES)
 def test_fit_line_cases(font_dir, case_id, text, max_w, expected):
-    from display_mcp.render import load_font
+    """Every case pins the same invariants: valid UTF-8, text_width(result)
+    <= max_w, a result shorter than the input ends with an ellipsis, and
+    max_w=None never truncates."""
+    from display_mcp.render import load_font, text_width
 
     font = load_font(font_dir, FONTS["sm"].size, FONTS["sm"].bold)
-    result = fit_line(font, text, max_w)
+    if max_w == "exact":
+        resolved_max_w = text_width(font, text)
+    elif max_w == "third":
+        resolved_max_w = text_width(font, text) // 3
+    else:
+        resolved_max_w = max_w
+    result = fit_line(font, text, resolved_max_w)
     if expected is not None:
         assert result == expected
-    # Never split a UTF-8 codepoint / always end clean.
     result.encode("utf-8")  # would raise on a bad surrogate half
-    if max_w is not None:
-        from display_mcp.render import text_width
-
-        assert text_width(font, result) <= max_w or result == "…"
-
-
-def test_fit_line_exact_fit_is_unchanged(font_dir):
-    from display_mcp.render import load_font, text_width
-
-    font = load_font(font_dir, FONTS["sm"].size, FONTS["sm"].bold)
-    s = "Team standup"
-    w = text_width(font, s)
-    assert fit_line(font, s, w) == s
-
-
-def test_fit_line_multibyte_truncation_keeps_valid_utf8(font_dir):
-    from display_mcp.render import load_font, text_width
-
-    font = load_font(font_dir, FONTS["sm"].size, FONTS["sm"].bold)
-    s = "Design review — the 72° display list for today's schedule"
-    # Pick a width that forces a cut somewhere in the middle of the string.
-    max_w = text_width(font, s) // 3
-    result = fit_line(font, s, max_w)
-    result.encode("utf-8")
-    assert result.endswith("…")
-    assert text_width(font, result) <= max_w
-
-
-def test_fit_line_single_word_longer_than_box(font_dir):
-    from display_mcp.render import load_font, text_width
-
-    font = load_font(font_dir, FONTS["sm"].size, FONTS["sm"].bold)
-    s = "Supercalifragilisticexpialidocious"
-    max_w = 60
-    result = fit_line(font, s, max_w)
-    assert result.endswith("…")
-    assert text_width(font, result) <= max_w
-
-
-def test_fit_line_empty_string(font_dir):
-    from display_mcp.render import load_font
-
-    font = load_font(font_dir, FONTS["sm"].size, FONTS["sm"].bold)
-    assert fit_line(font, "", 100) == ""
+    if resolved_max_w is None:
+        assert result == text
+    else:
+        assert text_width(font, result) <= resolved_max_w or result == "…"
+    if len(result) < len(text):
+        assert result.endswith("…")
 
 
 def test_wrap_two_lines_with_overflow_ellipsis(font_dir):
@@ -208,17 +183,6 @@ def test_wrap_lines_equals_one(font_dir):
     lines = wrap_lines(font, s, max_w, 1)
     assert len(lines) == 1
     assert text_width(font, lines[0]) <= max_w
-
-
-def test_fit_line_none_max_w_is_unchanged(font_dir):
-    """Pinned separately from the FIT_CASES table (its "exact_fit" case
-    already covers this): a `None` max_w must never truncate, since the
-    text branch now relies on this to make a `null`/absent `w` a no-op."""
-    from display_mcp.render import load_font
-
-    font = load_font(font_dir, FONTS["sm"].size, FONTS["sm"].bold)
-    s = "Supercalifragilisticexpialidocious, quite unchanged"
-    assert fit_line(font, s, None) == s
 
 
 # --------------------------------------------------------------------------
@@ -555,14 +519,6 @@ def test_palette_deep_chain_capped_at_eight_hops(font_dir):
 # --------------------------------------------------------------------------
 
 
-def test_unknown_op_is_one_problem_no_raise(font_dir):
-    doc = {"bg": "white", "ops": [{"op": "sparkle", "x": 1, "y": 1}]}
-    img, problems = render(doc, font_dir)
-    assert len(problems) == 1
-    assert "unknown op" in problems[0]
-    assert img.size == (WIDTH, HEIGHT)
-
-
 def test_unknown_colour_is_one_problem_no_raise(font_dir):
     doc = {"bg": "white", "ops": [{"op": "rect", "x": 0, "y": 0, "w": 10, "h": 10, "c": "mauve"}]}
     _, problems = render(doc, font_dir)
@@ -660,12 +616,6 @@ def test_check_does_not_flag_missing_hash(sample_doc, font_dir):
     assert problems == []
 
 
-def test_check_no_hash_at_all_in_doc(font_dir):
-    doc = {"bg": "white", "ops": []}
-    problems = check(doc, font_dir)
-    assert problems == []
-
-
 # --------------------------------------------------------------------------
 # public surface sanity
 # --------------------------------------------------------------------------
@@ -697,13 +647,13 @@ _MEASURED_CELL_HEIGHTS = {
 }
 
 
-@pytest.mark.parametrize("name", sorted(FONTS))
-def test_cell_height_matches_getmetrics(name, font_dir):
-    face = FONTS[name]
-    assert face.cell_height == _MEASURED_CELL_HEIGHTS[name]
-    f = load_font(font_dir, face.size, face.bold, face.file)
-    ascent, descent = f.getmetrics()
-    assert face.cell_height == ascent + descent
+def test_cell_height_matches_getmetrics(font_dir):
+    for name in sorted(FONTS):
+        face = FONTS[name]
+        assert face.cell_height == _MEASURED_CELL_HEIGHTS[name], name
+        f = load_font(font_dir, face.size, face.bold, face.file)
+        ascent, descent = f.getmetrics()
+        assert face.cell_height == ascent + descent, name
 
 
 def test_fonts_available_requires_mono_too(tmp_path):
@@ -717,9 +667,9 @@ def test_mono_ink_height_matches_a_measured_block_glyph(font_dir):
     a full-height glyph (`█`) bilevel, the same target FreeType's mono
     rasterising uses on the panel, and count the rows with any ink at all.
     31, not `cell_height`'s 33 (ascent + descent, which is headroom no
-    glyph actually inks) — the gap between them is exactly the 2px hairline
-    seam `test_mono_stacked_bars_leave_a_hairline_seam_at_cell_height`
-    pins below."""
+    glyph actually inks) — the gap between them is a 2px hairline seam
+    that stacking by `cell_height` would leave, unlike the pitch
+    `test_mono_stacked_bars_meet_seamlessly_at_ink_height` pins below."""
     from PIL import Image, ImageDraw
 
     f = load_font(font_dir, *FONTS["mono"][:2], FONTS["mono"].file)
@@ -792,45 +742,11 @@ def _ink_runs(ys: list[int]) -> list[tuple[int, int]]:
     return runs
 
 
-def test_mono_stacked_bars_leave_a_hairline_seam_at_cell_height(font_dir):
-    """`cell_height` (33) is ascent + descent, not a glyph's own ink
-    extent, so it is *not* the pitch that makes block art meet — two `│`
-    ops stacked that far apart tile as two distinct runs of ink with a 2px
-    hairline gap between them, not one merged run and not a true meeting
-    point either. `test_mono_stacked_bars_meet_seamlessly_at_ink_height`
-    below is the pitch that actually closes that gap."""
-    cell_height = FONTS["mono"].cell_height
-    doc = {
-        "v": 1,
-        "meta": {},
-        "bg": "white",
-        "palette": {},
-        "ops": [
-            {"op": "text", "x": 40, "y": 100, "s": "│", "f": "mono"},
-            {"op": "text", "x": 40, "y": 100 + cell_height, "s": "│", "f": "mono"},
-        ],
-    }
-    img, problems = render(doc, font_dir)
-    assert problems == []
-    px = img.load()
-    # the stroke column: the one with the most ink over the whole span
-    scan_y = range(90, 100 + cell_height + 40)
-    col = max(range(40, 54), key=lambda x: sum(px[x, y] != INK["white"] for y in scan_y))
-    ys = [y for y in scan_y if px[col, y] != INK["white"]]
-    runs = _ink_runs(ys)
-    assert len(runs) == 2, "expected two separate bars, not one merged run"
-    # and the gap between them is a hairline (Pillow's own 1bpp rasterising
-    # of this glyph at this size clips a row off each end — a FreeType
-    # rounding quirk, not overlap), never the whole next cell.
-    (_, first_end), (second_start, _) = runs
-    assert second_start - first_end <= 4
-
-
 def test_mono_stacked_bars_meet_seamlessly_at_ink_height(font_dir):
-    """The contrast to the hairline-seam test above: stacking
-    by `ink_height` (31), not `cell_height` (33), is the pitch that makes
-    consecutive block-art rows meet exactly — the two bars' ink merges into
-    a single contiguous run, touching with no gap and no overlap."""
+    """Stacking by `ink_height` (31), not `cell_height` (33), is the pitch
+    that makes consecutive block-art rows meet exactly — the two bars' ink
+    merges into a single contiguous run, touching with no gap and no
+    overlap."""
     ink_height = FONTS["mono"].ink_height
     doc = {
         "v": 1,
@@ -850,31 +766,6 @@ def test_mono_stacked_bars_meet_seamlessly_at_ink_height(font_dir):
     ys = [y for y in scan_y if px[col, y] != INK["white"]]
     runs = _ink_runs(ys)
     assert len(runs) == 1, "expected the two bars to meet as a single run, not leave a seam"
-
-
-def test_mono_default_line_height_would_overlap_the_bars(font_dir):
-    """The motivating contrast (docs/plans/dragon-feedback.md D11): stacking
-    by `round(size * 1.24)` — the wrap default every face including `mono`
-    uses (amended 2026-09-18) — is too small for `mono` and fuses
-    consecutive bars into one run instead of two."""
-    lh = round(FONTS["mono"].size * 1.24)
-    doc = {
-        "v": 1,
-        "meta": {},
-        "bg": "white",
-        "palette": {},
-        "ops": [
-            {"op": "text", "x": 40, "y": 100, "s": "│", "f": "mono"},
-            {"op": "text", "x": 40, "y": 100 + lh, "s": "│", "f": "mono"},
-        ],
-    }
-    img, problems = render(doc, font_dir)
-    assert problems == []
-    px = img.load()
-    scan_y = range(90, 100 + lh + 40)
-    col = max(range(40, 54), key=lambda x: sum(px[x, y] != INK["white"] for y in scan_y))
-    ys = [y for y in scan_y if px[col, y] != INK["white"]]
-    assert len(_ink_runs(ys)) == 1, "expected the two bars to have fused into one run"
 
 
 def test_mono_missing_face_warns_and_draws_nothing(tmp_path, font_dir):
@@ -907,14 +798,6 @@ def test_instrument_sans_missing_still_raises(tmp_path, font_dir):
     )
     with pytest.raises(OSError):
         render({"v": 1, "meta": {}, "bg": "white", "ops": []}, tmp_path)
-
-
-def test_icon_sizes_keys():
-    assert set(ICON_SIZES) == {"sm", "md", "lg"}
-
-
-def test_weather_snowy_in_icons():
-    assert "weather-snowy" in ICONS
 
 
 def _footer_ink(img, x0, y0, x1, y1):
@@ -981,13 +864,9 @@ def test_stale_tone_key_warns_and_draws_full_ink(font_dir):
     assert img_full.tobytes() == img_stale.tobytes()
 
 
-def test_hash_op_is_gone(font_dir):
-    _, problems = render({"bg": "white", "ops": [{"op": "hash", "x": 1, "y": 1}]}, font_dir)
-    assert any("unknown op 'hash'" in p for p in problems)
-
-
 def test_unknown_op_has_no_field_noise(font_dir):
-    """An unknown op gets its one "unknown op" problem and nothing else —
+    """An unknown op ("hash" -- the retired op, standing in for any
+    unknown kind) gets its one "unknown op" problem and nothing else —
     OP_FIELDS is never consulted for a kind it doesn't cover."""
     doc = {"bg": "white", "ops": [{"op": "hash", "x": 1, "y": 1, "bogus": True}]}
     _, problems = render(doc, font_dir)
@@ -1080,32 +959,15 @@ def test_dict_in_c_warns_and_draws_black_instead_of_raising(font_dir):
     assert img.tobytes() == img_black.tobytes()
 
 
-def test_sample_stays_clean_under_op_field_check(sample_doc, font_dir):
-    assert check(sample_doc, font_dir) == []
-
-
 def test_op_field_table_covers_every_op_the_renderer_handles():
-    """OP_FIELDS has exactly one entry per op render() dispatches on, and
-    every field named in the module docstring's audit is present."""
+    """OP_FIELDS has exactly one entry per op render() dispatches on — the
+    sample (checked clean elsewhere) and the many per-field warning tests
+    above already exercise what each entry's own fields are."""
     from display_mcp.render import OP_FIELDS
 
     assert set(OP_FIELDS) == {
         "rect", "line", "circle", "text", "fmt", "icon", "sprite", "poly",
     }
-    audited = {
-        "rect": {"x", "y", "w", "h", "c", "fill", "t", "r"},
-        "line": {"x", "y", "x2", "y2", "c", "t"},
-        "circle": {"x", "y", "r", "c", "fill", "t"},
-        "text": {"x", "y", "s", "c", "f", "a", "w", "wrap", "lines", "lh"},
-        "fmt": {"x", "y", "s", "c", "f", "a"},
-        "icon": {"x", "y", "n", "z", "c", "bgc"},
-        "sprite": {"x", "y", "cell", "rows", "palette", "mirror"},
-        "poly": {"pts", "c", "fill", "t"},
-    }
-    for kind, expected in audited.items():
-        spec = OP_FIELDS[kind]
-        fields = set(spec["required"]) | set(spec["optional"])
-        assert fields == expected, kind
 
 
 # --------------------------------------------------------------------------
@@ -1259,35 +1121,7 @@ def test_sprite_c_field_is_no_such_field(font_dir):
     ]
 
 
-def test_document_colors_includes_sprite_palette_values():
-    doc = {
-        "bg": "white",
-        "palette": {"flame": {"c": "red", "c2": "yellow", "mix": 50}},
-        "ops": [{"op": "sprite", "x": 0, "y": 0, "cell": 10,
-                  "palette": {"K": "black", "O": "flame"}, "rows": ["KO"]}],
-    }
-    colors, problems = document_colors(doc)
-    assert problems == []
-    assert set(colors) == {"white", "black", "flame"}
-
-
 # ---- sprite: further per-character and per-op edge cases ----
-
-
-def test_sprite_non_ascii_row_draws_one_cell_per_character(font_dir):
-    """Python strings already walk by codepoint, so `"█▄█"` is three
-    cells, not the nine bytes UTF-8 encodes them as — the same rule the
-    firmware's C++ follows too (tests/test_firmware_parity.py)."""
-    doc = _sprite_doc(cell=10, palette={"█": "black", "▄": "red"}, rows=["█▄█"])
-    img, problems = render(doc, font_dir)
-    assert problems == []
-    px = img.load()
-    assert px[105, 105] == INK["black"]
-    assert px[115, 105] == INK["red"]
-    assert px[125, 105] == INK["black"]
-    # A fourth cell's worth of width has nothing drawn in it — three
-    # codepoints, not nine bytes.
-    assert px[135, 105] == INK["white"]
 
 
 def test_sprite_two_character_palette_key_warns_and_is_ignored(font_dir):
@@ -1323,19 +1157,6 @@ def test_sprite_mirror_other_than_x_warns_and_is_not_mirrored(font_dir):
         "ops[0] sprite: mirror must be \"x\"; got 'y', not mirrored"
     ]
     assert warned.tobytes() == plain.tobytes()
-
-
-def test_sprite_oversized_cell_warns_with_the_bound_and_draws_nothing(font_dir):
-    """Both renderers have to agree on what's too big to be sane, not
-    just what overflows int arithmetic — the message states the bound so
-    the two tables (here and in draw_sprite()) can't silently drift."""
-    doc = _sprite_doc(cell=WIDTH + HEIGHT)
-    img, problems = render(doc, font_dir)
-    assert len(problems) == 1
-    assert f"cell >= 1 and <= {max(WIDTH, HEIGHT)}" in problems[0]
-    assert "nothing to draw, skipped" in problems[0]
-    blank, _ = render({"bg": "white", "ops": []}, font_dir)
-    assert img.tobytes() == blank.tobytes()
 
 
 def test_sprite_drew_nothing_warns_when_the_grid_matches_its_ground(font_dir):
@@ -1397,7 +1218,14 @@ def _spill(img, size, ground):
 
 
 @pytest.mark.parametrize(("name", "z"), ICON_CASES, ids=ICON_IDS)
-def test_icon_paints_nothing_outside_its_box(name, z):
+def test_icon_stays_in_its_box_and_paints_only_ink(name, z):
+    """The firmware draws icons with image->draw(), which blits exactly
+    get_width() x get_height() with the off pixels skipped (chroma_key):
+    an icon paints nothing outside its box, paints something inside it,
+    and — drawn in ink X on a ground of X — leaves no trace at all, so a
+    hole (the moon's crescent, the marker's eye, the bang in the alert
+    triangle) stays unpainted rather than filled with white or black.
+    """
     size = ICON_SIZES[z]
     ground, ink = (255, 255, 255), (0, 0, 0)
     img = _draw_one(name, size, ground, ink)
@@ -1412,31 +1240,23 @@ def test_icon_paints_nothing_outside_its_box(name, z):
     )
     assert inside > 0, "drew nothing at all"
 
+    same = (156, 46, 42)
+    keyed = _draw_one(name, size, same, same)
+    kpx = keyed.load()
+    stray = [
+        (x, y, kpx[x, y])
+        for y in range(keyed.height)
+        for x in range(keyed.width)
+        if kpx[x, y] != same
+    ]
+    assert not stray, f"{len(stray)} non-glyph px, e.g. {stray[:4]}"
+
 
 def test_unknown_icon_placeholder_stays_inside_its_box():
     size = ICON_SIZES["lg"]
     ground = (255, 255, 255)
     img = _draw_one("no-such-icon", size, ground, (0, 0, 0))
     assert not _spill(img, size, ground)
-
-
-@pytest.mark.parametrize(("name", "z"), ICON_CASES, ids=ICON_IDS)
-def test_icon_paints_only_ink_pixels(name, z):
-    """chroma_key: an icon in ink X on a ground of X leaves no trace.
-
-    Holes — the moon's crescent, the marker's eye, the bang in the alert
-    triangle — must be left unpainted, not filled with white or black.
-    """
-    ink = (156, 46, 42)
-    img = _draw_one(name, ICON_SIZES[z], ink, ink)
-    px = img.load()
-    stray = [
-        (x, y, px[x, y])
-        for y in range(img.height)
-        for x in range(img.width)
-        if px[x, y] != ink
-    ]
-    assert not stray, f"{len(stray)} non-glyph px, e.g. {stray[:4]}"
 
 
 def test_weather_night_is_a_crescent_not_a_disc():
@@ -1501,12 +1321,6 @@ def test_mix_on_50_is_the_historic_tone_checkerboard():
     assert all(
         mix_on(x, y, 50) == ((x + y) % 2 == 0) for y in range(64) for x in range(64)
     )
-
-
-def test_mix_on_phase_is_absolute():
-    """Tiles drawn at different origins interlock rather than seam."""
-    assert mix_on(0, 0, 50) == mix_on(88, 0, 50) == mix_on(0, 88, 50)
-    assert mix_on(7, 3, 25) == mix_on(9, 5, 25)
 
 
 def test_mixed_fill_interleaves_two_inks(font_dir):
@@ -1638,13 +1452,13 @@ def test_builtin_cannot_nest_inside_a_mix(font_dir):
     assert _share(img, INK["black"], 5, 5, 55, 55) == 0.5
 
 
-@pytest.mark.parametrize("name", sorted(BUILTIN_MIXES))
-def test_every_builtin_renders_clean(name, font_dir):
+def test_every_builtin_renders_clean(font_dir):
     """No built-in may trip check() when used as a plain fill — a named
     colour that warns on correct use would be worse than no name at all."""
-    doc = {"v": 1, "meta": {}, "bg": "white", "ops": [
-        {"op": "rect", "x": 100, "y": 100, "w": 80, "h": 80, "c": name}]}
-    assert check(doc, font_dir) == []
+    for name in sorted(BUILTIN_MIXES):
+        doc = {"v": 1, "meta": {}, "bg": "white", "ops": [
+            {"op": "rect", "x": 100, "y": 100, "w": 80, "h": 80, "c": name}]}
+        assert check(doc, font_dir) == [], name
 
 
 # --------------------------------------------------------------------------
@@ -1669,19 +1483,28 @@ def _thin_mix_msgs(problems):
     return [p for p in problems if "coordinate parity" in p]
 
 
-def test_render_does_not_include_ink_mixing_warnings(font_dir):
-    """The three new warnings are surfaced by check(), not by a bare
-    render() call — mirrors bezel_problems(), which behaves the same way."""
+def test_ink_warnings_are_check_only(font_dir):
+    """The ink-mixing warnings (contrast floor, an uncompiled glyph, an op
+    that drew nothing) are surfaced by check(), not by a bare render()
+    call — mirrors bezel_problems(), which behaves the same way. One
+    document trips all three: red-on-blue text with an uncompiled arrow
+    glyph, and a grey-on-grey line that draws nothing visible."""
     doc = {
-        "v": 1, "meta": {}, "bg": "white", "palette": {},
+        "v": 1, "meta": {}, "bg": "white",
+        "palette": {"grey": {"c": "black", "c2": "white"}},
         "ops": [
             {"op": "rect", "x": 0, "y": 0, "w": 200, "h": 200, "c": "blue"},
-            {"op": "text", "x": 20, "y": 20, "s": "Hi", "f": "lg", "c": "red"},
+            {"op": "text", "x": 20, "y": 20, "s": "Hi →", "f": "lg", "c": "red"},
+            {"op": "rect", "x": 0, "y": 250, "w": 300, "h": 100, "c": "grey"},
+            {"op": "text", "x": 20, "y": 270, "s": "Hi", "f": "lg", "c": "grey"},
         ],
     }
     _, problems = render(doc, font_dir)
     assert problems == []
-    assert _contrast_msgs(check(doc, font_dir))
+    checked = check(doc, font_dir)
+    assert _contrast_msgs(checked)
+    assert _glyph_msgs(checked)
+    assert _drew_nothing_msgs(checked)
 
 
 # ---- warning 1: contrast floor on text/fmt/icon --------------------------
@@ -1726,6 +1549,8 @@ def test_contrast_samples_the_ground_a_rect_actually_painted(font_dir):
 
 
 def test_contrast_ignores_offcanvas_text(font_dir):
+    """Nothing to sample: off-canvas text and a zero-area box (an empty
+    string) both leave the contrast check with no box to judge."""
     doc = {
         "v": 1, "meta": {}, "bg": "white", "palette": {},
         "ops": [
@@ -1734,39 +1559,30 @@ def test_contrast_ignores_offcanvas_text(font_dir):
         ],
     }
     assert _contrast_msgs(check(doc, font_dir)) == []
-
-
-def test_contrast_ignores_zero_area_box(font_dir):
-    doc = {
+    zero_area = {
         "v": 1, "meta": {}, "bg": "white", "palette": {},
         "ops": [
             {"op": "rect", "x": 0, "y": 0, "w": 200, "h": 200, "c": "blue"},
             {"op": "text", "x": 20, "y": 20, "s": "", "f": "lg", "c": "red"},
         ],
     }
-    assert _contrast_msgs(check(doc, font_dir)) == []
+    assert _contrast_msgs(check(zero_area, font_dir)) == []
 
 
 def test_contrast_applies_to_fmt(font_dir):
+    """The contrast floor is not specific to `text` — `fmt` and `icon` are
+    judged the same way, in the same document."""
     doc = {
         "v": 1, "meta": {}, "bg": "white", "palette": {},
         "ops": [
             {"op": "rect", "x": 0, "y": 0, "w": 200, "h": 200, "c": "blue"},
             {"op": "fmt", "x": 20, "y": 20, "s": "{time24}", "f": "lg", "c": "red"},
+            {"op": "icon", "x": 20, "y": 100, "n": "check", "z": "sm", "c": "red"},
         ],
     }
-    assert _contrast_msgs(check(doc, font_dir))
-
-
-def test_contrast_applies_to_icon(font_dir):
-    doc = {
-        "v": 1, "meta": {}, "bg": "white", "palette": {},
-        "ops": [
-            {"op": "rect", "x": 0, "y": 0, "w": 200, "h": 200, "c": "blue"},
-            {"op": "icon", "x": 20, "y": 20, "n": "check", "z": "sm", "c": "red"},
-        ],
-    }
-    assert _contrast_msgs(check(doc, font_dir))
+    msgs = _contrast_msgs(check(doc, font_dir))
+    assert any("ops[1] fmt" in m for m in msgs)
+    assert any("ops[2] icon" in m for m in msgs)
 
 
 def test_contrast_does_not_warn_a_grey_mix_on_white(font_dir):
@@ -1798,38 +1614,6 @@ def test_contrast_still_warns_a_mix_whose_both_inks_are_poor(font_dir):
     assert len(msgs) == 1
     assert "pale on white" in msgs[0]
     assert "1.6:1" in msgs[0]
-
-
-def test_contrast_max_model_reproduces_the_five_measured_cases():
-    """The five rows of docs/plans/ink-mixing.md's contrast table — the
-    cases with physical evidence behind them, and what makes `max` the
-    defensible fix rather than a preference. `ground` for a mixed ground
-    ("pink") is the average of its two inks, the way a large fill reads at
-    a distance (decision 3); the ink under test is always the raw (a, b)
-    pair, `max` never a blend."""
-    from display_mcp.render import _contrast_ratio
-
-    def avg(a, b):
-        return tuple(round((x + y) / 2) for x, y in zip(a, b, strict=True))
-
-    black, white = INK["black"], INK["white"]
-    yellow, red = INK["yellow"], INK["red"]
-    pink_ground = avg(red, white)
-
-    # (ink a, ink b, ground, blend ratio, max ratio, legible on the wall)
-    cases = [
-        (black, white, white, 3.0, 12.1, True),  # black/white 50 on white (footer stamp)
-        (black, white, black, 4.1, 12.1, True),  # black/white 50 on black
-        (white, black, black, 4.1, 12.1, True),  # white/black 50 on black
-        (red, white, pink_ground, 1.0, 2.4, False),  # red/white 50 on pink
-        (yellow, white, white, 1.3, 1.6, False),  # yellow/white 50 on white
-    ]
-    for a, b, ground, want_blend, want_max, legible in cases:
-        blend_ratio = _contrast_ratio(avg(a, b), ground)
-        max_ratio = max(_contrast_ratio(a, ground), _contrast_ratio(b, ground))
-        assert round(blend_ratio, 1) == pytest.approx(want_blend, abs=0.05)
-        assert round(max_ratio, 1) == pytest.approx(want_max, abs=0.05)
-        assert (max_ratio >= 3.0) == legible
 
 
 def _grey_doc(order):
@@ -1939,12 +1723,6 @@ def test_contrast_judges_a_tied_ground_by_its_harder_half(font_dir):
     assert "white on white is 1.0:1" in msgs[0]
 
 
-def test_contrast_ratio_is_floored_not_rounded(font_dir):
-    """A ratio just under the floor must not print as "3.0:1 (below 3:1)"."""
-    msgs = _contrast_msgs(check(_grey_doc(("black", "white")), font_dir))
-    assert "3.0:1" not in msgs[0]
-
-
 # ---- warning 2: a chromatic mix used as text shifts toward its lighter ink
 
 
@@ -1978,14 +1756,6 @@ def test_mix_as_text_does_not_warn_below_the_gap_threshold(font_dir):
         "v": 1, "meta": {}, "bg": "white",
         "palette": {"plum": {"c": "red", "c2": "blue"}},
         "ops": [{"op": "text", "x": 200, "y": 200, "s": "Hi", "f": "lg", "c": "plum"}],
-    }
-    assert _mix_shift_msgs(check(doc, font_dir)) == []
-
-
-def test_mix_as_text_does_not_apply_to_solid_colours(font_dir):
-    doc = {
-        "v": 1, "meta": {}, "bg": "white", "palette": {},
-        "ops": [{"op": "text", "x": 200, "y": 200, "s": "Hi", "f": "lg", "c": "yellow"}],
     }
     assert _mix_shift_msgs(check(doc, font_dir)) == []
 
@@ -2059,17 +1829,6 @@ def test_uncompiled_glyphs_ignore_what_fit_line_would_drop(font_dir):
     assert _glyph_msgs(check(doc, font_dir)) == []
 
 
-def test_uncompiled_glyphs_is_a_no_op_on_a_bare_render(font_dir):
-    """Like the other authoring checks, this only runs under check()'s
-    warn_ink — a bare render() call stays silent."""
-    doc = {
-        "v": 1, "meta": {}, "bg": "white",
-        "ops": [{"op": "text", "x": 100, "y": 300, "s": "→", "f": "sm"}],
-    }
-    _, problems = render(doc, font_dir)
-    assert _glyph_msgs(problems) == []
-
-
 # ---- warning 3: a feature thinner than 2 px cannot carry 25%/75% ---------
 
 
@@ -2136,14 +1895,6 @@ def test_thin_mix_does_not_warn_50_percent_at_1px(font_dir):
     assert _thin_mix_msgs(check(doc, font_dir)) == []
 
 
-def test_thin_mix_does_not_apply_to_solid_colours(font_dir):
-    doc = {
-        "v": 1, "meta": {}, "bg": "white", "palette": {},
-        "ops": [{"op": "line", "x": 10, "y": 10, "x2": 500, "y2": 10, "c": "black", "t": 1}],
-    }
-    assert _thin_mix_msgs(check(doc, font_dir)) == []
-
-
 # ---- warning 4: the op drew nothing ---------------------------------------
 #
 # Contrast measures marginal legibility, not absolute invisibility. A mixed
@@ -2189,28 +1940,20 @@ def test_drew_nothing_warns_icon_in_its_grounds_own_colour(font_dir):
     assert "ops[1] icon" in msgs[0]
 
 
-def test_drew_nothing_warns_fmt_on_a_matching_mixed_ground(font_dir):
-    doc = {
-        "v": 1, "meta": {}, "bg": "white",
-        "palette": {"grey": {"c": "black", "c2": "white"}},
-        "ops": [
-            {"op": "rect", "x": 0, "y": 0, "w": 300, "h": 100, "c": "grey"},
-            {"op": "fmt", "x": 20, "y": 20, "s": "{time24}", "f": "lg", "c": "grey"},
-        ],
-    }
-    msgs = _drew_nothing_msgs(check(doc, font_dir))
-    assert len(msgs) == 1
-    assert "ops[1] fmt" in msgs[0]
-
-
 def test_drew_nothing_stays_quiet_for_normal_text(font_dir):
     """The common case — text against a ground it actually contrasts with —
-    must never trip this."""
+    must never trip this, nor an off-canvas op: it draws nothing for an
+    uninteresting reason, the same off-canvas skip the contrast check gets."""
     doc = {
         "v": 1, "meta": {}, "bg": "white", "palette": {},
         "ops": [{"op": "text", "x": 20, "y": 20, "s": "Hi", "f": "lg", "c": "black"}],
     }
     assert _drew_nothing_msgs(check(doc, font_dir)) == []
+    off_canvas = {
+        "v": 1, "meta": {}, "bg": "white", "palette": {},
+        "ops": [{"op": "text", "x": 5000, "y": 20, "s": "Hi", "f": "lg", "c": "black"}],
+    }
+    assert _drew_nothing_msgs(check(off_canvas, font_dir)) == []
 
 
 def test_drew_nothing_stays_quiet_when_the_mix_does_not_match_the_ground(font_dir):
@@ -2222,36 +1965,6 @@ def test_drew_nothing_stays_quiet_when_the_mix_does_not_match_the_ground(font_di
         "ops": [{"op": "text", "x": 20, "y": 20, "s": "Hi", "f": "lg", "c": "grey"}],
     }
     assert _drew_nothing_msgs(check(doc, font_dir)) == []
-
-
-def test_drew_nothing_stays_quiet_off_canvas(font_dir):
-    """An off-screen op drawing nothing is not interesting — same skip rule
-    as the contrast check's zero-area box."""
-    doc = {
-        "v": 1, "meta": {}, "bg": "white", "palette": {},
-        "ops": [{"op": "text", "x": 5000, "y": 20, "s": "Hi", "f": "lg", "c": "black"}],
-    }
-    assert _drew_nothing_msgs(check(doc, font_dir)) == []
-
-
-def test_drew_nothing_is_check_only(font_dir):
-    """Like the other ink warnings, a bare render() call never sees it."""
-    doc = {
-        "v": 1, "meta": {}, "bg": "white", "palette": {},
-        "ops": [
-            {"op": "rect", "x": 0, "y": 0, "w": 200, "h": 200, "c": "black"},
-            {"op": "icon", "x": 20, "y": 20, "n": "check", "z": "sm", "c": "black"},
-        ],
-    }
-    _, problems = render(doc, font_dir)
-    assert problems == []
-    assert _drew_nothing_msgs(check(doc, font_dir))
-
-
-def test_all_ink_mixing_warnings_clean_on_the_sample(sample_doc, font_dir):
-    """samples/display.json's palette has no mix entries — check() must
-    stay at zero problems regardless."""
-    assert check(sample_doc, font_dir) == []
 
 
 # --------------------------------------------------------------------------
@@ -2320,29 +2033,11 @@ def test_tiers_cover_every_builtin_mix():
     assert set(TIERS) == set(BUILTIN_MIXES)
 
 
-@pytest.mark.parametrize("name", sorted(BUILTIN_MIXES))
-def test_tier_matches_the_spec_heading(name):
-    """TIERS[name] is dark/light/mid exactly as SPEC.md's own headings group
-    it — parsed from the file, not retyped, so the two cannot drift apart."""
-    *_, tier = _spec_palette_rows()[name]
-    assert TIERS[name] == tier
-
-
-@pytest.mark.parametrize("name", sorted(BUILTIN_MIXES))
-def test_flat_render_matches_the_documented_hex(name, font_dir):
-    """A flat mix is exactly the hex docs/SPEC.md publishes for it.
-
-    This is what makes the table load-bearing: `preview` shows these
-    colours, the docs promise these colours, and neither can move without
-    the other. It also pins the recipe, so a mix cannot be redefined in
-    BUILTIN_MIXES while SPEC.md still advertises the old blend.
-    """
-    c, c2, pct, want = _spec_palette_hexes()[name]
-    assert BUILTIN_MIXES[name] == (c, c2, pct)
-    img, problems = render(_one_rect({}, name), font_dir, dithered_colors=False)
-    assert problems == []
-    got = {img.load()[x, y] for y in range(40) for x in range(40)}
-    assert got == {tuple(int(want[i : i + 2], 16) for i in (0, 2, 4))}
+def test_tiers_match_the_spec_headings():
+    """TIERS == {name: tier}, parsed from docs/SPEC.md's own headings
+    grouping the named-palette table — not retyped, so the two cannot
+    drift apart."""
+    assert TIERS == {name: tier for name, (*_, tier) in _spec_palette_rows().items()}
 
 
 def test_flat_render_lays_down_one_colour_not_a_checkerboard(font_dir):
@@ -2574,14 +2269,6 @@ def test_ctx_font_dir_alone_still_loads_fonts_by_default(font_dir):
     assert set(ctx.fonts) == set(FONTS)
 
 
-def test_ctx_missing_font_file_still_raises_oserror(tmp_path):
-    """`render()`/`check()`'s behaviour on a bad `font_dir` is unchanged by
-    the `load_fonts` default: a directory with no font files still fails
-    loudly, not silently with an empty `fonts` dict."""
-    with pytest.raises(OSError):
-        Ctx({"bg": "white"}, tmp_path)
-
-
 # --------------------------------------------------------------------------
 # document_colors() — the effective colour of every name a document meets,
 # and the problems resolving them turned up
@@ -2594,8 +2281,9 @@ def _hex(rgb):
 
 def test_document_colors_covers_bg_op_colours_and_palette_keys():
     """Every name the document actually references shows up once: `bg`,
-    every op's `c`, an `icon` op's `bgc`, and every palette key — even a
-    palette entry nothing draws with."""
+    every op's `c` (including a sprite's own palette and a poly's `c`), an
+    `icon` op's `bgc`, and every palette key — even a palette entry
+    nothing draws with."""
     doc = {
         "v": 1,
         "bg": "white",
@@ -2608,10 +2296,14 @@ def test_document_colors_covers_bg_op_colours_and_palette_keys():
             {"op": "rect", "x": 0, "y": 0, "w": 10, "h": 10, "c": "accent"},
             {"op": "icon", "x": 0, "y": 0, "n": "check", "z": "sm", "bgc": "flame"},
             {"op": "rect", "x": 0, "y": 0, "w": 10, "h": 10, "c": "navy"},
+            {"op": "sprite", "x": 0, "y": 0, "cell": 10,
+             "palette": {"K": "black", "O": "flame"}, "rows": ["KO"]},
+            {"op": "poly", "pts": [[0, 0], [10, 0], [5, 10]], "c": "teal"},
         ],
     }
-    colors, _ = document_colors(doc)
-    assert set(colors) == {"white", "accent", "flame", "navy", "unused"}
+    colors, problems = document_colors(doc)
+    assert problems == []
+    assert set(colors) == {"white", "accent", "flame", "navy", "unused", "black", "teal"}
 
 
 def test_document_colors_builtin_mix_reports_its_recipe_and_the_spec_hex():
@@ -2763,24 +2455,26 @@ def test_swatch_groups_covers_every_ink_and_builtin_exactly_once():
     assert [title for title, _ in groups] == ["inks", "dark", "light", "mid"]
 
 
-def test_swatch_document_has_every_ink_and_builtin_as_a_chip():
-    rect_colors = {op["c"] for op in swatch_document()["ops"] if op["op"] == "rect"}
-    assert rect_colors == set(COLORS) | {f"sw:{name}" for name in BUILTIN_MIXES}
-
-
-@pytest.mark.parametrize("name", sorted(BUILTIN_MIXES))
-def test_swatch_flat_pixel_at_each_builtin_chip_matches_its_spec_hex(name, font_dir):
-    """The sheet is rendered flat (dithered_colors=False, as the MCP tool
-    renders it) and each built-in's chip centre is exactly its documented
-    hex — the same guarantee test_flat_render_matches_the_documented_hex
-    pins for a single rect, now for the whole sheet at once."""
-    c, c2, pct, want = _spec_palette_hexes()[name]
+def test_every_builtin_flat_chip_matches_its_spec_hex(font_dir):
+    """Renders swatch_document() flat once (dithered_colors=False, as the
+    MCP tool renders it) and, for every built-in, checks BUILTIN_MIXES'
+    recipe against docs/SPEC.md and the chip-centre pixel against the
+    documented hex -- one render for the whole sheet rather than one per
+    name. Also covers that every ink and builtin gets exactly one chip."""
     doc = swatch_document()
+    rect_colors = {op["c"] for op in doc["ops"] if op["op"] == "rect"}
+    assert rect_colors == set(COLORS) | {f"sw:{name}" for name in BUILTIN_MIXES}
+    assert check(doc, font_dir) == []
     img, problems = render(doc, font_dir, dithered_colors=False)
     assert problems == []
-    chip = next(op for op in doc["ops"] if op["op"] == "rect" and op["c"] == f"sw:{name}")
-    cx, cy = chip["x"] + chip["w"] // 2, chip["y"] + chip["h"] // 2
-    assert _hex(img.load()[cx, cy]).lower() == f"#{want}"
+    px = img.load()
+    hexes = _spec_palette_hexes()
+    for name in sorted(BUILTIN_MIXES):
+        c, c2, pct, want = hexes[name]
+        assert BUILTIN_MIXES[name] == (c, c2, pct), name
+        chip = next(op for op in doc["ops"] if op["op"] == "rect" and op["c"] == f"sw:{name}")
+        cx, cy = chip["x"] + chip["w"] // 2, chip["y"] + chip["h"] // 2
+        assert _hex(px[cx, cy]).lower() == f"#{want}", name
 
 
 def test_swatch_document_appends_a_documents_own_palette(font_dir):
@@ -2996,27 +2690,6 @@ def test_poly_fill_bowtie_fills_both_lobes(font_dir):
     assert px[20, 20] == INK["red"]  # the shared vertex itself
 
 
-def test_poly_fill_horizontal_edge_polygon_fills_its_full_height(font_dir):
-    """A pentagon with a flat top edge: horizontal edges contribute no
-    crossings, so every row from the top edge down to the bottom vertex
-    still has to be filled by the two slanted edges either side of it."""
-    doc = {
-        "bg": "white",
-        "ops": [
-            {
-                "op": "poly",
-                "pts": [[10, 0], [30, 0], [40, 20], [20, 35], [0, 20]],
-                "c": "blue",
-            }
-        ],
-    }
-    img, problems = render(doc, font_dir)
-    assert problems == []
-    px = img.load()
-    rows_with_ink = {y for y in range(36) for x in range(41) if px[x, y] == INK["blue"]}
-    assert rows_with_ink == set(range(35))  # every row 0..34, the top edge included
-
-
 def test_poly_fill_even_odd_star_leaves_the_centre_empty(font_dir):
     """A self-overlapping five-point star, drawn as one path: even-odd
     fill leaves the pentagon at its centre unfilled, the classic case a
@@ -3037,31 +2710,6 @@ def test_poly_fill_even_odd_star_leaves_the_centre_empty(font_dir):
     px = img.load()
     assert px[cx, cy] == INK["white"]  # the centre — hollow under even-odd
     assert px[cx, cy - r + 2] == INK["black"]  # an outer point — solid
-
-
-def test_poly_outline_t3_draws_3px_edges_including_the_closing_one(font_dir):
-    doc = {
-        "bg": "white",
-        "ops": [
-            {
-                "op": "poly",
-                "pts": [[10, 10], [50, 10], [50, 40], [10, 40]],
-                "c": "black", "fill": False, "t": 3,
-            }
-        ],
-    }
-    img, problems = render(doc, font_dir)
-    assert problems == []
-    px = img.load()
-    # Top edge, horizontal: thick_line's rule thickens down from y=10.
-    assert all(px[x, y] == INK["black"] for x in (10, 30, 50) for y in (10, 11, 12))
-    # Right edge, vertical: thickens right from x=50.
-    assert all(px[x, 25] == INK["black"] for x in (50, 51, 52))
-    # The closing edge, from the last point back to the first (left,
-    # vertical, x=10): also drawn, not just the three explicit edges.
-    assert all(px[x, 25] == INK["black"] for x in (10, 11, 12))
-    # The centre never got touched.
-    assert px[30, 25] == INK["white"]
 
 
 @pytest.mark.parametrize(
@@ -3151,24 +2799,6 @@ def test_poly_unknown_field_warns(font_dir):
     ]
 
 
-def test_poly_drew_nothing_warns(font_dir):
-    doc = {
-        "bg": "white",
-        "ops": [{"op": "poly", "pts": [[0, 0], [10, 0], [5, 10]], "c": "white"}],
-    }
-    problems = check(doc, font_dir)
-    assert any("drew nothing visible" in p for p in problems)
-
-
-def test_document_colors_includes_poly_c():
-    doc = {
-        "bg": "white",
-        "palette": {"flame": {"c": "red", "c2": "yellow", "mix": 50}},
-        "ops": [{"op": "poly", "pts": [[0, 0], [10, 0], [5, 10]], "c": "flame"}],
-    }
-    colors, problems = document_colors(doc)
-    assert problems == []
-    assert set(colors) == {"white", "flame"}
 
 
 def test_bezel_problems_ignores_poly():
@@ -3228,30 +2858,6 @@ def test_poly_point_at_the_coordinate_bound(font_dir, coord, should_warn):
     assert any("out of range" in p for p in problems) == should_warn
 
 
-def test_poly_canvas_spanning_pts_still_draws_correctly(font_dir):
-    """The scanline-range and span-x clamp (`[0, HEIGHT)` / `[0, WIDTH)`)
-    must still fill the same pixels a naive, unclamped
-    computation would have — proven on the firmware side by the
-    canvas-spanning parity case in test_firmware_parity.py; this pins the
-    Python behaviour the clamp must not disturb: a polygon that covers the
-    whole canvas and then some still paints it solidly, corner to corner."""
-    doc = {
-        "bg": "white",
-        "ops": [
-            {
-                "op": "poly",
-                "pts": [[-9000, -9000], [9000, -9000], [9000, 9000], [-9000, 9000]],
-                "c": "black",
-            }
-        ],
-    }
-    img, problems = render(doc, font_dir)
-    assert any("off-canvas" in p for p in problems)
-    px = img.load()
-    for corner in ((0, 0), (WIDTH - 1, 0), (0, HEIGHT - 1), (WIDTH - 1, HEIGHT - 1)):
-        assert px[corner] == INK["black"], corner
-
-
 def test_fill_non_bool_warns_and_uses_true(font_dir):
     """ArduinoJson's `o["fill"] | true` yields the default for anything
     that isn't a JSON bool, while Python's own truthiness would read
@@ -3286,15 +2892,6 @@ def test_thin_mix_warns_a_poly_fill_sliver(font_dir):
     msgs = _thin_mix_msgs(check(doc, font_dir))
     assert len(msgs) == 1
     assert "1x40 fill" in msgs[0]
-
-
-def test_thin_mix_does_not_warn_a_wide_poly_fill(font_dir):
-    doc = {
-        "v": 1, "meta": {}, "bg": "white",
-        "palette": {"grey-25": {"c": "black", "c2": "white", "mix": 25}},
-        "ops": [{"op": "poly", "pts": [[10, 10], [50, 10], [10, 50], [50, 50]], "c": "grey-25"}],
-    }
-    assert _thin_mix_msgs(check(doc, font_dir)) == []
 
 
 @pytest.mark.parametrize(

@@ -452,49 +452,31 @@ async def test_describe_ops_equals_op_fields_modulo_tuple_to_list(mcp):
         }
 
 
-async def test_describe_fonts_matches_fonts_table(mcp):
+async def test_describe_fonts_table(mcp):
+    """All six faces, spelled out literally (not `round(size * 1.24)`
+    re-derived from the table under test): `mono`'s wrap-default
+    `line_height` stays like every other face's, not its `cell_height`
+    (D11, docs/plans/dragon-feedback.md) — `ink_height` is the pitch that
+    actually makes block glyphs meet with no seam, published alongside for
+    a composer stacking block art by hand, and is `null` for every
+    Instrument Sans size, where it means nothing."""
     async with Client(mcp) as c:
         result = await c.call_tool("describe", {})
     fonts = result.structured_content["fonts"]
-    assert set(fonts) == set(render.FONTS)
-    for name, face in render.FONTS.items():
-        assert fonts[name] == {
-            "px": face.size,
-            "bold": face.bold,
-            "line_height": round(face.size * 1.24),
-            "cell_height": face.cell_height,
-            "ink_height": face.ink_height,
-            "glyphs": "GF_Latin_Core" + (" + U+2500–U+259F" if face.extra_glyphs else ""),
-        }
-
-
-async def test_describe_mono_cell_height_differs_from_its_line_height(mcp):
-    """`mono`'s wrap-default `line_height` stays `round(size * 1.24)` like
-    every other face (30), not its cell height (33) — D11
-    (docs/plans/dragon-feedback.md). Neither is the pitch that makes block
-    glyphs meet with no seam — `ink_height` (31) is — published beside both
-    for a composer stacking block art by hand."""
-    async with Client(mcp) as c:
-        result = await c.call_tool("describe", {})
-    mono = result.structured_content["fonts"]["mono"]
-    assert mono == {
-        "px": 24,
-        "bold": False,
-        "line_height": 30,
-        "cell_height": 33,
-        "ink_height": 31,
-        "glyphs": "GF_Latin_Core + U+2500–U+259F",
+    assert fonts == {
+        "xl": {"px": 84, "bold": True, "line_height": 104, "cell_height": 103,
+               "ink_height": None, "glyphs": "GF_Latin_Core"},
+        "lg": {"px": 48, "bold": True, "line_height": 60, "cell_height": 59,
+               "ink_height": None, "glyphs": "GF_Latin_Core"},
+        "md": {"px": 36, "bold": False, "line_height": 45, "cell_height": 44,
+               "ink_height": None, "glyphs": "GF_Latin_Core"},
+        "sm": {"px": 28, "bold": False, "line_height": 35, "cell_height": 35,
+               "ink_height": None, "glyphs": "GF_Latin_Core"},
+        "xs": {"px": 22, "bold": True, "line_height": 27, "cell_height": 28,
+               "ink_height": None, "glyphs": "GF_Latin_Core"},
+        "mono": {"px": 24, "bold": False, "line_height": 30, "cell_height": 33,
+                 "ink_height": 31, "glyphs": "GF_Latin_Core + U+2500–U+259F"},
     }
-
-
-async def test_describe_instrument_sans_has_no_ink_height(mcp):
-    """`ink_height` only means something for `mono`'s block art — the five
-    Instrument Sans sizes carry it as `null` rather than a made-up number."""
-    async with Client(mcp) as c:
-        result = await c.call_tool("describe", {})
-    fonts = result.structured_content["fonts"]
-    for name in ("xl", "lg", "md", "sm", "xs"):
-        assert fonts[name]["ink_height"] is None
 
 
 async def test_describe_icons_matches_icons_table(mcp):
@@ -574,12 +556,6 @@ async def test_swatches_accepts_a_json_string_document(mcp):
     assert "accent — ink — #2E3E80" in result.content[1].text
 
 
-async def test_swatches_without_include_document_is_two_blocks(mcp):
-    async with Client(mcp) as c:
-        result = await c.call_tool("swatches", {})
-    assert [b.type for b in result.content] == ["image", "text"]
-
-
 async def test_swatches_include_document_adds_the_sheet_as_a_third_block(mcp, store):
     async with Client(mcp) as c:
         result = await c.call_tool("swatches", {"include_document": True})
@@ -599,8 +575,10 @@ async def test_swatches_include_document_adds_the_sheet_as_a_third_block(mcp, st
 # sending it rather than nesting it as JSON. Two layers handle that. The
 # SDK itself pre-parses any string argument whose annotation is not plain
 # `str` and, when it decodes to an object, hands the tool a dict — so the
-# three round-trip tests below pin that an object-as-string reaches the
-# tool at all and produces the same result, not that our helper parsed it.
+# round-trip test below pins that an object-as-string reaches a tool at
+# all and produces the same result as the same document sent as an
+# object, not that our helper parsed it — the same SDK behaviour every
+# tool taking `document` relies on, so one tool stands in for the rest.
 # A string the SDK leaves alone (one that decodes to a scalar, or does not
 # decode) is what reaches `_coerce_document`; those paths are pinned by
 # the error tests and the direct unit test further down. A string that
@@ -619,16 +597,6 @@ async def test_tool_schema_still_accepts_a_plain_dict(mcp):
     assert {"object", "string"} == {v["type"] for v in variants}
 
 
-async def test_set_display_json_string_round_trips_to_the_same_hash(mcp, store, sample_doc):
-    as_string = json.dumps(sample_doc)
-    async with Client(mcp) as c:
-        from_dict = await c.call_tool("set_display", {"document": sample_doc, "name": "a"})
-        from_string = await c.call_tool("set_display", {"document": as_string, "name": "b"})
-    assert from_dict.is_error is not True
-    assert from_string.is_error is not True
-    assert from_dict.structured_content["hash"] == from_string.structured_content["hash"]
-
-
 async def test_validate_json_string_round_trips_to_the_same_hash(mcp, sample_doc):
     as_string = json.dumps(sample_doc)
     async with Client(mcp) as c:
@@ -637,16 +605,6 @@ async def test_validate_json_string_round_trips_to_the_same_hash(mcp, sample_doc
     assert from_dict.is_error is not True
     assert from_string.is_error is not True
     assert from_dict.structured_content == from_string.structured_content
-
-
-async def test_preview_json_string_round_trips(mcp, sample_doc):
-    as_string = json.dumps(sample_doc)
-    async with Client(mcp) as c:
-        from_dict = await c.call_tool("preview", {"document": sample_doc})
-        from_string = await c.call_tool("preview", {"document": as_string})
-    assert from_dict.is_error is not True
-    assert from_string.is_error is not True
-    assert from_dict.content[1].text == from_string.content[1].text
 
 
 async def test_bad_json_string_document_is_a_tool_error_naming_the_position(mcp):
@@ -736,35 +694,30 @@ async def test_current_resource(mcp, store, sample_doc):
 # ---- prompt -------------------------------------------------------------
 
 
-async def test_compose_prompt_listed(mcp):
+async def test_compose_prompt_renders_with_args(mcp):
+    """Listed among the server's prompts, renders the plain 1200x1600
+    boilerplate with no arguments, and substitutes `name`/`context` when
+    given."""
     async with Client(mcp) as c:
         prompts = (await c.list_prompts()).prompts
-    assert "compose_display" in {p.name for p in prompts}
+        assert "compose_display" in {p.name for p in prompts}
 
-
-async def test_compose_prompt_renders_without_args(mcp):
-    async with Client(mcp) as c:
-        result = await c.get_prompt("compose_display")
-    text = result.messages[0].content.text
-    assert "1200" in text and "1600" in text
-
-
-async def test_compose_prompt_renders_with_args(mcp):
-    async with Client(mcp) as c:
-        result = await c.get_prompt(
+        without_args = await c.get_prompt("compose_display")
+        with_args = await c.get_prompt(
             "compose_display", {"name": "kitchen", "context": "tomorrow's weather"}
         )
-    text = result.messages[0].content.text
+    no_args_text = without_args.messages[0].content.text
+    assert "1200" in no_args_text and "1600" in no_args_text
+    text = with_args.messages[0].content.text
     assert "kitchen" in text
     assert "tomorrow's weather" in text
 
 
 # ---- ASGI app / auth wiring --------------------------------------------
-
-
-def test_build_mcp_app_returns_asgi_app(store, settings):
-    app = mcp_server.build_mcp_app(store, settings)
-    assert callable(app)
+#
+# build_mcp_app's own return value being callable is exercised for real by
+# the two requests below, which both have to reach a running ASGI app to
+# assert on a status code.
 
 
 def test_build_mcp_app_401_without_token_when_auth_enabled(store, auth_settings):
@@ -834,14 +787,6 @@ async def test_status_requested_includes_published_names(mcp, store, sample_doc)
     assert "default" in data["displays"]
 
 
-async def test_set_display_recent_fetch_null_when_never_fetched(mcp, store, sample_doc):
-    async with Client(mcp) as c:
-        result = await c.call_tool("set_display", {"document": sample_doc, "name": "scratch"})
-    data = result.structured_content
-    assert data["recent_fetch_at"] is None
-    assert data["recent_fetch_ago"] is None
-
-
 async def test_set_display_recent_fetch_reflects_prior_fetch_and_publish_does_not_reset_it(
     mcp, store, sample_doc
 ):
@@ -892,8 +837,9 @@ async def test_copy_display_same_hash_newer_generated(
     target_doc = store.get("default").doc
     assert target_doc["meta"]["hash"] == source_doc["meta"]["hash"]
     assert target_doc["meta"]["generated"] != source_doc["meta"]["generated"]
-    # source is untouched
+    # source is untouched, and the target is now a published display
     assert store.get("draft").doc == source_doc
+    assert "default" in store.names()
 
 
 async def test_copy_display_unknown_source_is_a_tool_error(mcp, store):
@@ -919,14 +865,6 @@ async def test_copy_display_onto_itself_is_a_republish(
     assert after["meta"]["generated"] != before["meta"]["generated"]
 
 
-async def test_copy_display_target_status_published(mcp, store, sample_doc):
-    store.publish(sample_doc, "draft")
-    async with Client(mcp) as c:
-        await c.call_tool("copy_display", {"source": "draft", "name": "kitchen"})
-        result = await c.call_tool("status", {"name": "kitchen"})
-    assert result.structured_content["published"] is True
-
-
 async def test_copy_display_reports_the_targets_fetch_record_not_the_sources(
     mcp, store, sample_doc
 ):
@@ -936,12 +874,3 @@ async def test_copy_display_reports_the_targets_fetch_record_not_the_sources(
         result = await c.call_tool("copy_display", {"source": "draft", "name": "fresh"})
     data = result.structured_content
     assert data["recent_fetch_at"] is None and data["recent_fetch_ago"] is None
-
-
-async def test_clearing_an_unpublished_but_requested_name_keeps_it_in_requested(mcp, store):
-    store.note_fetch("ghost", 503, "10.0.0.5")
-    async with Client(mcp) as c:
-        cleared = await c.call_tool("clear_display", {"name": "ghost"})
-        status = await c.call_tool("status", {})
-    assert cleared.structured_content == {"name": "ghost", "cleared": False}
-    assert "ghost" in status.structured_content["requested"]

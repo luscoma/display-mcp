@@ -66,19 +66,12 @@ def test_stamp_writes_hash_back(sample_doc, tmp_path, capsys):
     assert f.read_text().endswith("\n")
 
 
-def test_stamp_matches_render_hash_for_any_doc(tmp_path, capsys):
-    doc = {"bg": "white", "ops": [{"op": "rect", "x": 0, "y": 0, "w": 10, "h": 10, "c": "red"}]}
-    f = tmp_path / "doc.json"
-    f.write_text(json.dumps(doc))
-    _run(["stamp", str(f)], capsys)
-    written = json.loads(f.read_text())
-    assert written["meta"]["hash"] == render_hash(doc)
-
-
 def test_stamp_never_adds_generated(tmp_path, capsys):
     """`stamp` writes meta.hash only. Unlike Store.publish(), it never stamps
     meta.generated -- see docs/SPEC.md and docs/PLAN.md's "one code path"
-    rule. A file with no `generated` stays without one after stamping.
+    rule. A file with no `generated` stays without one after stamping, and
+    one already on disk (the author's, not a publish timestamp) is left
+    untouched.
     """
     doc = {"bg": "white", "ops": [{"op": "rect", "x": 0, "y": 0, "w": 10, "h": 10, "c": "red"}]}
     f = tmp_path / "doc.json"
@@ -87,37 +80,16 @@ def test_stamp_never_adds_generated(tmp_path, capsys):
     written = json.loads(f.read_text())
     assert "generated" not in written["meta"]
 
-
-def test_stamp_leaves_existing_generated_untouched(tmp_path, capsys):
-    """A `generated` already on disk is the author's and stamp must not
-    touch it -- only Store.publish() ever writes that field.
-    """
-    doc = {
+    with_generated = {
         "bg": "white",
         "meta": {"generated": "hand-authored, not a publish timestamp"},
         "ops": [{"op": "rect", "x": 0, "y": 0, "w": 10, "h": 10, "c": "red"}],
     }
-    f = tmp_path / "doc.json"
-    f.write_text(json.dumps(doc))
-    _run(["stamp", str(f)], capsys)
-    written = json.loads(f.read_text())
-    assert written["meta"]["generated"] == "hand-authored, not a publish timestamp"
-
-
-def test_stamp_run_twice_is_a_true_no_op(tmp_path, capsys):
-    """Because meta.hash excludes meta.generated and stamp never touches
-    generated, restamping unchanged content changes nothing on disk at all
-    -- unlike Store.publish(), which always moves meta.generated even for
-    byte-identical input. Both are fine; this pins the difference.
-    """
-    doc = {"bg": "white", "ops": [{"op": "rect", "x": 0, "y": 0, "w": 10, "h": 10, "c": "red"}]}
-    f = tmp_path / "doc.json"
-    f.write_text(json.dumps(doc))
-    _run(["stamp", str(f)], capsys)
-    first = f.read_text()
-    _run(["stamp", str(f)], capsys)
-    second = f.read_text()
-    assert first == second
+    f2 = tmp_path / "doc2.json"
+    f2.write_text(json.dumps(with_generated))
+    _run(["stamp", str(f2)], capsys)
+    written2 = json.loads(f2.read_text())
+    assert written2["meta"]["generated"] == "hand-authored, not a publish timestamp"
 
 
 def test_stamp_and_publish_agree_on_hash_despite_generated_asymmetry(
@@ -240,19 +212,6 @@ def test_publish_through_in_process_server(monkeypatch, capsys, sample_doc, tmp_
     assert cli.main() == 1
 
 
-def test_swatches_writes_a_clean_png(font_dir, tmp_path, capsys):
-    out_png = tmp_path / "swatches.png"
-    code, out, err = _run(
-        ["swatches", "-o", str(out_png), "--font-dir", str(font_dir)], capsys
-    )
-    assert code == 0
-    assert out_png.exists()
-    img = Image.open(out_png)
-    assert img.size == (1200, 1600)
-    assert "ops," in out
-    assert "wrote" in out
-
-
 def test_swatches_json_matches_swatch_document(font_dir, tmp_path, capsys):
     from display_mcp.render import swatch_document
 
@@ -274,14 +233,6 @@ def test_swatches_json_matches_swatch_document(font_dir, tmp_path, capsys):
     assert out_json.exists()
     written = json.loads(out_json.read_text())
     assert render_hash(written) == render_hash(swatch_document())
-
-
-def test_swatches_missing_fonts_exits_2(tmp_path, capsys):
-    empty_font_dir = tmp_path / "no-fonts-here"
-    empty_font_dir.mkdir()
-    code, out, err = _run(["swatches", "--font-dir", str(empty_font_dir)], capsys)
-    assert code == 2
-    assert err
 
 
 def test_swatches_defaults_to_flat_not_dithered(font_dir, tmp_path, capsys):

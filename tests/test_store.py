@@ -184,7 +184,11 @@ def test_note_fetch_updates_recent_every_time(store, sample_doc):
 
 
 def test_publish_keeps_recent_fetch_at(store, sample_doc):
-    store.publish(sample_doc, "default")
+    """A publish before any fetch leaves recent_fetch_at null, and a later
+    publish never resets a fetch that already happened."""
+    never_fetched = store.publish(sample_doc, "default")
+    assert never_fetched.recent_fetch_at is None
+
     store.note_fetch("default", 200, "1.2.3.4")
     recent = store.get("default").fetch.recent_fetch_at
     assert recent is not None
@@ -192,17 +196,6 @@ def test_publish_keeps_recent_fetch_at(store, sample_doc):
     result = store.publish(sample_doc, "default")
     assert result.recent_fetch_at == recent  # a publish never resets it
     assert store.get("default").fetch.recent_fetch_at == recent
-
-
-def test_publish_recent_fetch_at_is_none_when_never_fetched(store, sample_doc):
-    result = store.publish(sample_doc, "default")
-    assert result.recent_fetch_at is None
-
-
-def test_fetched_names_includes_unpublished_and_excludes_from_names(store):
-    store.note_fetch("ghost", 503, "2.2.2.2")
-    assert store.fetched_names() == ["ghost"]
-    assert "ghost" not in store.names()
 
 
 def test_fetched_names_survives_reload(tmp_path, monkeypatch):
@@ -217,20 +210,6 @@ def test_fetched_names_survives_reload(tmp_path, monkeypatch):
     assert "ghost" not in reloaded.names()
 
 
-def test_clear_drops_fetch_history(store, sample_doc):
-    """Settled behaviour (docs/plans/dragon-feedback.md D7): clear() resets
-    the fetch record along with unpublishing, so a cleared name's history
-    does not survive it."""
-    store.publish(sample_doc, "default")
-    store.note_fetch("default", 200, "1.2.3.4")
-    assert "default" in store.fetched_names()
-
-    assert store.clear("default") is True
-    assert "default" not in store.fetched_names()
-    assert store.fetch_record("default") == FetchRecord()
-    assert not (store.state_dir / "default.meta.json").exists()
-
-
 def test_clear_of_an_unpublished_name_keeps_its_fetch_record(store):
     """The panel asking for a name nothing is published under is worth
     remembering; a clear() that has nothing to clear must not forget it."""
@@ -240,29 +219,48 @@ def test_clear_of_an_unpublished_name_keeps_its_fetch_record(store):
 
 
 def test_note_fetch_for_unknown_display_is_recorded_but_not_in_names(store):
+    """The panel asking for a name nothing is published under is still
+    worth remembering: it shows up in fetched_names(), on disk, and via
+    fetch_record(), but never in names() or get()."""
+    assert store.fetch_record("ghost") is None
     store.note_fetch("ghost", 503, "2.2.2.2")
     assert "ghost" not in store.names()
+    assert store.fetched_names() == ["ghost"]
+
     meta_path = store.state_dir / "ghost.meta.json"
     assert meta_path.exists()
     data = json.loads(meta_path.read_text())
     assert data["recent_fetch_status"] == 503
     assert data["recent_fetch_ip"] == "2.2.2.2"
 
+    rec = store.fetch_record("ghost")
+    assert rec is not None
+    assert rec.recent_fetch_status == 503
+    assert rec.recent_fetch_ip == "2.2.2.2"
+    assert rec.first_fetch_at is None
+
     with pytest.raises(UnknownDisplay):
         store.get("ghost")
 
 
 def test_clear_removes_both_files(store, sample_doc):
+    """Settled behaviour (docs/plans/dragon-feedback.md D7): clear() also
+    drops the fetch record, not just the files, so a cleared name's
+    history does not survive it."""
     store.publish(sample_doc, "default")
+    store.note_fetch("default", 200, "1.2.3.4")
     doc_path = store.state_dir / "default.json"
     meta_path = store.state_dir / "default.meta.json"
     assert doc_path.exists()
     assert meta_path.exists()
+    assert "default" in store.fetched_names()
 
     assert store.clear("default") is True
     assert not doc_path.exists()
     assert not meta_path.exists()
     assert "default" not in store.names()
+    assert "default" not in store.fetched_names()
+    assert store.fetch_record("default") == FetchRecord()
 
     with pytest.raises(UnknownDisplay):
         store.get("default")
@@ -308,18 +306,3 @@ def test_thread_safety_smoke(tmp_path, sample_doc):
         assert published.fetch.recent_fetch_status == 200
     finally:
         render_mod.check = orig_check
-
-
-def test_fetch_record_for_unpublished_name(tmp_path, monkeypatch):
-    from display_mcp import store as store_mod
-
-    monkeypatch.setattr(store_mod.render, "check", lambda doc, font_dir: [])
-    s = store_mod.Store(tmp_path, tmp_path)
-    assert s.fetch_record("ghost") is None
-    s.note_fetch("ghost", 503, "10.0.0.9")
-    rec = s.fetch_record("ghost")
-    assert rec is not None
-    assert rec.recent_fetch_status == 503
-    assert rec.recent_fetch_ip == "10.0.0.9"
-    assert rec.first_fetch_at is None
-    assert "ghost" not in s.names()

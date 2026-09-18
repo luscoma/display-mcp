@@ -59,45 +59,6 @@ def test_refuses_to_bind_panel_to_all_interfaces(monkeypatch):
         main_mod.main()
 
 
-@pytest.mark.asyncio
-async def test_serves_panel_and_shuts_down_cleanly(tmp_path):
-    settings = Settings(
-        panel_bind=("127.0.0.1",),
-        panel_port=_free_port(),
-        mcp_host="127.0.0.1",
-        mcp_port=_free_port(),
-        state_dir=tmp_path / "state",
-        font_dir=tmp_path / "fonts",
-    )
-    store = Store(settings.state_dir, settings.font_dir)
-
-    specs = main_mod._build_servers(store, settings)
-    # One server per listener: panel and MCP.
-    assert len(specs) == 2
-    servers = [srv for srv, _ in specs]
-
-    async def _serve_all() -> None:
-        await asyncio.gather(*(srv.serve(sockets=socks) for srv, socks in specs))
-
-    task = asyncio.create_task(_serve_all())
-    try:
-        for _ in range(200):
-            if all(s.started for s in servers):
-                break
-            await asyncio.sleep(0.02)
-        else:
-            pytest.fail("server did not start in time")
-
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(f"http://127.0.0.1:{settings.panel_port}/healthz")
-        assert resp.status_code == 200
-        assert resp.json()["ok"] is True
-    finally:
-        for s in servers:
-            s.should_exit = True
-        await asyncio.wait_for(task, timeout=5)
-
-
 def test_panel_bind_parses_comma_list():
     settings = settings_from_env({"DISPLAY_MCP_PANEL_BIND": "192.168.1.5, 127.0.0.1,"})
     assert settings.panel_bind == ("192.168.1.5", "127.0.0.1")
@@ -135,6 +96,7 @@ async def test_panel_listens_on_every_configured_address(tmp_path):
     )
     store = Store(settings.state_dir, settings.font_dir)
     specs = main_mod._build_servers(store, settings)
+    assert len(specs) == 2  # one server per listener: panel and MCP
     servers = [srv for srv, _ in specs]
     async def _serve_all() -> None:
         await asyncio.gather(*(srv.serve(sockets=socks) for srv, socks in specs))

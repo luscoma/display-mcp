@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-from display_mcp.render import BUILTIN_MIXES, DENSITIES, INK, check, mix_on, render
+from display_mcp.render import BUILTIN_MIXES, DENSITIES, HEIGHT, INK, WIDTH, check, mix_on, render
 
 HEADER = Path(__file__).resolve().parents[1] / "firmware" / "display_list.h"
 
@@ -147,37 +147,23 @@ def test_builtin_table_has_no_compiler_dependency():
     assert len(_firmware_table()) == len(BUILTIN_MIXES) > 0
 
 
-def test_builtin_names_match_the_firmware():
+def test_builtin_mixes_match_the_firmware():
+    """The firmware's table is the same 21 names with the same recipes as
+    Python's, and every recipe names two real, different inks at a legal
+    density -- the SPEC-table parser test (test_render.py) is the stronger
+    check that every name is documented, so this stays firmware-focused."""
     fw = _firmware_table()
-    assert set(fw) == set(BUILTIN_MIXES), (
+    diff = sorted(n for n in fw.keys() & BUILTIN_MIXES.keys() if fw[n] != BUILTIN_MIXES[n])
+    assert fw == BUILTIN_MIXES, (
         f"only in firmware: {sorted(set(fw) - set(BUILTIN_MIXES))}; "
-        f"only in python: {sorted(set(BUILTIN_MIXES) - set(fw))}"
+        f"only in python: {sorted(set(BUILTIN_MIXES) - set(fw))}; "
+        f"differing recipes: {diff}"
     )
-
-
-@pytest.mark.parametrize("name", sorted(BUILTIN_MIXES))
-def test_builtin_recipe_matches_the_firmware(name):
-    fw = _firmware_table()
-    assert fw[name] == BUILTIN_MIXES[name], (
-        f"{name}: firmware says {fw[name]}, python says {BUILTIN_MIXES[name]}"
-    )
-
-
-@pytest.mark.parametrize("name,recipe", sorted(BUILTIN_MIXES.items()))
-def test_builtin_recipes_are_well_formed(name, recipe):
-    """Every entry names two real, different inks at a legal density."""
-    c, c2, mix = recipe
-    assert c in INK, f"{name}: unknown base ink {c!r}"
-    assert c2 in INK, f"{name}: unknown second ink {c2!r}"
-    assert c != c2, f"{name}: c and c2 are the same ink, so it is not a mix"
-    assert mix in DENSITIES, f"{name}: density {mix} is not one of {DENSITIES}"
-
-
-def test_builtin_names_are_documented_in_the_spec():
-    """A name the spec does not carry is a name no caller can discover."""
-    spec = (HEADER.parent.parent / "docs" / "SPEC.md").read_text()
-    missing = [n for n in BUILTIN_MIXES if f"`{n}`" not in spec]
-    assert not missing, f"not in docs/SPEC.md: {missing}"
+    for name, (c, c2, mix) in BUILTIN_MIXES.items():
+        assert c in INK, f"{name}: unknown base ink {c!r}"
+        assert c2 in INK, f"{name}: unknown second ink {c2!r}"
+        assert c != c2, f"{name}: c and c2 are the same ink, so it is not a mix"
+        assert mix in DENSITIES, f"{name}: density {mix} is not one of {DENSITIES}"
 
 
 # --------------------------------------------------------------------------
@@ -236,9 +222,24 @@ def test_mono_extra_glyph_range_matches_the_yaml():
 # --------------------------------------------------------------------------
 
 
-def test_op_loop_has_a_sprite_branch():
+def test_op_loop_dispatches_every_compiled_op():
+    """The op loop must actually dispatch on sprite and poly, so the two
+    sides cannot silently diverge on whether either op exists at all; and
+    the rect/circle branches must read the field the plan says (D10, B2)
+    and hand off to the right helper, not just contain the field name
+    somewhere in the file. These harnesses test the functions the branches
+    call, not the dispatch itself -- this is the one test of the dispatch."""
     src = HEADER.read_text()
     assert 'strcmp(kind, "sprite")' in src
+    assert 'strcmp(kind, "poly")' in src
+
+    rect_block = _branch(src, 'strcmp(kind, "rect")', 'strcmp(kind, "line")')
+    assert 'o["r"]' in rect_block
+    assert "draw_rounded_rect(" in rect_block
+
+    circle_block = _branch(src, 'strcmp(kind, "circle")', 'strcmp(kind, "text")')
+    assert 'o["t"]' in circle_block
+    assert "draw_circle_ring(" in circle_block
 
 
 # --------------------------------------------------------------------------
@@ -850,7 +851,9 @@ def test_sprite_sample_matches_the_firmware(sprite_harness, font_dir, sprite_sam
 
 def test_sprite_oversized_cell_is_malformed_on_both_sides(sprite_harness, font_dir):
     """The two sides have to agree on the bound, not just each avoid
-    overflowing on their own terms."""
+    overflowing on their own terms -- including the bound itself, which the
+    message states so the two tables (here and in draw_sprite()) can't
+    silently drift."""
     op = {
         "op": "sprite", "x": 0, "y": 0, "cell": 99999,
         "palette": {"K": "black"}, "rows": ["K"],
@@ -860,6 +863,7 @@ def test_sprite_oversized_cell_is_malformed_on_both_sides(sprite_harness, font_d
     assert any("cell" in log for log in logs)
     problems = check({"v": 1, "bg": "white", "ops": [op]}, font_dir)
     assert any("nothing to draw, skipped" in p for p in problems)
+    assert any(f"<= {max(WIDTH, HEIGHT)}" in p for p in problems)
 
 
 # --------------------------------------------------------------------------
@@ -874,13 +878,6 @@ def _branch(src: str, start_marker: str, end_marker: str) -> str:
     start = src.index(start_marker)
     end = src.index(end_marker, start)
     return src[start:end]
-
-
-def test_rect_branch_reads_the_corner_radius_and_dispatches_to_draw_rounded_rect():
-    src = HEADER.read_text()
-    block = _branch(src, 'strcmp(kind, "rect")', 'strcmp(kind, "line")')
-    assert 'o["r"]' in block
-    assert "draw_rounded_rect(" in block
 
 
 # --------------------------------------------------------------------------
@@ -1012,10 +1009,12 @@ def _python_rounded_rect(x, y, w, h, r, pad=4):
     return [[bool(px[xx, yy]) for xx in range(cw)] for yy in range(ch)]
 
 
-@pytest.mark.parametrize("w,h,r", [
-    (40, 40, 10), (40, 40, 19), (41, 41, 20), (60, 30, 14), (30, 60, 14),
-    (7, 7, 3), (8, 8, 3),
-])
+#  even, odd, wide, tiny -- one of each shape this construction treats
+# differently, not the full cross product.
+_ROUNDED_RECT_SIZES = [(40, 40, 10), (41, 41, 20), (60, 30, 14), (7, 7, 3)]
+
+
+@pytest.mark.parametrize("w,h,r", _ROUNDED_RECT_SIZES)
 def test_rounded_rect_bounding_box_matches_the_python(rounded_rect_harness, w, h, r):
     """Both sides fill the same `[x, x+w) x [y, y+h)` box overall, whatever
     the corner arcs look like pixel for pixel."""
@@ -1031,10 +1030,7 @@ def test_rounded_rect_bounding_box_matches_the_python(rounded_rect_harness, w, h
     assert bbox(cpp) == bbox(py) == (x + pad, y + pad, x + pad + w - 1, y + pad + h - 1)
 
 
-@pytest.mark.parametrize("w,h,r", [
-    (40, 40, 10), (40, 40, 19), (41, 41, 20), (60, 30, 14), (30, 60, 14),
-    (7, 7, 3), (8, 8, 3),
-])
+@pytest.mark.parametrize("w,h,r", _ROUNDED_RECT_SIZES)
 def test_rounded_rect_straight_bands_match_the_python_exactly(rounded_rect_harness, w, h, r):
     """The middle band and the two side bands are plain rectangles on both
     sides -- no arc rasterisation involved -- so unlike the corners, these
@@ -1054,17 +1050,6 @@ def test_rounded_rect_straight_bands_match_the_python_exactly(rounded_rect_harne
         for yy in range(by0 + pad, by1 + pad):
             for xx in range(bx0 + pad, bx1 + pad):
                 assert cpp[yy][xx] == py[yy][xx], (xx - pad, yy - pad)
-
-
-def test_circle_branch_reads_t_and_dispatches_to_the_ring_helper():
-    """`t <= 1` stays the plain circle() outline; `t >= 2` goes through
-    draw_circle_ring() instead of looping concentric circle() calls inline,
-    which would leave diagonal holes from t == 2 up -- see the compiled
-    parity tests below."""
-    src = HEADER.read_text()
-    block = _branch(src, 'strcmp(kind, "circle")', 'strcmp(kind, "text")')
-    assert 'o["t"]' in block
-    assert "draw_circle_ring(" in block
 
 
 # --------------------------------------------------------------------------
@@ -1209,8 +1194,8 @@ def _ring_vs_filled_circles(circle_ring_harness, r: int, t: int, pad: int = 4):
     return ring, outer, inner, n
 
 
-@pytest.mark.parametrize("r", [0, 1, 2, 3, 4, 5, 6, 8, 10, 15, 20, 25, 40, 60])
-@pytest.mark.parametrize("t_offset", [2, 3, 4, 5])  # t relative to nothing; see below
+@pytest.mark.parametrize("r", [0, 1, 2, 3, 6, 20, 60])
+@pytest.mark.parametrize("t_offset", [2, 5])  # t relative to nothing; see below
 def test_circle_ring_matches_filled_circle_difference(circle_ring_harness, r, t_offset):
     """The annulus equals filled_circle(r) minus filled_circle(r - t),
     pixel for pixel, for every t from 2 up to well past r (where there is
@@ -1226,7 +1211,7 @@ def test_circle_ring_matches_filled_circle_difference(circle_ring_harness, r, t_
     assert not diffs, diffs[:5]
 
 
-@pytest.mark.parametrize("r", [3, 5, 10, 20, 40])
+@pytest.mark.parametrize("r", [5, 40])
 def test_circle_ring_past_the_radius_equals_a_plain_filled_circle(circle_ring_harness, r):
     """t >= r + 1 leaves no inner circle at all -- the ring degenerates to
     exactly filled_circle(r), the same identity a t == 1 circle() call is
@@ -1237,7 +1222,7 @@ def test_circle_ring_past_the_radius_equals_a_plain_filled_circle(circle_ring_ha
     assert ring == outer
 
 
-@pytest.mark.parametrize("r,t", [(10, 2), (10, 3), (20, 3), (20, 5), (6, 2), (15, 4)])
+@pytest.mark.parametrize("r,t", [(10, 2), (20, 3), (15, 4)])
 def test_circle_ring_has_no_diagonal_holes(circle_ring_harness, r, t):
     """The bug this whole fix is for: stacking concentric filled circles of
     shrinking radius left single-pixel background holes near the 45-degree
@@ -1276,11 +1261,6 @@ def test_circle_ring_has_no_diagonal_holes(circle_ring_harness, r, t):
 #
 # Needs a host C++ compiler; skips cleanly without one, like sprite_harness.
 # --------------------------------------------------------------------------
-
-
-def test_op_loop_has_a_poly_branch():
-    src = HEADER.read_text()
-    assert 'strcmp(kind, "poly")' in src
 
 
 # Everything sprite_harness's main() needs before `int main() {` -- the

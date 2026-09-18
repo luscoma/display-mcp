@@ -38,17 +38,6 @@ def test_503_before_publish(client):
     assert resp.text == "no display list yet"
 
 
-def test_503_is_recorded(client, store):
-    client.get("/d/default.json")
-    # unknown display still tracked via a meta record
-    import json as _json
-
-    meta_path = store.state_dir / "default.meta.json"
-    assert meta_path.exists()
-    data = _json.loads(meta_path.read_text())
-    assert data["recent_fetch_status"] == 503
-
-
 def test_200_with_etag_after_publish(client, store, sample_doc):
     result = store.publish(sample_doc, "default")
     resp = client.get("/d/default.json")

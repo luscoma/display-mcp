@@ -16,8 +16,6 @@ import re
 import subprocess
 from pathlib import Path
 
-import pytest
-
 ROOT = Path(__file__).resolve().parents[1]
 SELF = Path(__file__).name
 
@@ -46,16 +44,20 @@ def tracked_text_files() -> list[Path]:
     return paths
 
 
-@pytest.mark.parametrize("path", tracked_text_files(), ids=lambda p: str(p.relative_to(ROOT)))
-def test_no_private_details(path: Path):
-    try:
-        text = path.read_text()
-    except UnicodeDecodeError:
-        pytest.skip("not a text file")
-    hits = [
-        f"line {i}: {line.strip()[:70]!r} — {advice}"
-        for pattern, advice in FORBIDDEN
-        for i, line in enumerate(text.splitlines(), 1)
-        if pattern.search(line)
-    ]
+def test_no_private_details():
+    """Walks every tracked file once and reports every offender, file and
+    line, rather than one test per file for the same handful of patterns."""
+    hits = []
+    for path in tracked_text_files():
+        try:
+            text = path.read_text()
+        except UnicodeDecodeError:
+            continue
+        rel = path.relative_to(ROOT)
+        hits.extend(
+            f"{rel}:{i}: {line.strip()[:70]!r} — {advice}"
+            for pattern, advice in FORBIDDEN
+            for i, line in enumerate(text.splitlines(), 1)
+            if pattern.search(line)
+        )
     assert not hits, "\n".join(hits)

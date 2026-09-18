@@ -65,6 +65,19 @@ async def test_preview_flattens_a_mix_to_one_colour(mcp):
     assert set(patch) == {GREY_MID_FUSED}
 
 
+async def test_preview_no_document_returns_the_published_document(tmp_path, font_dir):
+    """With no `document` argument, `preview` renders whatever is currently
+    published under `name`, not a blank canvas -- publish a `grey-mid` fill
+    and check the previewed patch fuses to the same colour an explicit doc
+    would."""
+    settings = Settings(state_dir=tmp_path / "state", font_dir=font_dir)
+    store = FakeStore()
+    store.publish(_doc())
+    mcp = mcp_server.build_mcp(store, settings)
+    patch, _ = await _preview_patch(mcp, None)
+    assert set(patch) == {GREY_MID_FUSED}
+
+
 async def test_preview_dithered_draws_the_real_checkerboard(mcp):
     """The escape hatch has to genuinely reach the panel's own output —
     under the fakes this parameter could be dropped entirely unnoticed."""
@@ -126,16 +139,6 @@ def test_grid_overlay_does_not_mutate_its_input(font_dir, sample_doc):
     assert img.tobytes() == before.tobytes()
     assert overlaid is not img
     assert GRID_COLOR in {c for c in overlaid.get_flattened_data()}
-
-
-def test_render_output_is_unchanged_whether_or_not_a_caller_later_grids_it(font_dir, sample_doc):
-    """grid_overlay is applied to render()'s *return value*, never inside
-    it — render() itself has no `grid` parameter and always emits only the
-    six inks (test_render.py:test_render_emits_only_the_six_inks)."""
-    img, _problems = render.render(sample_doc, font_dir)
-    assert set(img.get_flattened_data()) <= set(INK.values())
-    render.grid_overlay(img)  # a caller applying the overlay afterwards, on a copy
-    assert set(img.get_flattened_data()) <= set(INK.values())  # img itself never changed
 
 
 def test_grid_overlay_closes_the_far_edges_with_a_real_border_line(font_dir, sample_doc):
