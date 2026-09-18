@@ -7,6 +7,8 @@ SAMPLE = ROOT / "samples" / "display.json"
 SAMPLE_HASH = "3cd62aa76e731d2d"
 SPRITE_SAMPLE = ROOT / "samples" / "sprite.json"
 SPRITE_SAMPLE_HASH = "16274a2fe47fbd06"
+VOCABULARY_SAMPLE = ROOT / "samples" / "vocabulary.json"
+VOCABULARY_SAMPLE_HASH = "91500ec10b0c26f7"
 
 
 @pytest.fixture
@@ -21,6 +23,13 @@ def sprite_sample_doc():
     import json
 
     return json.loads(SPRITE_SAMPLE.read_text())
+
+
+@pytest.fixture
+def vocabulary_sample_doc():
+    import json
+
+    return json.loads(VOCABULARY_SAMPLE.read_text())
 
 
 @pytest.fixture

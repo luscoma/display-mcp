@@ -31,8 +31,14 @@ That is [`samples/display.json`](samples/display.json) — 56 ops, 4.4 KB, hash
 `3cd62aa76e731d2d` — rendered by the same code the preview tool uses, and the
 best thing to copy and edit. Every op in the vocabulary appears between it
 and [`samples/sprite.json`](samples/sprite.json), the second sample, which
-shows off pixel art drawn with the `sprite` op. The vocabulary itself is in
-[`docs/SPEC.md`](docs/SPEC.md).
+shows off pixel art drawn with the `sprite` op. A third,
+[`samples/vocabulary.json`](samples/vocabulary.json), is a labelled page
+built for the wall rather than for op coverage — a rounded rect and a
+max-radius pill, mono block art and ligature-free text, a mirrored sprite,
+a filled and an outlined `poly`, a thick circle outline and a thick line —
+the document `docs/RUNBOOK.md` has you publish after flashing new
+vocabulary, to judge what only the glass can show. The vocabulary itself is
+in [`docs/SPEC.md`](docs/SPEC.md).
 
 ## How it fits together
 

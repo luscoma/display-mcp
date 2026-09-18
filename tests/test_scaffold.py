@@ -53,6 +53,21 @@ def test_sprite_sample_checks_clean(sprite_sample_doc, font_dir):
     assert check(sprite_sample_doc, font_dir) == []
 
 
+def test_vocabulary_sample_hash(vocabulary_sample_doc):
+    """samples/vocabulary.json — the third sample, a labelled page putting
+    every primitive only the wall can judge on the glass at once (a
+    rounded rect and a max-radius pill, mono block art and ligature-free
+    text, a sprite with mirror and a document mix and a built-in mix, a
+    filled poly in a mix and an outline poly, a thick circle outline, a
+    thick line), for the flash-and-judge step in RUNBOOK.md."""
+    assert render_hash(vocabulary_sample_doc) == "91500ec10b0c26f7"
+
+
+def test_vocabulary_sample_checks_clean(vocabulary_sample_doc, font_dir):
+
+    assert check(vocabulary_sample_doc, font_dir) == []
+
+
 def _fenced_json_sprite_op(text: str) -> dict:
     """The first ```json fenced block in `text` whose parsed object is a
     sprite op — docs/SPEC.md and compose.md each carry exactly one."""

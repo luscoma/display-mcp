@@ -41,6 +41,8 @@ display-mcp/
   tests/
   samples/display.json      the sample document (hash 3cd62aa76e731d2d)
   samples/sprite.json       the second sample: sprite and poly (hash 16274a2fe47fbd06)
+  samples/vocabulary.json   the third sample: a labelled page for judging on
+                             the wall after a flash (hash 91500ec10b0c26f7)
   docs/
     PLAN.md                 this file
     SPEC.md                 carried over from the earlier repo, unchanged

@@ -1,0 +1,306 @@
+{
+  "v": 1,
+  "meta": {
+    "hash": "91500ec10b0c26f7"
+  },
+  "bg": "white",
+  "palette": {
+    "ember": {
+      "c": "red",
+      "c2": "yellow",
+      "mix": 75
+    },
+    "panel": "cream"
+  },
+  "ops": [
+    {
+      "op": "rect",
+      "x": 0,
+      "y": 0,
+      "w": 1200,
+      "h": 140,
+      "c": "navy"
+    },
+    {
+      "op": "text",
+      "x": 40,
+      "y": 24,
+      "s": "VOCABULARY",
+      "f": "xl",
+      "c": "white"
+    },
+    {
+      "op": "rect",
+      "x": 48,
+      "y": 184,
+      "w": 460,
+      "h": 200,
+      "c": "panel",
+      "r": 28
+    },
+    {
+      "op": "text",
+      "x": 48,
+      "y": 394,
+      "s": "rect: r 28, fill 'panel' (doc palette alias to a built-in mix)",
+      "f": "xs",
+      "c": "black"
+    },
+    {
+      "op": "rect",
+      "x": 560,
+      "y": 184,
+      "w": 280,
+      "h": 120,
+      "c": "teal",
+      "r": 59
+    },
+    {
+      "op": "text",
+      "x": 560,
+      "y": 314,
+      "s": "rect: r 59 = (min(w,h)-1)//2, the max -- a pill",
+      "f": "xs",
+      "c": "black"
+    },
+    {
+      "op": "text",
+      "x": 48,
+      "y": 460,
+      "s": "\u250c\u2500\u2500\u2500\u2510",
+      "f": "mono",
+      "c": "black"
+    },
+    {
+      "op": "text",
+      "x": 48,
+      "y": 491,
+      "s": "\u2502   \u2502",
+      "f": "mono",
+      "c": "black"
+    },
+    {
+      "op": "text",
+      "x": 48,
+      "y": 522,
+      "s": "\u2514\u2500\u2500\u2500\u2518",
+      "f": "mono",
+      "c": "black"
+    },
+    {
+      "op": "text",
+      "x": 48,
+      "y": 563,
+      "s": "mono: box drawing, stacked by ink_height (31px), no seam",
+      "f": "xs",
+      "c": "black"
+    },
+    {
+      "op": "text",
+      "x": 48,
+      "y": 620,
+      "s": "if a <> b -> draw(a)",
+      "f": "mono",
+      "c": "black"
+    },
+    {
+      "op": "text",
+      "x": 48,
+      "y": 660,
+      "s": "mono: BASIC layout -- no ligatures, integer advances",
+      "f": "xs",
+      "c": "black"
+    },
+    {
+      "op": "text",
+      "x": 48,
+      "y": 720,
+      "s": "\u2591\u2592\u2593\u2588",
+      "f": "mono",
+      "c": "black"
+    },
+    {
+      "op": "text",
+      "x": 48,
+      "y": 761,
+      "s": "mono: shade ramp, 25/50/75/solid block elements",
+      "f": "xs",
+      "c": "black"
+    },
+    {
+      "op": "sprite",
+      "x": 48,
+      "y": 860,
+      "cell": 28,
+      "mirror": "x",
+      "palette": {
+        "\u2588": "ember",
+        "K": "black",
+        "N": "navy"
+      },
+      "rows": [
+        "....\u2588\u2588......",
+        "...\u2588\u2588\u2588\u2588.....",
+        "..\u2588\u2588KK\u2588\u2588....",
+        ".\u2588\u2588KKKK\u2588\u2588...",
+        "\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588..",
+        ".\u2588\u2588NNNN\u2588\u2588...",
+        "..\u2588\u2588..\u2588\u2588....",
+        "...\u2588...\u2588...."
+      ]
+    },
+    {
+      "op": "text",
+      "x": 48,
+      "y": 1094,
+      "s": "sprite: mirror 'x', cell 28, doc mix 'ember' + built-ins",
+      "f": "xs",
+      "c": "black"
+    },
+    {
+      "op": "poly",
+      "c": "plum",
+      "pts": [
+        [
+          48,
+          1184
+        ],
+        [
+          168,
+          1184
+        ],
+        [
+          248,
+          1284
+        ],
+        [
+          168,
+          1384
+        ],
+        [
+          48,
+          1384
+        ],
+        [
+          128,
+          1284
+        ]
+      ]
+    },
+    {
+      "op": "text",
+      "x": 48,
+      "y": 1394,
+      "s": "poly: filled, 'plum' mix",
+      "f": "xs",
+      "c": "black",
+      "w": 320
+    },
+    {
+      "op": "poly",
+      "c": "black",
+      "fill": false,
+      "t": 3,
+      "pts": [
+        [
+          430,
+          1184
+        ],
+        [
+          650,
+          1184
+        ],
+        [
+          540,
+          1384
+        ]
+      ]
+    },
+    {
+      "op": "text",
+      "x": 430,
+      "y": 1394,
+      "s": "poly: outline, t 3",
+      "f": "xs",
+      "c": "black",
+      "w": 280
+    },
+    {
+      "op": "circle",
+      "x": 900,
+      "y": 1284,
+      "r": 90,
+      "fill": false,
+      "t": 6,
+      "c": "maroon"
+    },
+    {
+      "op": "text",
+      "x": 800,
+      "y": 1394,
+      "s": "circle: outline, t 6",
+      "f": "xs",
+      "c": "black",
+      "w": 300
+    },
+    {
+      "op": "line",
+      "x": 48,
+      "y": 1464,
+      "x2": 1152,
+      "y2": 1464,
+      "t": 8,
+      "c": "black"
+    },
+    {
+      "op": "text",
+      "x": 48,
+      "y": 1484,
+      "s": "line: t 8",
+      "f": "xs",
+      "c": "black"
+    },
+    {
+      "op": "line",
+      "x": 48,
+      "y": 1528,
+      "x2": 1152,
+      "y2": 1528,
+      "t": 2,
+      "c": "grey-mid"
+    },
+    {
+      "op": "text",
+      "x": 48,
+      "y": 1552,
+      "s": "vocabulary",
+      "f": "xs",
+      "c": "black"
+    },
+    {
+      "op": "fmt",
+      "x": 1045,
+      "y": 1552,
+      "s": "{hash}@{time24}",
+      "f": "xs",
+      "a": "right",
+      "c": "grey-mid"
+    },
+    {
+      "op": "icon",
+      "x": 1058,
+      "y": 1545,
+      "n": "battery",
+      "z": "sm",
+      "c": "grey-mid"
+    },
+    {
+      "op": "fmt",
+      "x": 1100,
+      "y": 1552,
+      "s": "{battery}",
+      "f": "xs",
+      "c": "grey-mid"
+    }
+  ]
+}
