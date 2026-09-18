@@ -49,6 +49,9 @@ class FakeStore:
     def names(self) -> list[str]:
         return sorted(self._docs)
 
+    def fetched_names(self) -> list[str]:
+        return sorted(n for n, f in self._fetch.items() if f.recent_fetch_at is not None)
+
     def get(self, name: str = DEFAULT_NAME) -> Published:
         if name not in self._docs:
             raise UnknownDisplay(f"no display published under {name!r}")
@@ -95,16 +98,21 @@ class FakeStore:
             ops=len(stamped["ops"]),
             bytes=len(body),
             warnings=[],
+            recent_fetch_at=fetch.recent_fetch_at,
         )
 
     def clear(self, name: str = DEFAULT_NAME) -> bool:
-        existed = name in self._docs
-        self._docs.pop(name, None)
+        # Same rule as Store.clear(): nothing published means nothing to
+        # clear, and the fetch record for a name the panel keeps asking
+        # for is left alone so status() can still say so.
+        if name not in self._docs:
+            return False
+        del self._docs[name]
         self._bodies.pop(name, None)
         self._hashes.pop(name, None)
         self._etags.pop(name, None)
         self._fetch.pop(name, None)
-        return existed
+        return True
 
     def fetch_record(self, name: str) -> FetchRecord | None:
         rec = self._fetch.get(name)

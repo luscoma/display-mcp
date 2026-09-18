@@ -18,7 +18,7 @@ bit-identical. That repo is superseded entirely; this one is authoritative.
 | App auth | a Starlette middleware in front of the MCP app verifies the `Cf-Access-Jwt-Assertion` header (JWKS, issuer, AUD). Authless when unconfigured, for local dev. |
 | Displays | keyed by name from day one; `default` is the alias for `/display.json` |
 | Tools | `set_display`, `preview` (published or draft), `validate`, `get_display`, `status`, `clear_display`, `describe`, `guide`, `swatches`; resources `spec`, `current`, `sample`; prompt `compose_display` |
-| Status | per display: `published_at`, `first_fetch_at` (first 200 for the current hash), `recent_fetch_at` + `recent_fetch_status` + `recent_fetch_ip`. Persisted. |
+| Status | per display: `published_at`, `first_fetch_at` (first 200 for the current hash), `recent_fetch_at` + `recent_fetch_status` + `recent_fetch_ip`. Persisted. `status()` with no name also reports `requested`: every name that has ever been fetched, published or not — `Store.fetched_names()` — since that is the only place the server can answer "which name is the panel actually asking for". |
 | Preview colours | ink approximation only. The pure-RGB `--ideal` mode is **removed** (2026-09-11), reversing the original decision to keep it as a CLI flag: it was CLI-only, so no MCP caller could reach it, and INK is now the single colour table. `preview` additionally draws each mix as the colour it averages to rather than the 1 px checkerboard the panel dithers — `render(dithered_colors=...)`, default True everywhere else. See docs/plans/preview-flat-colour.md |
 
 ## Layout
@@ -132,11 +132,11 @@ preview beats publishing three times).
 
 | Tool | Args | Returns |
 |---|---|---|
-| `set_display` | `document` (dict or JSON string), `name="default"` | `{name, hash, etag, ops, bytes, warnings}` |
+| `set_display` | `document` (dict or JSON string), `name="default"` | `{name, hash, etag, ops, bytes, warnings, recent_fetch_at, recent_fetch_ago}` — the last two are the fetch record `publish()` kept for this name, `null` if no panel has ever asked for it |
 | `preview` | `document?` (dict or JSON string), `name="default"`, `dithered_colors=False`, `grid=False` | PNG **and** a text block: a note on how colour was rendered, then `check()`'s warnings. No document → what is published; with one → render the draft, publish nothing. `grid=True` overlays a labelled 100 px coordinate grid, for placing things by coordinate |
 | `validate` | `document` (dict or JSON string) | `{hash, ops, bytes, warnings, colors, max_bytes}` — `colors` is `{name: {recipe, hex}}` for every colour name the document references, `max_bytes` is `store.MAX_DOC_BYTES` |
 | `get_display` | `name="default"` | the published document, or an error if none |
-| `status` | `name?` | one display, or all: `{published, hash, ops, bytes, published_at, first_fetch_at, recent_fetch_at, recent_fetch_status, recent_fetch_ip}`; timestamps are ISO 8601 plus a matching `*_ago` string |
+| `status` | `name?` | one display, or all: `{published, hash, ops, bytes, published_at, first_fetch_at, recent_fetch_at, recent_fetch_status, recent_fetch_ip}`; timestamps are ISO 8601 plus a matching `*_ago` string. With no `name`, also `{displays: {name: ...above...}, requested: {name: {recent_fetch_at, recent_fetch_ago, recent_fetch_status, recent_fetch_ip}}, auth}` — `requested` covers every name in `Store.fetched_names()`, published or not, which is the answer to "which name is the panel on" |
 | `clear_display` | `name="default"` | `{name, cleared}` |
 | `describe` | none | the renderer's vocabulary as one JSON object: `{canvas, inks, mixes, densities, fonts, icons, icon_sizes, ops, fmt_fields, limits}`, built from the renderer's own tables at call time |
 | `guide` | none | the text of `prompts/compose.md` — the composing guide, as a tool call for a client that cannot read prompts |

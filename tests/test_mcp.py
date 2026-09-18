@@ -92,11 +92,22 @@ async def test_set_display_shape_and_stamped_hash(mcp, store, sample_doc):
         result = await c.call_tool("set_display", {"document": sample_doc})
     assert result.is_error is not True
     data = result.structured_content
-    assert set(data) == {"name", "hash", "etag", "ops", "bytes", "warnings"}
+    assert set(data) == {
+        "name",
+        "hash",
+        "etag",
+        "ops",
+        "bytes",
+        "warnings",
+        "recent_fetch_at",
+        "recent_fetch_ago",
+    }
     assert data["name"] == "default"
     assert data["etag"] == f'"{data["hash"]}"'
     assert data["ops"] == len(sample_doc["ops"])
     assert data["warnings"] == []
+    assert data["recent_fetch_at"] is None  # no panel has ever asked for this name
+    assert data["recent_fetch_ago"] is None
 
     published = store.get("default")
     assert published.hash == data["hash"]
@@ -305,6 +316,7 @@ async def test_status_all_displays(mcp, store, sample_doc, auth_settings):
     data = result.structured_content
     assert "default" in data["displays"]
     assert data["displays"]["default"]["published"] is True
+    assert data["requested"] == {}  # nothing has fetched anything yet
     assert data["auth"] == "none"
 
     # auth reflected in a server built with Cloudflare Access configured
@@ -746,3 +758,59 @@ async def test_status_unpublished_name_reports_panel_requests(mcp, store):
     assert data["recent_fetch_status"] == 503
     assert data["recent_fetch_ip"] == "172.17.0.5"
     assert data["recent_fetch_ago"] is not None
+
+
+# ---- D7: who has been fetching -----------------------------------------
+
+
+async def test_status_requested_lists_an_unpublished_fetched_name(mcp, store):
+    store.note_fetch("ghost", 503, "172.17.0.5")
+    async with Client(mcp) as c:
+        result = await c.call_tool("status", {})
+    data = result.structured_content
+    assert set(data["requested"]) == {"ghost"}
+    entry = data["requested"]["ghost"]
+    assert set(entry) == {
+        "recent_fetch_at",
+        "recent_fetch_ago",
+        "recent_fetch_status",
+        "recent_fetch_ip",
+    }
+    assert entry["recent_fetch_status"] == 503
+    assert entry["recent_fetch_ip"] == "172.17.0.5"
+    assert entry["recent_fetch_at"] is not None
+    # note_fetch() doesn't publish, so "ghost" is requested but not published
+    assert "ghost" not in data["displays"]
+
+
+async def test_status_requested_includes_published_names(mcp, store, sample_doc):
+    store.publish(sample_doc)
+    store.note_fetch("default", 200, "10.0.0.1")
+    async with Client(mcp) as c:
+        result = await c.call_tool("status", {})
+    data = result.structured_content
+    assert "default" in data["requested"]
+    assert "default" in data["displays"]
+
+
+async def test_set_display_recent_fetch_null_when_never_fetched(mcp, store, sample_doc):
+    async with Client(mcp) as c:
+        result = await c.call_tool("set_display", {"document": sample_doc, "name": "scratch"})
+    data = result.structured_content
+    assert data["recent_fetch_at"] is None
+    assert data["recent_fetch_ago"] is None
+
+
+async def test_set_display_recent_fetch_reflects_prior_fetch_and_publish_does_not_reset_it(
+    mcp, store, sample_doc
+):
+    store.note_fetch("default", 200, "10.0.0.9")
+    fetched_at = store.fetch_record("default").recent_fetch_at
+
+    async with Client(mcp) as c:
+        result = await c.call_tool("set_display", {"document": sample_doc})
+    data = result.structured_content
+    assert data["recent_fetch_at"] is not None
+    assert data["recent_fetch_ago"].endswith("ago")
+    # the publish did not reset the fetch record
+    assert store.fetch_record("default").recent_fetch_at == fetched_at

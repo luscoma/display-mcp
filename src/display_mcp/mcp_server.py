@@ -262,6 +262,9 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
         contrast, ...) never block the publish, but seeing one back is
         almost always a mistake worth fixing rather than shipping — see
         `validate` for the full list of what is and isn't checked.
+        `recent_fetch_at` is when a panel last asked for this name, `null`
+        if none ever has; `status()` lists the names that have been
+        requested.
         """
         try:
             validate_name(name)
@@ -275,6 +278,8 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
             "ops": result.ops,
             "bytes": result.bytes,
             "warnings": result.warnings,
+            "recent_fetch_at": _iso(result.recent_fetch_at),
+            "recent_fetch_ago": _ago(result.recent_fetch_at),
         }
 
     @mcp.tool(
@@ -426,6 +431,14 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
         except DisplayError as exc:
             raise ToolError(str(exc)) from exc
 
+    def _recent_fetch_fields(fetch: FetchRecord) -> dict[str, Any]:
+        return {
+            "recent_fetch_at": _iso(fetch.recent_fetch_at),
+            "recent_fetch_ago": _ago(fetch.recent_fetch_at),
+            "recent_fetch_status": fetch.recent_fetch_status,
+            "recent_fetch_ip": fetch.recent_fetch_ip,
+        }
+
     def _display_status(name: str) -> dict[str, Any]:
         try:
             published = store.get(name)
@@ -443,10 +456,7 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
                 "published_ago": None,
                 "first_fetch_at": None,
                 "first_fetch_ago": None,
-                "recent_fetch_at": _iso(fetch.recent_fetch_at),
-                "recent_fetch_ago": _ago(fetch.recent_fetch_at),
-                "recent_fetch_status": fetch.recent_fetch_status,
-                "recent_fetch_ip": fetch.recent_fetch_ip,
+                **_recent_fetch_fields(fetch),
             }
         fetch = published.fetch
         return {
@@ -459,10 +469,7 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
             "published_ago": _ago(fetch.published_at),
             "first_fetch_at": _iso(fetch.first_fetch_at),
             "first_fetch_ago": _ago(fetch.first_fetch_at),
-            "recent_fetch_at": _iso(fetch.recent_fetch_at),
-            "recent_fetch_ago": _ago(fetch.recent_fetch_at),
-            "recent_fetch_status": fetch.recent_fetch_status,
-            "recent_fetch_ip": fetch.recent_fetch_ip,
+            **_recent_fetch_fields(fetch),
         }
 
     @mcp.tool(
@@ -476,13 +483,18 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
     def status(name: str | None = None) -> dict[str, Any]:
         """Report whether the panel has actually picked up what was published.
 
-        With `name`, one display's status. Without it, every known display
-        plus how the MCP endpoint is authenticated. `recent_fetch_status:
-        304` is the healthy answer: the panel already had this exact
-        document and skipped the ~1.5 mAh redraw. `first_fetch_at` is when
-        the panel first served the *current* hash (reset on every publish),
-        so a stale `first_fetch_at` next to a recent `published_at` usually
-        just means the panel hasn't woken up since — it wakes about hourly.
+        With `name`, one display's status. Without it, every known display,
+        every name that has been requested, plus how the MCP endpoint is
+        authenticated. `recent_fetch_status: 304` is the healthy answer: the
+        panel already had this exact document and skipped the ~1.5 mAh
+        redraw. `first_fetch_at` is when the panel first served the
+        *current* hash (reset on every publish), so a stale `first_fetch_at`
+        next to a recent `published_at` usually just means the panel hasn't
+        woken up since — it wakes about hourly. `requested` covers every
+        name `fetched_names()` knows, published or not — it is the answer
+        to "which name is the panel actually configured to request", since
+        the server cannot read the firmware's own `dl_url`, only what has
+        actually shown up asking.
         """
         if name is not None:
             try:
@@ -492,6 +504,10 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
             return _display_status(name)
         return {
             "displays": {n: _display_status(n) for n in store.names()},
+            "requested": {
+                n: _recent_fetch_fields(store.fetch_record(n) or FetchRecord())
+                for n in store.fetched_names()
+            },
             "auth": "cloudflare-access" if settings.auth_enabled else "none",
         }
 

@@ -197,6 +197,9 @@ angle, temperature and unit variance. Trust the wall over the number.
    see the real dither — that image aliases badly when scaled and is the
    wrong one to judge colour from.
 3. `set_display(document, name=...)` — publish once you're satisfied.
+   `recent_fetch_at: null` in the reply means no panel has ever fetched
+   this name — check `status()`'s `requested` list before assuming the
+   wall is about to change.
 4. `status(name=...)` — confirm the panel actually picked it up. A `200`
    means the panel fetched and redrew; every wake after that is a `304`,
    which is what you want — it is the steady state, not a one-time

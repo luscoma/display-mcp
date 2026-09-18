@@ -9,6 +9,7 @@ from display_mcp import store as store_mod
 from display_mcp.store import (
     MAX_DOC_BYTES,
     DisplayError,
+    FetchRecord,
     Store,
     UnknownDisplay,
 )
@@ -178,6 +179,62 @@ def test_note_fetch_updates_recent_every_time(store, sample_doc):
     assert fetch.recent_fetch_ip == "1.1.1.1"
     assert fetch.recent_fetch_at is not None
     assert fetch.first_fetch_at is None  # 304 never sets it
+
+
+def test_publish_keeps_recent_fetch_at(store, sample_doc):
+    store.publish(sample_doc, "default")
+    store.note_fetch("default", 200, "1.2.3.4")
+    recent = store.get("default").fetch.recent_fetch_at
+    assert recent is not None
+
+    result = store.publish(sample_doc, "default")
+    assert result.recent_fetch_at == recent  # a publish never resets it
+    assert store.get("default").fetch.recent_fetch_at == recent
+
+
+def test_publish_recent_fetch_at_is_none_when_never_fetched(store, sample_doc):
+    result = store.publish(sample_doc, "default")
+    assert result.recent_fetch_at is None
+
+
+def test_fetched_names_includes_unpublished_and_excludes_from_names(store):
+    store.note_fetch("ghost", 503, "2.2.2.2")
+    assert store.fetched_names() == ["ghost"]
+    assert "ghost" not in store.names()
+
+
+def test_fetched_names_survives_reload(tmp_path, monkeypatch):
+    monkeypatch.setattr(store_mod.render, "check", lambda doc, font_dir: [])
+    state_dir = tmp_path / "state"
+    s = store_mod.Store(state_dir, tmp_path / "fonts")
+    s.note_fetch("ghost", 503, "2.2.2.2")
+    assert s.fetched_names() == ["ghost"]
+
+    reloaded = store_mod.Store(state_dir, tmp_path / "fonts")
+    assert reloaded.fetched_names() == ["ghost"]
+    assert "ghost" not in reloaded.names()
+
+
+def test_clear_drops_fetch_history(store, sample_doc):
+    """Settled behaviour (docs/plans/dragon-feedback.md D7): clear() resets
+    the fetch record along with unpublishing, so a cleared name's history
+    does not survive it."""
+    store.publish(sample_doc, "default")
+    store.note_fetch("default", 200, "1.2.3.4")
+    assert "default" in store.fetched_names()
+
+    assert store.clear("default") is True
+    assert "default" not in store.fetched_names()
+    assert store.fetch_record("default") == FetchRecord()
+    assert not (store.state_dir / "default.meta.json").exists()
+
+
+def test_clear_of_an_unpublished_name_keeps_its_fetch_record(store):
+    """The panel asking for a name nothing is published under is worth
+    remembering; a clear() that has nothing to clear must not forget it."""
+    store.note_fetch("ghost", 503, "1.2.3.4")
+    assert store.clear("ghost") is False
+    assert "ghost" in store.fetched_names()
 
 
 def test_note_fetch_for_unknown_display_is_recorded_but_not_in_names(store):

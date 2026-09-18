@@ -83,6 +83,7 @@ class PublishResult:
     ops: int
     bytes: int
     warnings: list[str]
+    recent_fetch_at: float | None = None  # kept across the publish; None if never fetched
 
 
 def validate_name(name: str) -> str:
@@ -219,6 +220,22 @@ class Store:
         with self._map_lock:
             return sorted(name for name, entry in self._entries.items() if entry.doc is not None)
 
+    def fetched_names(self) -> list[str]:
+        """Names with a fetch record (`recent_fetch_at` set), published or not, sorted.
+
+        This is the mirror image of `names()`'s exclusion in the module
+        docstring: every name the panel has ever asked for, whether or not
+        anything is (still) published under it. `clear()` drops a name's
+        fetch record along with its document, so a cleared name falls out
+        of this list too.
+        """
+        with self._map_lock:
+            return sorted(
+                name
+                for name, entry in self._entries.items()
+                if entry.fetch.recent_fetch_at is not None
+            )
+
     def get(self, name: str = DEFAULT_NAME) -> Published:
         """Raise UnknownDisplay if nothing is published under `name`."""
         validate_name(name)
@@ -281,6 +298,7 @@ class Store:
             entry.fetch.published_at = now
             entry.fetch.first_fetch_at = None
             self._write_meta(name, entry.fetch)
+            recent_fetch_at = entry.fetch.recent_fetch_at
 
         return PublishResult(
             name=name,
@@ -289,6 +307,7 @@ class Store:
             ops=len(new_doc.get("ops", [])),
             bytes=len(body),
             warnings=warnings,
+            recent_fetch_at=recent_fetch_at,
         )
 
     def clear(self, name: str = DEFAULT_NAME) -> bool:
