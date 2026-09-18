@@ -371,9 +371,11 @@ different interfaces.
 
 Eight tools: `set_display(document)` validates, stamps `meta.hash` and
 `meta.generated`, and writes atomically; `validate(document)` runs the same
-checks without rendering or publishing; `preview(document)` returns a PNG
-plus `check()`'s warnings — the same `display_mcp.render` behind both, so
-what Claude sees and what `validate` reports cannot disagree; `get_display(name)` returns what's
+checks without rendering or publishing, and also returns the effective
+colour of every name the document references and the document byte
+ceiling; `preview(document)` returns a PNG plus `check()`'s warnings — the
+same `display_mcp.render` behind both, so what Claude sees and what
+`validate` reports cannot disagree; `get_display(name)` returns what's
 currently published; `status(name)` says whether the panel has collected it
 — `recent_fetch_status: 304` is the healthy answer; `clear_display(name)`
 unpublishes; `describe()` returns the op vocabulary — inks, mixes, fonts,

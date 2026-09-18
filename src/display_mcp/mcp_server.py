@@ -69,8 +69,26 @@ _DITHERED_NOTE = (
 COMPOSE_PROMPT = (_PROMPTS_DIR / "compose.md").read_text()
 
 
-def _hex(rgb: tuple) -> str:
-    return "#{:02X}{:02X}{:02X}".format(*rgb)
+def _merge_color_problems(problems: list[str], color_problems: list[str]) -> list[str]:
+    """`problems` (`check()`'s, in order) plus whichever of `color_problems`
+    (`document_colors()`'s) `check()` didn't already report for the same
+    name.
+
+    The two resolve colours through different `where`s — `check()` as
+    `"ops[i] kind"`, `document_colors()` as `"palette '<name>'"` — so a mix
+    malformed in the palette *and* used by an op would otherwise warn twice
+    for the one mistake. Dedup compares each message's text after its own
+    `"where: "` prefix, which is where the actual complaint (and the
+    name it's about) lives; the prefix itself is expected to differ.
+    """
+    seen = {p.split(": ", 1)[-1] for p in problems}
+    merged = list(problems)
+    for p in color_problems:
+        rest = p.split(": ", 1)[-1]
+        if rest not in seen:
+            merged.append(p)
+            seen.add(rest)
+    return merged
 
 
 def _describe() -> dict[str, Any]:
@@ -87,7 +105,7 @@ def _describe() -> dict[str, Any]:
             "c": c,
             "c2": c2,
             "mix": mix,
-            "hex": _hex(render.Ink(render.INK[c], render.INK[c2], mix).avg),
+            "hex": render.hex_of(render.Ink(render.INK[c], render.INK[c2], mix).avg),
             "tier": render.TIERS[name],
         }
         for name, (c, c2, mix) in render.BUILTIN_MIXES.items()
@@ -112,7 +130,7 @@ def _describe() -> dict[str, Any]:
             "h": render.HEIGHT,
             "bezel_margin": render.BEZEL_MARGIN,
         },
-        "inks": {name: _hex(rgb) for name, rgb in render.INK.items()},
+        "inks": {name: render.hex_of(rgb) for name, rgb in render.INK.items()},
         "mixes": mixes,
         "densities": list(render.DENSITIES),
         "fonts": fonts,
@@ -327,8 +345,14 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
         one — some clients send object arguments that way.
 
         Returns the hash `set_display` would stamp, the op count, the
-        minified byte size, and every renderer warning. What is actually
-        checked: unknown op/font/icon/colour name; a field an op does not
+        minified byte size, and every renderer warning, plus two more:
+        `colors` is the effective `{recipe, hex}` of every colour name the
+        document references (`bg`, each op's `c`/`bgc`, every `palette`
+        key) — a name that doesn't resolve is absent here and shows up in
+        `warnings` instead. `max_bytes` is the ceiling `set_display` enforces
+        (`bytes` above it is a `ToolError`, not a warning).
+
+        What is actually checked: unknown op/font/icon/colour name; a field an op does not
         have (e.g. `c2`/`mix` written directly on an op — those are fields
         of a *palette* entry, not an op: write `palette: {name: {c, c2,
         mix}}` and `c: name` on the op instead); a malformed palette entry
@@ -356,11 +380,14 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
         problems = render.check(doc, settings.font_dir)
         op_count = len(doc.get("ops") or [])
         body = json.dumps(doc, separators=(",", ":")).encode("utf-8")
+        colors, color_problems = render.document_colors(doc)
         return {
             "hash": render.render_hash(doc),
             "ops": op_count,
             "bytes": len(body),
-            "warnings": problems,
+            "warnings": _merge_color_problems(problems, color_problems),
+            "colors": colors,
+            "max_bytes": MAX_DOC_BYTES,
         }
 
     @mcp.tool(

@@ -24,10 +24,12 @@ from display_mcp.render import (
     INK,
     TIERS,
     WIDTH,
+    Ctx,
     Ink,
     _grounds,
     bezel_problems,
     check,
+    document_colors,
     draw_icon,
     fit_line,
     fonts_available,
@@ -198,6 +200,104 @@ def test_wrap_lines_equals_one(font_dir):
     lines = wrap_lines(font, s, max_w, 1)
     assert len(lines) == 1
     assert text_width(font, lines[0]) <= max_w
+
+
+def test_fit_line_none_max_w_is_unchanged(font_dir):
+    """Pinned separately from the FIT_CASES table (its "exact_fit" case
+    already covers this): a `None` max_w must never truncate, since the
+    text branch now relies on this to make a `null`/absent `w` a no-op."""
+    from display_mcp.render import load_font
+
+    font = load_font(font_dir, *FONTS["sm"])
+    s = "Supercalifragilisticexpialidocious, quite unchanged"
+    assert fit_line(font, s, None) == s
+
+
+# --------------------------------------------------------------------------
+# `text` op: `w`/`lh`/`lines` that are null or the wrong type mean absent,
+# the same way the firmware's `o["field"] | default` does (describe()
+# advertises `null` as each one's default, and a caller that writes that
+# literally must not crash validate()/preview()).
+# --------------------------------------------------------------------------
+
+
+def _text_op(**overrides):
+    op = {"op": "text", "x": 10, "y": 10, "s": "hello there wide world of text",
+          "f": "sm", "wrap": True, "w": 140, "lines": 3}
+    op.update(overrides)
+    return op
+
+
+def test_text_lh_null_matches_lh_omitted(font_dir):
+    doc_null = {"bg": "white", "ops": [_text_op(lh=None)]}
+    doc_omitted = {"bg": "white", "ops": [{k: v for k, v in _text_op().items() if k != "lh"}]}
+    img_null, problems = render(doc_null, font_dir)  # must not raise
+    img_omitted, _ = render(doc_omitted, font_dir)
+    assert problems == []
+    assert img_null.tobytes() == img_omitted.tobytes()
+
+
+def test_text_w_null_with_wrap_matches_w_omitted(font_dir):
+    doc_null = {"bg": "white", "ops": [_text_op(w=None)]}
+    doc_omitted = {"bg": "white", "ops": [{k: v for k, v in _text_op().items() if k != "w"}]}
+    img_null, problems = render(doc_null, font_dir)  # must not raise
+    img_omitted, _ = render(doc_omitted, font_dir)
+    assert problems == []
+    assert img_null.tobytes() == img_omitted.tobytes()
+
+
+def test_text_w_non_numeric_matches_w_omitted(font_dir):
+    """`wrap: true` stays set, but a `w` that isn't a number can't satisfy
+    the firmware's `wrap && max_w > 0`, so this draws a single unwrapped
+    line — same as the op with `w` left out entirely."""
+    doc_bad = {"bg": "white", "ops": [_text_op(w="wide")]}
+    doc_omitted = {"bg": "white", "ops": [
+        {k: v for k, v in _text_op().items() if k != "w"}]}
+    img_bad, problems = render(doc_bad, font_dir)  # must not raise
+    img_omitted, _ = render(doc_omitted, font_dir)
+    assert problems == []
+    assert img_bad.tobytes() == img_omitted.tobytes()
+
+
+def test_text_lines_null_matches_lines_omitted(font_dir):
+    doc_null = {"bg": "white", "ops": [_text_op(lines=None)]}
+    doc_omitted = {"bg": "white", "ops": [
+        {k: v for k, v in _text_op().items() if k != "lines"}]}
+    img_null, problems = render(doc_null, font_dir)  # must not raise
+    img_omitted, _ = render(doc_omitted, font_dir)
+    assert problems == []
+    assert img_null.tobytes() == img_omitted.tobytes()
+
+
+# --------------------------------------------------------------------------
+# unknown `a` (alignment): warn, still fall back to left like the firmware
+# --------------------------------------------------------------------------
+
+
+def test_unknown_alignment_on_text_warns_and_falls_back_to_left(font_dir):
+    doc_bad = {"bg": "white", "ops": [
+        {"op": "text", "x": 10, "y": 10, "s": "hi", "f": "sm", "a": "top"}]}
+    doc_left = {"bg": "white", "ops": [
+        {"op": "text", "x": 10, "y": 10, "s": "hi", "f": "sm", "a": "left"}]}
+    img_bad, problems = render(doc_bad, font_dir)
+    img_left, _ = render(doc_left, font_dir)
+    assert problems == ["ops[0] text: unknown alignment 'top', using left"]
+    assert img_bad.tobytes() == img_left.tobytes()
+
+
+def test_unknown_alignment_on_fmt_warns_too(font_dir):
+    doc = {"bg": "white", "ops": [
+        {"op": "fmt", "x": 10, "y": 10, "s": "{time}", "f": "xs", "a": "middle"}]}
+    _, problems = render(doc, font_dir)
+    assert problems == ["ops[0] fmt: unknown alignment 'middle', using left"]
+
+
+def test_known_alignment_never_warns(font_dir):
+    for a in ("left", "center", "right"):
+        doc = {"bg": "white", "ops": [
+            {"op": "text", "x": 10, "y": 10, "s": "hi", "f": "sm", "a": a}]}
+        _, problems = render(doc, font_dir)
+        assert problems == []
 
 
 # --------------------------------------------------------------------------
@@ -1749,3 +1849,194 @@ def test_mix_hint_appears_once_when_c_is_an_object_and_c2_mix_are_also_present(f
         "c": {"c": "red", "c2": "yellow", "mix": 50}, "c2": "yellow", "mix": 50}]}
     problems = check(doc, font_dir)
     assert sum("mixes are palette entries" in p for p in problems) == 1
+
+
+# --------------------------------------------------------------------------
+# Ctx() — load_fonts / font_dir contract
+# --------------------------------------------------------------------------
+
+
+def test_ctx_with_no_font_dir_defaults_to_no_fonts_loaded():
+    """`Ctx(doc)` used to die with `TypeError` from `Path(None)`; it is now
+    a valid colour-only context."""
+    ctx = Ctx({"bg": "white"})
+    assert ctx.fonts == {}
+
+
+def test_ctx_load_fonts_true_without_font_dir_is_a_clear_valueerror():
+    with pytest.raises(ValueError, match="load_fonts needs a font_dir"):
+        Ctx({"bg": "white"}, load_fonts=True)
+
+
+def test_ctx_font_dir_alone_still_loads_fonts_by_default(font_dir):
+    ctx = Ctx({"bg": "white"}, font_dir)
+    assert set(ctx.fonts) == set(FONTS)
+
+
+def test_ctx_missing_font_file_still_raises_oserror(tmp_path):
+    """`render()`/`check()`'s behaviour on a bad `font_dir` is unchanged by
+    the `load_fonts` default: a directory with no font files still fails
+    loudly, not silently with an empty `fonts` dict."""
+    with pytest.raises(OSError):
+        Ctx({"bg": "white"}, tmp_path)
+
+
+# --------------------------------------------------------------------------
+# document_colors() — the effective colour of every name a document meets,
+# and the problems resolving them turned up
+# --------------------------------------------------------------------------
+
+
+def _hex(rgb):
+    return "#{:02X}{:02X}{:02X}".format(*rgb)
+
+
+def test_document_colors_covers_bg_op_colours_and_palette_keys():
+    """Every name the document actually references shows up once: `bg`,
+    every op's `c`, an `icon` op's `bgc`, and every palette key — even a
+    palette entry nothing draws with."""
+    doc = {
+        "v": 1,
+        "bg": "white",
+        "palette": {
+            "accent": "red",
+            "flame": {"c": "red", "c2": "yellow", "mix": 50},
+            "unused": "blue",
+        },
+        "ops": [
+            {"op": "rect", "x": 0, "y": 0, "w": 10, "h": 10, "c": "accent"},
+            {"op": "icon", "x": 0, "y": 0, "n": "check", "z": "sm", "bgc": "flame"},
+            {"op": "rect", "x": 0, "y": 0, "w": 10, "h": 10, "c": "navy"},
+        ],
+    }
+    colors, _ = document_colors(doc)
+    assert set(colors) == {"white", "accent", "flame", "navy", "unused"}
+
+
+def test_document_colors_builtin_mix_reports_its_recipe_and_the_spec_hex():
+    """A built-in mix's recipe names its two base inks and density; its hex
+    is exactly what docs/SPEC.md publishes for it (parsed, not retyped)."""
+    doc = {"v": 1, "bg": "white", "ops": [
+        {"op": "rect", "x": 0, "y": 0, "w": 10, "h": 10, "c": "navy"}]}
+    c, c2, pct, want_hex = _spec_palette_hexes()["navy"]
+    colors, _ = document_colors(doc)
+    assert colors["navy"] == {
+        "recipe": f"{c}+{c2} {pct}",
+        "hex": f"#{want_hex.upper()}",
+    }
+
+
+def test_document_colors_document_palette_mix_reports_its_recipe():
+    doc = {
+        "v": 1,
+        "bg": "white",
+        "palette": {"flame": {"c": "red", "c2": "yellow", "mix": 50}},
+        "ops": [{"op": "rect", "x": 0, "y": 0, "w": 10, "h": 10, "c": "flame"}],
+    }
+    colors, _ = document_colors(doc)
+    got = colors["flame"]
+    assert got["recipe"] == "red+yellow 50"
+    assert got["hex"] == _hex(Ink(INK["red"], INK["yellow"], 50).avg)
+
+
+def test_document_colors_alias_reports_what_it_resolves_to():
+    doc = {
+        "v": 1,
+        "bg": "white",
+        "palette": {"accent": "red"},
+        "ops": [{"op": "rect", "x": 0, "y": 0, "w": 10, "h": 10, "c": "accent"}],
+    }
+    colors, _ = document_colors(doc)
+    assert colors["accent"] == {"recipe": "ink", "hex": _hex(INK["red"])}
+
+
+def test_document_colors_unknown_name_is_absent_and_still_a_check_warning(font_dir):
+    doc = {"v": 1, "bg": "white", "ops": [
+        {"op": "rect", "x": 0, "y": 0, "w": 10, "h": 10, "c": "nope"}]}
+    colors, _ = document_colors(doc)
+    assert "nope" not in colors
+    assert any("unknown colour" in p for p in check(doc, font_dir))
+
+
+def test_document_colors_skips_a_non_string_colour_value():
+    """A dict in `c` (the dragon's own mistake) is skipped, not a key —
+    `check()` still warns about it (D1); this just never raises resolving
+    something that was never a name."""
+    doc = {"v": 1, "bg": "white", "ops": [
+        {"op": "rect", "x": 0, "y": 0, "w": 10, "h": 10,
+         "c": {"c": "red", "c2": "yellow", "mix": 50}}]}
+    colors, _ = document_colors(doc)
+    assert set(colors) == {"white"}
+
+
+def test_document_colors_ignores_bgc_on_a_non_icon_op():
+    """`bgc` is only a field `icon` reads; on any other op it is an unknown
+    field (`_op_field_problems` already warns) and must not contribute a
+    colour here."""
+    doc = {"v": 1, "bg": "white", "ops": [
+        {"op": "text", "x": 0, "y": 0, "s": "hi", "c": "black", "bgc": "red"}]}
+    colors, _ = document_colors(doc)
+    assert "red" not in colors
+
+
+def test_document_colors_reads_bgc_on_an_icon_op():
+    doc = {"v": 1, "bg": "white", "ops": [
+        {"op": "icon", "x": 0, "y": 0, "n": "check", "z": "sm", "bgc": "red"}]}
+    colors, _ = document_colors(doc)
+    assert "red" in colors
+
+
+def test_document_colors_reports_a_malformed_mix_entry_nothing_draws_with():
+    """A palette entry no op ever references: `check()` has no reason to
+    visit it, so today this reported as a plain (black) ink with no
+    warning anywhere. document_colors() now surfaces the problem itself,
+    `where`d as its own palette key so it reads as a palette complaint,
+    not an op's."""
+    doc = {"v": 1, "bg": "white", "palette": {"broken": {"c2": "red"}}, "ops": []}
+    colors, problems = document_colors(doc)
+    assert colors["broken"] == {"recipe": "ink", "hex": _hex(INK["black"])}
+    assert problems == ["palette 'broken': mix 'broken' has no 'c'; using black"]
+
+
+def test_document_colors_reports_an_unresolvable_alias_entry():
+    doc = {"v": 1, "bg": "white", "palette": {"ghost": "nope"}, "ops": []}
+    colors, problems = document_colors(doc)
+    assert "ghost" not in colors
+    assert problems == ["palette 'ghost': unknown colour 'nope'"]
+
+
+def test_check_and_document_colors_merge_does_not_duplicate(font_dir):
+    """validate()'s merge (mcp_server._merge_color_problems) is a plain
+    function pinned directly in tests/test_mcp.py; this is the end-to-end
+    half, against the real `check()`: an op that already uses a malformed
+    palette mix must earn that warning once from check(), once (under a
+    different `where`) from document_colors() — and the merge collapses
+    them to one."""
+    from display_mcp.mcp_server import _merge_color_problems
+
+    doc = {
+        "v": 1,
+        "bg": "white",
+        "palette": {"broken": {"c2": "red"}},
+        "ops": [{"op": "rect", "x": 0, "y": 0, "w": 10, "h": 10, "c": "broken"}],
+    }
+    problems = check(doc, font_dir)
+    assert any("mix 'broken' has no 'c'" in p for p in problems)  # check() saw it too
+    _colors, color_problems = document_colors(doc)
+    merged = _merge_color_problems(problems, color_problems)
+    assert sum("mix 'broken' has no 'c'" in w for w in merged) == 1
+
+
+@pytest.mark.parametrize(
+    "doc",
+    [
+        None,
+        "not a document",
+        {},
+        {"ops": "not-a-list"},
+        {"bg": "white", "palette": ["not", "a", "dict"]},
+        {"bg": 123, "ops": [1, None, "x", {"op": "rect"}]},
+    ],
+)
+def test_document_colors_never_raises_on_a_malformed_document(doc):
+    document_colors(doc)  # only requirement: no exception

@@ -178,17 +178,78 @@ async def test_validate_returns_shape(mcp, sample_doc):
         result = await c.call_tool("validate", {"document": sample_doc})
     assert result.is_error is not True
     data = result.structured_content
-    assert set(data) == {"hash", "ops", "bytes", "warnings"}
+    assert set(data) == {"hash", "ops", "bytes", "warnings", "colors", "max_bytes"}
     assert data["hash"] == render.render_hash(sample_doc)
     assert data["ops"] == len(sample_doc["ops"])
     assert data["warnings"] == []
     assert data["bytes"] > 0
+    assert data["max_bytes"] == mcp_server.MAX_DOC_BYTES
+    assert set(data["colors"]) >= {
+        "accent",
+        "work",
+        "home",
+        "highlight",
+        "grey-mid",
+        "black",
+        "white",
+        "yellow",
+    }
 
 
 async def test_validate_stores_nothing(mcp, store, sample_doc):
     async with Client(mcp) as c:
         await c.call_tool("validate", {"document": sample_doc})
     assert store.names() == []
+
+
+# ---- validate(): document_colors' own problems merged into warnings ----
+
+
+async def test_validate_reports_a_malformed_mix_entry_nothing_draws_with(mcp):
+    """A palette entry no op references: `check()` (faked here to a shape
+    check only, same as `document_colors()` doesn't need it) never visits
+    it, so this depends on `document_colors()`'s own problem reaching
+    `warnings`."""
+    doc = {"v": 1, "bg": "white", "palette": {"broken": {"c2": "red"}}, "ops": []}
+    async with Client(mcp) as c:
+        result = await c.call_tool("validate", {"document": doc})
+    data = result.structured_content
+    assert data["colors"]["broken"] == {"recipe": "ink", "hex": render.hex_of(render.INK["black"])}
+    assert data["warnings"] == ["palette 'broken': mix 'broken' has no 'c'; using black"]
+
+
+async def test_validate_reports_an_unresolvable_palette_alias(mcp):
+    doc = {"v": 1, "bg": "white", "palette": {"ghost": "nope"}, "ops": []}
+    async with Client(mcp) as c:
+        result = await c.call_tool("validate", {"document": doc})
+    data = result.structured_content
+    assert "ghost" not in data["colors"]
+    assert data["warnings"] == ["palette 'ghost': unknown colour 'nope'"]
+
+
+def test_merge_color_problems_dedupes_by_message_text_keeping_check_order_first():
+    checked = [
+        "ops[0] rect: off-canvas",
+        "ops[1] text: mix 'broken' has no 'c'; using black",
+    ]
+    color_problems = [
+        "palette 'broken': mix 'broken' has no 'c'; using black",  # same complaint
+        "palette 'ghost': unknown colour 'nope'",  # a genuinely new one
+    ]
+    merged = mcp_server._merge_color_problems(checked, color_problems)
+    assert merged == [
+        "ops[0] rect: off-canvas",
+        "ops[1] text: mix 'broken' has no 'c'; using black",
+        "palette 'ghost': unknown colour 'nope'",
+    ]
+
+
+# The end-to-end version of this — the real check() (not this file's fake)
+# feeding _merge_color_problems() — is
+# tests/test_render.py::test_check_and_document_colors_merge_does_not_duplicate,
+# since this file's autouse fixture fakes render.check()/.render(), and
+# check() calls render() as a same-module global, so even a reference
+# captured before the fixture runs would still call the fake.
 
 
 async def test_get_display_roundtrips(mcp, store, sample_doc):

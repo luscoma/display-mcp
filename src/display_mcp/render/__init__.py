@@ -24,6 +24,9 @@ Public surface (final):
     render_hash(doc) -> str  sha256 of canonical {bg, palette, ops}, first 16 hex
     render(doc, font_dir, dithered_colors=True) -> (PIL.Image.Image, list[str])
     check(doc, font_dir) -> list[str]   problems only, no image
+    document_colors(doc) -> (dict[str, dict], list[str])   every name's
+        {recipe, hex}, plus the problems resolving them turned up; no fonts needed
+    hex_of(rgb) -> str   "#RRGGBB"
     fit_line(font, s, max_w) / wrap_lines(font, s, max_w, max_lines)
     fonts_available(font_dir) -> bool
 """
@@ -433,7 +436,22 @@ def _grounds(img: Image.Image, box: tuple) -> list[tuple[tuple[float, ...], Coun
 
 
 class Ctx:
-    def __init__(self, doc: dict[str, Any], font_dir: Path, warn_ink: bool = False):
+    def __init__(
+        self,
+        doc: dict[str, Any],
+        font_dir: Path | None = None,
+        warn_ink: bool = False,
+        load_fonts: bool | None = None,
+    ):
+        # The contract, made explicit rather than left to `Path(None)`
+        # raising a bare TypeError: no `font_dir` means no fonts by
+        # default (`Ctx(doc)` is a valid colour-only context), but asking
+        # to load fonts with nothing to load them from is a caller error,
+        # not a silent no-op.
+        if load_fonts is None:
+            load_fonts = font_dir is not None
+        elif load_fonts and font_dir is None:
+            raise ValueError("load_fonts needs a font_dir")
         palette = doc.get("palette") or {}
         self.problems: list[str] = []
         if not isinstance(palette, dict):
@@ -445,7 +463,11 @@ class Ctx:
         self.palette = palette
         self.table = INK
         self.table_rev = {v: k for k, v in self.table.items()}
-        self.fonts = _load_fonts(Path(font_dir))
+        # `load_fonts=False` skips the (comparatively expensive) face load
+        # for callers that only resolve colours — document_colors() is the
+        # one today — and never touch a font. `font_dir` is then unused and
+        # may be omitted.
+        self.fonts = _load_fonts(Path(font_dir)) if load_fonts else {}
         # The three ink-mixing authoring warnings (contrast floor, chromatic
         # mix as text, sub-2px density) are check()-only, the same way
         # bezel_problems() is check()-only — render() on its own reports
@@ -609,6 +631,100 @@ class Ctx:
             self.problems.append(f"{where}: unknown font {name!r}")
             return None
         return self.fonts[name]
+
+
+def _color_name_resolves(name: str, table: dict, palette: dict) -> bool:
+    """Whether `name` reaches a base ink, a built-in mix, or a palette entry
+    without raising — the same walk `Ctx.ink()` makes, kept separate so
+    `document_colors()` can decide what to *list* without reading
+    `Ctx.problems`, which conflates a name that resolves to nothing (the
+    "unknown colour" case) with one that resolves but along the way warns
+    about something else (a malformed mix still draws, and still belongs in
+    the map). Mirrors the alias-chasing limit in `Ctx.ink()`."""
+    n = name
+    for _ in range(8):
+        if not isinstance(n, str):
+            return False
+        if n in table:
+            return True
+        entry = palette.get(n)
+        if entry is None:
+            return n in BUILTIN_MIXES
+        if isinstance(entry, dict):
+            return True
+        n = entry
+    return False
+
+
+def hex_of(rgb: tuple) -> str:
+    return "#{:02X}{:02X}{:02X}".format(*rgb)
+
+
+def document_colors(doc: dict[str, Any]) -> tuple[dict[str, dict[str, str]], list[str]]:
+    """The effective colour of every name a document references, and the
+    problems resolving them turned up along the way.
+
+    `bg`, each op's `c` (and, `icon` ops only — `bgc` is a field of no
+    other op, and writing it on one already earns its own "no such field"
+    from `_op_field_problems`), and every `palette` key, each mapped to
+    `{"recipe": ..., "hex": ...}` — `"ink"` for a base ink, `"<a>+<b>
+    <mix>"` for a mix (built-in or from the document's own palette), and an
+    alias's own recipe when a name points at one. `hex` is `Ink.avg`, the
+    same colour `render(dithered_colors=False)` paints, so this cannot say
+    something `preview` disagrees with.
+
+    The second element is every problem resolution raised, `where`d
+    `"palette '<name>'"` — so it reads as this function's own finding, not
+    an op's — including for a palette entry nothing in `ops` ever points
+    at (a malformed one `check()` has no reason to visit, since it only
+    resolves names an op actually references). `validate` merges these
+    into its `warnings`, deduping against what `check()` already reported
+    for the same name.
+
+    Resolution never touches fonts (`Ctx(..., load_fonts=False)`), so this
+    is cheap enough to call on every `validate()`. It never raises: a
+    document that isn't a dict, has no `ops` list, or has a non-dict
+    `palette` simply yields fewer entries — the same tolerance `Ctx`
+    already has for each of those shapes. A colour value that isn't a
+    string is skipped, matching what `Ctx.ink()` does for one it meets
+    while rendering. A name that doesn't resolve at all is left out of
+    `colors` (same as today's "unknown colour" warning from `check()`),
+    but still contributes the problem that says so.
+    """
+    if not isinstance(doc, dict):
+        return {}, []
+    ctx = Ctx(doc, load_fonts=False)
+
+    order: dict[str, None] = {}
+
+    def add(value: Any) -> None:
+        if isinstance(value, str):
+            order.setdefault(value, None)
+
+    add(doc.get("bg", "white"))
+    ops = doc.get("ops")
+    if isinstance(ops, list):
+        for op in ops:
+            if isinstance(op, dict):
+                add(op.get("c"))
+                if op.get("op") == "icon":
+                    add(op.get("bgc"))
+    for key in ctx.palette:
+        add(key)
+
+    colors: dict[str, dict[str, str]] = {}
+    for name in order:
+        where = f"palette {name!r}"
+        resolves = _color_name_resolves(name, ctx.table, ctx.palette)
+        resolved = ctx.ink(name, where)
+        if not resolves:
+            continue
+        if resolved.solid:
+            recipe = "ink"
+        else:
+            recipe = f"{ctx.name_of(resolved.a)}+{ctx.name_of(resolved.b)} {resolved.mix}"
+        colors[name] = {"recipe": recipe, "hex": hex_of(resolved.avg)}
+    return colors, ctx.problems
 
 
 def text_width(font, s: str) -> int:
@@ -1041,6 +1157,32 @@ def _check_thin_mix(ctx: Ctx, ink: Ink, where: str, feature: str, **dims) -> Non
         )
 
 
+def _optional_number(value: Any) -> int | float | None:
+    """`value` when it is a real, usable number; `None` otherwise.
+
+    Mirrors the firmware's `o["field"] | default` for `text`'s `w`, `lh`
+    and `lines`: `describe()` advertises `null` as each one's default, and
+    a caller who writes that literally (or a wrong type) must get the
+    default, not a `TypeError` out of `wrap_lines()`/`round()` arithmetic.
+    `bool` is excluded — JSON's `true`/`false` are not the number they
+    happen to subclass in Python.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return value
+
+
+def _anchor_of(op: dict[str, Any], ctx: Ctx, where: str) -> str:
+    """Resolve `a` to a PIL anchor code, warning (and falling back to left)
+    on a value `ANCHOR` doesn't have — the firmware's `align_of()` falls
+    back the same way, silently, so this keeps the fallback and adds the
+    warning on the Python side only."""
+    a_value = op.get("a", "left")
+    if a_value not in ANCHOR:
+        ctx.problems.append(f"{where}: unknown alignment {a_value!r}, using left")
+    return ANCHOR.get(a_value, "la")
+
+
 def render(
     doc: dict[str, Any],
     font_dir: Path,
@@ -1154,13 +1296,22 @@ def render(
                 # Matches the firmware's `skipped++; continue`: abandon the
                 # op cleanly, nothing drawn, no tone/contrast checks run.
                 continue
-            anchor = ANCHOR.get(op.get("a", "left"), "la")
-            max_w = op.get("w")
-            if op.get("wrap"):
-                lines = wrap_lines(f, op["s"], max_w, op.get("lines", 2))
+            anchor = _anchor_of(op, ctx, where)
+            # `w`/`lh`/`lines` mirror the firmware's `o["field"] | default`:
+            # `describe()` advertises `null` as each one's default, so a
+            # `None`, wrong-typed or (for `w`) non-positive value here means
+            # exactly what omitting the field means — never a crash.
+            max_w = _optional_number(op.get("w"))
+            if max_w is not None and max_w <= 0:
+                max_w = None
+            if op.get("wrap") and max_w is not None:
+                lines_n = _optional_number(op.get("lines", 2))
+                lines = wrap_lines(f, op["s"], max_w, int(lines_n if lines_n is not None else 2))
                 fname = op.get("f", "md")
                 size = FONTS.get(fname, FONTS["md"])[0]
-                lh = op.get("lh", round(size * 1.24))
+                lh = _optional_number(op.get("lh"))
+                if lh is None:
+                    lh = round(size * 1.24)
                 positions = [(op["x"], op["y"] + n * lh, line) for n, line in enumerate(lines)]
                 boxes = [
                     d.textbbox((px, py), line, font=f, anchor=anchor) for px, py, line in positions
@@ -1194,7 +1345,7 @@ def render(
                 # expand_fmt(), so an unknown-field warning never fires
                 # either when the font is also bad.
                 continue
-            anchor = ANCHOR.get(op.get("a", "left"), "la")
+            anchor = _anchor_of(op, ctx, where)
             text, unknown = expand_fields(op.get("s", ""), fields)
             for field_name in unknown:
                 ctx.problems.append(f"{where}: unknown field {{{field_name}}} (left literal)")
