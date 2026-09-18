@@ -19,11 +19,14 @@
 //     draw_display_list(it, id(dl_body), a);
 //
 #include <algorithm>
+#include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <map>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "esphome/components/display/display.h"
@@ -490,6 +493,38 @@ inline void draw_circle_ring(esphome::display::Display &it, int cx, int cy, int 
       it.filled_rectangle(cx - ow, y, 2 * ow + 1, 1, c);
     }
   }
+}
+
+/// A filled rect, rounded at the corners when `r > 0`
+/// (docs/plans/dragon-feedback.md D10): the middle band, the two side
+/// bands and four filled circles, all through the caller's own `mix` (the
+/// same proxy a plain fill uses), so a mixed rounded rect still dithers at
+/// one absolute phase rather than seven independent draws that could show
+/// a seam. `filled_rectangle(x, y, w, h)` covers `[x, x+w) x [y, y+h)`;
+/// `filled_circle` is centred on the given pixel. Eyeball, not pixel,
+/// parity with the Python's PIL ellipse -- see render/__init__.py's
+/// `_draw_rounded_rect()` for which pixels may differ.
+///
+/// `r <= 0` draws a plain fill and nothing else. The caller is expected to
+/// have already clamped `r` to `(min(w, h) - 1) / 2` -- this function
+/// trusts that bound rather than re-deriving it, since the op loop is the
+/// only caller and already has `w`/`h` in scope to do it with.
+inline void draw_rounded_rect(esphome::display::Display &mix, int x, int y, int w, int h, int r,
+                               esphome::Color c) {
+  if (r <= 0) {
+    mix.filled_rectangle(x, y, w, h, c);
+    return;
+  }
+  if (w - 2 * r > 0)
+    mix.filled_rectangle(x + r, y, w - 2 * r, h, c);
+  if (h - 2 * r > 0) {
+    mix.filled_rectangle(x, y + r, r, h - 2 * r, c);
+    mix.filled_rectangle(x + w - r, y + r, r, h - 2 * r, c);
+  }
+  mix.filled_circle(x + r, y + r, r, c);
+  mix.filled_circle(x + w - 1 - r, y + r, r, c);
+  mix.filled_circle(x + r, y + h - 1 - r, r, c);
+  mix.filled_circle(x + w - 1 - r, y + h - 1 - r, r, c);
 }
 
 /// A proxy `display::Display` that dithers by rewriting colour inside
@@ -967,27 +1002,7 @@ inline bool draw_display_list(esphome::display::Display &it, const std::string &
           int r = o["r"] | 0;
           const int max_r = std::max(0, (std::min(w, h) - 1) / 2);
           if (r > max_r) r = max_r;
-          if (r > 0) {
-            // Three filled_rectangles and four filled_circles through the
-            // same MixDisplay a plain fill uses, so a mixed rounded rect
-            // still dithers at one absolute phase. filled_rectangle(x, y,
-            // w, h) covers [x, x+w) x [y, y+h); filled_circle is centred on
-            // the given pixel. Eyeball, not pixel, parity with the
-            // Python's PIL ellipse -- see render/__init__.py's
-            // _draw_rounded_rect() for which pixels may differ.
-            if (w - 2 * r > 0)
-              mix.filled_rectangle(x + r, y, w - 2 * r, h, c.a);
-            if (h - 2 * r > 0) {
-              mix.filled_rectangle(x, y + r, r, h - 2 * r, c.a);
-              mix.filled_rectangle(x + w - r, y + r, r, h - 2 * r, c.a);
-            }
-            mix.filled_circle(x + r, y + r, r, c.a);
-            mix.filled_circle(x + w - 1 - r, y + r, r, c.a);
-            mix.filled_circle(x + r, y + h - 1 - r, r, c.a);
-            mix.filled_circle(x + w - 1 - r, y + h - 1 - r, r, c.a);
-          } else {
-            mix.filled_rectangle(x, y, w, h, c.a);
-          }
+          draw_rounded_rect(mix, x, y, w, h, r, c.a);
         } else {
           int t = o["t"] | 1;
           if (t > kThickMax)
@@ -1077,6 +1092,12 @@ inline bool draw_display_list(esphome::display::Display &it, const std::string &
         iit->second->draw(ix, iy, &mix, c.a, off.a);
 
       } else if (!strcmp(kind, "sprite")) {
+        // draw_sprite() takes the raw `it`, not this loop's `mix`: a
+        // sprite has its own palette of colours, one `Ink` per character,
+        // not the loop's single resolved `c` -- it builds and registers a
+        // fresh MixDisplay per run of equal characters instead. draw_poly()
+        // has exactly one colour for the whole shape, the same as
+        // rect/line/circle, so it reuses the caller's `mix` like they do.
         if (!draw_sprite(it, o, palette)) {
           skipped++;
           continue;

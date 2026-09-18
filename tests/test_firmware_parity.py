@@ -876,10 +876,184 @@ def _branch(src: str, start_marker: str, end_marker: str) -> str:
     return src[start:end]
 
 
-def test_rect_branch_reads_the_corner_radius():
+def test_rect_branch_reads_the_corner_radius_and_dispatches_to_draw_rounded_rect():
     src = HEADER.read_text()
     block = _branch(src, 'strcmp(kind, "rect")', 'strcmp(kind, "line")')
     assert 'o["r"]' in block
+    assert "draw_rounded_rect(" in block
+
+
+# --------------------------------------------------------------------------
+# draw_rounded_rect, differentially (docs/plans/dragon-feedback.md D10) --
+# extracted verbatim from the header, compiled against a minimal Display
+# stub (filled_rectangle/filled_circle only; draw_rounded_rect calls
+# nothing else), and compared against the Python's own
+# `_draw_rounded_rect()` for a handful of sizes.
+#
+# Eyeball, not pixel, parity is the standard here (both docstrings say so):
+# PIL's ellipse and ESPHome's midpoint filled_circle round their arcs
+# slightly differently, so the diff below checks what the two sides
+# actually promise to agree on -- the overall bounding box and the three
+# straight bands (the middle band and the two side bands) -- rather than
+# the handful of corner-arc pixels that are allowed to differ.
+#
+# Needs a host C++ compiler; skips cleanly without one, like the other
+# compiled parity fixtures in this module.
+# --------------------------------------------------------------------------
+
+_ROUNDED_RECT_STUB = r"""
+#include <algorithm>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <vector>
+namespace esphome {
+struct Color {
+  uint8_t r = 0, g = 0, b = 0;
+  Color() = default;
+  Color(int r_, int g_, int b_) : r(r_), g(g_), b(b_) {}
+};
+namespace display {
+class Display {
+ public:
+  virtual ~Display() = default;
+  virtual void draw_pixel_at(int x, int y, Color c) = 0;
+  void horizontal_line(int x, int y, int width, Color c) {
+    for (int i = x; i < x + width; i++) this->draw_pixel_at(i, y, c);
+  }
+  void filled_rectangle(int x1, int y1, int w, int h, Color c) {
+    for (int i = y1; i < y1 + h; i++) this->horizontal_line(x1, i, w, c);
+  }
+  // Transcribed from esphome::display::Display (esphome/components/display/
+  // display.cpp), the same midpoint routine display_list.h's own
+  // filled_circle() calls -- not reinvented here, so draw_rounded_rect()'s
+  // circles match the panel's own rasteriser.
+  void filled_circle(int cx, int cy, int radius, Color c) {
+    int dx = -radius, dy = 0, err = 2 - 2 * radius, e2;
+    do {
+      int hw = 2 * (-dx) + 1;
+      this->horizontal_line(cx + dx, cy + dy, hw, c);
+      this->horizontal_line(cx + dx, cy - dy, hw, c);
+      e2 = err;
+      if (e2 < dy) { err += ++dy * 2 + 1; if (-dx == dy && e2 <= dx) e2 = 0; }
+      if (e2 > dx) { err += ++dx * 2 + 1; }
+    } while (dx <= 0);
+  }
+};
+}  // namespace display
+}  // namespace esphome
+"""
+
+_ROUNDED_RECT_MAIN = r"""
+class Canvas : public esphome::display::Display {
+ public:
+  int w, h;
+  std::vector<uint8_t> px;
+  Canvas(int w_, int h_) : w(w_), h(h_), px(w_ * h_, 0) {}
+  void draw_pixel_at(int x, int y, esphome::Color c) override {
+    if (x >= 0 && y >= 0 && x < w && y < h) px[y * w + x] = 1;
+  }
+};
+// argv: x y w h r pad -- prints one (w + 2*pad) * (h + 2*pad) raster
+// ('#'/'.'), drawn at (pad, pad) so a corner circle centred off the
+// nominal box (there isn't one here) still has room to show up.
+int main(int argc, char **argv) {
+  int x = atoi(argv[1]), y = atoi(argv[2]), w = atoi(argv[3]), h = atoi(argv[4]);
+  int r = atoi(argv[5]), pad = atoi(argv[6]);
+  int cw = w + 2 * pad, ch = h + 2 * pad;
+  Canvas canvas(cw, ch);
+  esphome::Color c(1, 1, 1);
+  draw_rounded_rect(canvas, x + pad, y + pad, w, h, r, c);
+  for (auto v : canvas.px) putchar(v ? '#' : '.');
+  return 0;
+}
+"""
+
+
+@pytest.fixture(scope="module")
+def rounded_rect_harness(tmp_path_factory):
+    """Compile draw_rounded_rect() -- extracted verbatim from the shipped
+    header, never retyped -- against the stand-in Display above, once for
+    the module."""
+    if shutil.which("c++") is None:
+        pytest.skip("no host C++ compiler")
+    fn = _extract_block(r"^inline void draw_rounded_rect\(", "draw_rounded_rect()")
+
+    d = tmp_path_factory.mktemp("rounded_rect_parity")
+    src = d / "rounded_rect_harness.cpp"
+    src.write_text(_ROUNDED_RECT_STUB + "\n" + fn + "\n" + _ROUNDED_RECT_MAIN)
+    exe = d / "rounded_rect_harness"
+    subprocess.run(["c++", "-std=c++17", "-O1", "-o", str(exe), str(src)], check=True)
+    return exe
+
+
+def _cpp_rounded_rect(rounded_rect_harness, x, y, w, h, r, pad=4):
+    cw, ch = w + 2 * pad, h + 2 * pad
+    out = subprocess.run(
+        [str(rounded_rect_harness), str(x), str(y), str(w), str(h), str(r), str(pad)],
+        capture_output=True, check=True, text=True,
+    )
+    data = out.stdout
+    assert len(data) == cw * ch, "harness printed the wrong number of pixels"
+    return [[data[yy * cw + xx] == "#" for xx in range(cw)] for yy in range(ch)], pad
+
+
+def _python_rounded_rect(x, y, w, h, r, pad=4):
+    from PIL import Image, ImageDraw
+
+    from display_mcp.render import _draw_rounded_rect
+
+    cw, ch = w + 2 * pad, h + 2 * pad
+    img = Image.new("L", (cw, ch), 0)
+    dr = ImageDraw.Draw(img)
+    _draw_rounded_rect(dr, x + pad, y + pad, w, h, r, 1)
+    px = img.load()
+    return [[bool(px[xx, yy]) for xx in range(cw)] for yy in range(ch)]
+
+
+@pytest.mark.parametrize("w,h,r", [
+    (40, 40, 10), (40, 40, 19), (41, 41, 20), (60, 30, 14), (30, 60, 14),
+    (7, 7, 3), (8, 8, 3),
+])
+def test_rounded_rect_bounding_box_matches_the_python(rounded_rect_harness, w, h, r):
+    """Both sides fill the same `[x, x+w) x [y, y+h)` box overall, whatever
+    the corner arcs look like pixel for pixel."""
+    x = y = 0
+    cpp, pad = _cpp_rounded_rect(rounded_rect_harness, x, y, w, h, r)
+    py = _python_rounded_rect(x, y, w, h, r, pad)
+
+    def bbox(grid):
+        xs = [xx for row in grid for xx, v in enumerate(row) if v]
+        ys = [yy for yy, row in enumerate(grid) for v in row if v]
+        return min(xs), min(ys), max(xs), max(ys)
+
+    assert bbox(cpp) == bbox(py) == (x + pad, y + pad, x + pad + w - 1, y + pad + h - 1)
+
+
+@pytest.mark.parametrize("w,h,r", [
+    (40, 40, 10), (40, 40, 19), (41, 41, 20), (60, 30, 14), (30, 60, 14),
+    (7, 7, 3), (8, 8, 3),
+])
+def test_rounded_rect_straight_bands_match_the_python_exactly(rounded_rect_harness, w, h, r):
+    """The middle band and the two side bands are plain rectangles on both
+    sides -- no arc rasterisation involved -- so unlike the corners, these
+    must be pixel-identical."""
+    x = y = 0
+    cpp, pad = _cpp_rounded_rect(rounded_rect_harness, x, y, w, h, r)
+    py = _python_rounded_rect(x, y, w, h, r, pad)
+
+    bands = []
+    if w - 2 * r > 0:
+        bands.append((x + r, y, x + w - r, y + h))  # middle band
+    if h - 2 * r > 0:
+        bands.append((x, y + r, x + r, y + h - r))  # left band
+        bands.append((x + w - r, y + r, x + w, y + h - r))  # right band
+
+    for bx0, by0, bx1, by1 in bands:
+        for yy in range(by0 + pad, by1 + pad):
+            for xx in range(bx0 + pad, bx1 + pad):
+                assert cpp[yy][xx] == py[yy][xx], (xx - pad, yy - pad)
 
 
 def test_circle_branch_reads_t_and_dispatches_to_the_ring_helper():
