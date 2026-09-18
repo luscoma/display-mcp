@@ -369,14 +369,16 @@ different interfaces.
 | `127.0.0.1:8001/mcp` | Claude writes here, via a Cloudflare Tunnel |
 | `<host-lan-ip>:8080/display.json` | the panel reads here, LAN only |
 
-Six tools: `set_display(document)` validates, stamps `meta.hash` and
+Eight tools: `set_display(document)` validates, stamps `meta.hash` and
 `meta.generated`, and writes atomically; `validate(document)` runs the same
 checks without rendering or publishing; `preview(document)` returns a PNG
 plus `check()`'s warnings — the same `display_mcp.render` behind both, so
 what Claude sees and what `validate` reports cannot disagree; `get_display(name)` returns what's
 currently published; `status(name)` says whether the panel has collected it
 — `recent_fetch_status: 304` is the healthy answer; `clear_display(name)`
-unpublishes.
+unpublishes; `describe()` returns the op vocabulary — inks, mixes, fonts,
+icons, per-op fields — as one JSON object built from the renderer's own
+tables; `guide()` returns the prose composing guide as plain text.
 
 The panel endpoint is read-only and unauthenticated on purpose. The worst case
 is a neighbour reading your schedule; everything that *writes* is behind

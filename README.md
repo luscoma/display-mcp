@@ -126,7 +126,7 @@ full refresh on every wake — roughly half the battery life.
 
 | | |
 |---|---|
-| [`src/display_mcp/`](src/display_mcp/) | the service. `store.py` publishes and persists, `panel.py` serves the panel, `mcp_server.py` the six tools, `auth.py` the Access JWT check, `render/` the previewer |
+| [`src/display_mcp/`](src/display_mcp/) | the service. `store.py` publishes and persists, `panel.py` serves the panel, `mcp_server.py` the eight tools, `auth.py` the Access JWT check, `render/` the previewer |
 | [`firmware/`](firmware/) | the ESPHome project, and **the source of truth for rendering**. `display_list.h` is the on-device interpreter; where it and the Python renderer disagree, it wins |
 | [`docs/SPEC.md`](docs/SPEC.md) | the document language and the contract between the two |
 | [`docs/RUNBOOK.md`](docs/RUNBOOK.md) | standing it up, seven steps, a gate on each |
@@ -134,12 +134,15 @@ full refresh on every wake — roughly half the battery life.
 | [`deploy/`](deploy/) | the systemd unit and `setup.sh`, which is idempotent and reversible |
 | [`mount/`](mount/) | the printed bezel the panel hangs behind, in an ordinary picture frame |
 
-**Six MCP tools.** `set_display` publishes, `preview` renders a PNG plus the
+**Eight MCP tools.** `set_display` publishes, `preview` renders a PNG plus the
 warnings, so a session can look before it commits, `validate` checks a draft, `get_display`
 reads back what is live, `status` reports whether the panel collected it, and
-`clear_display` takes a display down. `compose_display` is a prompt carrying
-the op vocabulary and the six-ink design rules, so a scheduled session does
-not need the spec pasted into it.
+`clear_display` takes a display down. `describe` returns the op vocabulary —
+inks, mixes, fonts, icons, per-op fields — as one JSON object, and `guide`
+returns the prose composing guide; both are read-only and take no
+arguments, for a client that cannot reach resources or prompts.
+`compose_display` is a prompt carrying the op vocabulary and the six-ink
+design rules, so a scheduled session does not need the spec pasted into it.
 
 **Two renderers, one vocabulary.** The firmware draws the document on the
 panel; `display_mcp.render` draws it as a PNG. They share five font sizes,

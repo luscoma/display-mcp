@@ -17,7 +17,7 @@ bit-identical. That repo is superseded entirely; this one is authoritative.
 | Edge | Cloudflare Tunnel (`cloudflared` on the host, outbound only) to the loopback MCP listener; no public port, and no requirement that the host have a routable address of its own. Decided 2026-09-09; the earlier public-origin design (a reverse proxy with an Origin Certificate, plus an nftables allowlist) was dropped rather than kept as an option. |
 | App auth | a Starlette middleware in front of the MCP app verifies the `Cf-Access-Jwt-Assertion` header (JWKS, issuer, AUD). Authless when unconfigured, for local dev. |
 | Displays | keyed by name from day one; `default` is the alias for `/display.json` |
-| Tools | `set_display`, `preview` (published or draft), `validate`, `get_display`, `status`, `clear_display`; resources `spec`, `current`, `sample`; prompt `compose_display` |
+| Tools | `set_display`, `preview` (published or draft), `validate`, `get_display`, `status`, `clear_display`, `describe`, `guide`; resources `spec`, `current`, `sample`; prompt `compose_display` |
 | Status | per display: `published_at`, `first_fetch_at` (first 200 for the current hash), `recent_fetch_at` + `recent_fetch_status` + `recent_fetch_ip`. Persisted. |
 | Preview colours | ink approximation only. The pure-RGB `--ideal` mode is **removed** (2026-09-11), reversing the original decision to keep it as a CLI flag: it was CLI-only, so no MCP caller could reach it, and INK is now the single colour table. `preview` additionally draws each mix as the colour it averages to rather than the 1 px checkerboard the panel dithers — `render(dithered_colors=...)`, default True everywhere else. See docs/plans/preview-flat-colour.md |
 
@@ -138,6 +138,8 @@ preview beats publishing three times).
 | `get_display` | `name="default"` | the published document, or an error if none |
 | `status` | `name?` | one display, or all: `{published, hash, ops, bytes, published_at, first_fetch_at, recent_fetch_at, recent_fetch_status, recent_fetch_ip}`; timestamps are ISO 8601 plus a matching `*_ago` string |
 | `clear_display` | `name="default"` | `{name, cleared}` |
+| `describe` | none | the renderer's vocabulary as one JSON object: `{canvas, inks, mixes, densities, fonts, icons, icon_sizes, ops, fmt_fields, limits}`, built from the renderer's own tables at call time |
+| `guide` | none | the text of `prompts/compose.md` — the composing guide, as a tool call for a client that cannot read prompts |
 
 Resources: `display://spec` (SPEC.md), `display://sample`
 (`samples/display.json`), `display://current/<name>`.

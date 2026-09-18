@@ -13,6 +13,7 @@ from starlette.testclient import TestClient
 from display_mcp import mcp_server, render
 from display_mcp.config import Settings
 from fakes import FakeStore, fake_check, fake_render
+from test_render import _spec_palette_hexes
 
 
 @pytest.fixture(autouse=True)
@@ -67,8 +68,10 @@ async def test_list_tools_and_annotations(mcp):
         "get_display",
         "status",
         "clear_display",
+        "describe",
+        "guide",
     }
-    for name in ("preview", "validate", "get_display", "status"):
+    for name in ("preview", "validate", "get_display", "status", "describe", "guide"):
         assert by_name[name].annotations.read_only_hint is True
     assert by_name["set_display"].annotations.read_only_hint is False
     assert by_name["clear_display"].annotations.read_only_hint is False
@@ -263,6 +266,122 @@ async def test_clear_display_already_absent(mcp):
     async with Client(mcp) as c:
         result = await c.call_tool("clear_display", {"name": "ghost"})
     assert result.structured_content == {"name": "ghost", "cleared": False}
+
+
+# ---- describe() / guide() ----------------------------------------------
+
+
+async def test_describe_shape(mcp):
+    async with Client(mcp) as c:
+        result = await c.call_tool("describe", {})
+    assert result.is_error is not True
+    data = result.structured_content
+    assert set(data) == {
+        "canvas",
+        "inks",
+        "mixes",
+        "densities",
+        "fonts",
+        "anchors",
+        "icons",
+        "icon_sizes",
+        "ops",
+        "fmt_fields",
+        "limits",
+    }
+    assert data["canvas"] == {
+        "w": render.WIDTH,
+        "h": render.HEIGHT,
+        "bezel_margin": render.BEZEL_MARGIN,
+    }
+    assert data["densities"] == list(render.DENSITIES)
+    assert data["limits"] == {"max_bytes": mcp_server.MAX_DOC_BYTES}
+    assert set(data["fmt_fields"]) == set(render.system_fields({}))
+    assert data["anchors"] == list(render.ANCHOR)
+
+
+async def test_describe_icon_sizes_only_advertises_classes_some_icon_has(mcp):
+    """`ICON_SIZES` has `md: 56` for arithmetic elsewhere, but no icon
+    compiles to `md` today — advertising it would invite `{"n": ...,
+    "z": "md"}`, which `check()` then rejects as not compiled in."""
+    async with Client(mcp) as c:
+        result = await c.call_tool("describe", {})
+    used = {z for sizes in render.ICONS.values() for z in sizes}
+    assert set(result.structured_content["icon_sizes"]) == used == {"sm", "lg"}
+    for z in used:
+        assert result.structured_content["icon_sizes"][z] == render.ICON_SIZES[z]
+
+
+async def test_describe_inks_match_the_ink_table(mcp):
+    async with Client(mcp) as c:
+        result = await c.call_tool("describe", {})
+    inks = result.structured_content["inks"]
+    assert set(inks) == set(render.INK)
+    for name, rgb in render.INK.items():
+        assert inks[name] == "#{:02X}{:02X}{:02X}".format(*rgb)
+
+
+async def test_describe_mixes_match_spec_md(mcp):
+    """Pins `describe()` to `render.BUILTIN_MIXES`/`render.TIERS`, i.e. that
+    `describe()` reports the renderer's own tables verbatim — not a second,
+    independent read of SPEC.md. The guard that those renderer tables
+    themselves match docs/SPEC.md's prose is
+    tests/test_render.py::test_tier_matches_the_spec_heading; this test
+    only reuses that file's SPEC-table parser for its expected hexes."""
+    async with Client(mcp) as c:
+        result = await c.call_tool("describe", {})
+    mixes = result.structured_content["mixes"]
+    spec = _spec_palette_hexes()
+    assert set(mixes) == set(render.BUILTIN_MIXES) == set(spec)
+    for name, row in mixes.items():
+        c_, c2, pct, want_hex = spec[name]
+        assert (row["c"], row["c2"], row["mix"]) == (c_, c2, pct)
+        assert row["hex"] == f"#{want_hex.upper()}"
+        assert row["tier"] == render.TIERS[name]
+
+
+async def test_describe_ops_equals_op_fields_modulo_tuple_to_list(mcp):
+    async with Client(mcp) as c:
+        result = await c.call_tool("describe", {})
+    ops = result.structured_content["ops"]
+    assert set(ops) == set(render.OP_FIELDS)
+    for name, spec in render.OP_FIELDS.items():
+        assert ops[name] == {
+            "required": list(spec["required"]),
+            "optional": spec["optional"],
+        }
+
+
+async def test_describe_fonts_matches_fonts_table(mcp):
+    async with Client(mcp) as c:
+        result = await c.call_tool("describe", {})
+    fonts = result.structured_content["fonts"]
+    assert set(fonts) == set(render.FONTS)
+    for name, (px, bold) in render.FONTS.items():
+        assert fonts[name] == {"px": px, "bold": bold, "line_height": round(px * 1.24)}
+
+
+async def test_describe_icons_matches_icons_table(mcp):
+    async with Client(mcp) as c:
+        result = await c.call_tool("describe", {})
+    icons = result.structured_content["icons"]
+    assert set(icons) == set(render.ICONS)
+    for name, sizes in render.ICONS.items():
+        assert set(icons[name]) == set(sizes)
+
+
+async def test_describe_is_under_4096_bytes(mcp):
+    async with Client(mcp) as c:
+        result = await c.call_tool("describe", {})
+    body = json.dumps(result.structured_content, separators=(",", ":")).encode("utf-8")
+    assert len(body) < 4096
+
+
+async def test_guide_returns_compose_md_verbatim(mcp):
+    async with Client(mcp) as c:
+        result = await c.call_tool("guide", {})
+    assert result.is_error is not True
+    assert _text_of(result) == mcp_server.COMPOSE_PROMPT
 
 
 # ---- document may arrive as a JSON string ----------------------------

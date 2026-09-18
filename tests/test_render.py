@@ -22,6 +22,7 @@ from display_mcp.render import (
     ICON_SIZES,
     ICONS,
     INK,
+    TIERS,
     WIDTH,
     Ink,
     _grounds,
@@ -1457,16 +1458,45 @@ def test_all_ink_mixing_warnings_clean_on_the_sample(sample_doc, font_dir):
 # --------------------------------------------------------------------------
 
 
-def _spec_palette_hexes():
-    """The named-palette table in docs/SPEC.md, as {name: (c, c2, mix, hex)}.
+# The three "named palette" headings in docs/SPEC.md, in the order they
+# appear, mapped to the TIERS value each one means.
+_TIER_HEADINGS = (
+    ("Dark backgrounds", "dark"),
+    ("Light backgrounds", "light"),
+    ("Mid-tone", "mid"),
+)
 
-    Parsed rather than duplicated: the point of the test below is that the
-    published table and the renderer cannot drift apart, which a second copy
-    of the numbers here would defeat.
+
+def _spec_palette_rows():
+    """The named-palette table in docs/SPEC.md, as {name: (c, c2, mix, hex, tier)}.
+
+    Parsed rather than duplicated: the point of the tests below is that the
+    published tables, their tier headings, and the renderer cannot drift
+    apart, which a second copy of any of this here would defeat. `tier` is
+    decided by which of the three tier headings a row's chunk of text falls
+    under — the same way a reader of SPEC.md would decide it.
     """
     spec = (ROOT / "docs" / "SPEC.md").read_text()
-    rows = re.findall(r"`([a-z-]+)` \| (\w+)\+(\w+) (\d+) \| `#([0-9A-F]{6})`", spec)
-    return {n: (a, b, int(p), h.lower()) for n, a, b, p, h in rows}
+    section = spec[spec.index("## The named palette") :]
+    marks = sorted(
+        (m.start(), tier)
+        for heading, tier in _TIER_HEADINGS
+        for m in re.finditer(re.escape(heading), section)
+    )
+    rows: dict[str, tuple[str, str, int, str, str]] = {}
+    for i, (start, tier) in enumerate(marks):
+        end = marks[i + 1][0] if i + 1 < len(marks) else len(section)
+        chunk = section[start:end]
+        for n, a, b, p, h in re.findall(
+            r"`([a-z-]+)` \| (\w+)\+(\w+) (\d+) \| `#([0-9A-F]{6})`", chunk
+        ):
+            rows[n] = (a, b, int(p), h.lower(), tier)
+    return rows
+
+
+def _spec_palette_hexes():
+    """The named-palette table in docs/SPEC.md, as {name: (c, c2, mix, hex)}."""
+    return {n: v[:4] for n, v in _spec_palette_rows().items()}
 
 
 def test_spec_table_covers_every_builtin_mix():
@@ -1480,6 +1510,21 @@ def test_spec_table_covers_every_builtin_mix():
     drops out of the dict rather than matching loosely.
     """
     assert set(_spec_palette_hexes()) == set(BUILTIN_MIXES)
+
+
+def test_tiers_cover_every_builtin_mix():
+    """Same guard as above, for TIERS: every built-in mix has a tier and
+    every tier names a real mix — a name dropped from either side would
+    otherwise vanish from the parametrised test below in silence."""
+    assert set(TIERS) == set(BUILTIN_MIXES)
+
+
+@pytest.mark.parametrize("name", sorted(BUILTIN_MIXES))
+def test_tier_matches_the_spec_heading(name):
+    """TIERS[name] is dark/light/mid exactly as SPEC.md's own headings group
+    it — parsed from the file, not retyped, so the two cannot drift apart."""
+    *_, tier = _spec_palette_rows()[name]
+    assert TIERS[name] == tier
 
 
 @pytest.mark.parametrize("name", sorted(BUILTIN_MIXES))

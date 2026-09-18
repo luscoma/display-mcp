@@ -20,6 +20,7 @@ Public surface (final):
     ICON_SIZES               {size class: pixel size}
     COLORS                   the six ink names
     OP_FIELDS                {op: {required: [...], optional: {field: default}}}
+    BUILTIN_MIXES            {name: (c, c2, mix)}; TIERS {name: "dark"/"light"/"mid"}
     render_hash(doc) -> str  sha256 of canonical {bg, palette, ops}, first 16 hex
     render(doc, font_dir, dithered_colors=True) -> (PIL.Image.Image, list[str])
     check(doc, font_dir) -> list[str]   problems only, no image
@@ -265,6 +266,37 @@ BUILTIN_MIXES: dict[str, tuple[str, str, int]] = {
     "mustard": ("black", "yellow", 50),
     "orange": ("yellow", "red", 50),
     "olive": ("yellow", "blue", 50),
+}
+
+
+# Which of the three docs/SPEC.md "named palette" tables each built-in mix
+# is grouped under — what text reads well when the mix fills the space
+# behind it, not how the mix reads as text (see SPEC.md "The named palette").
+# One line per entry, grouped by tier to match the SPEC tables; `describe()`
+# returns this alongside each mix's hex, and tests/test_render.py parses the
+# SPEC headings themselves to pin it, so the two cannot drift apart.
+TIERS: dict[str, str] = {
+    "navy": "dark",
+    "teal": "dark",
+    "maroon": "dark",
+    "plum": "dark",
+    "brown": "dark",
+    "forest": "dark",
+    "grey-dark": "dark",
+    "cream": "light",
+    "cream-pale": "light",
+    "sage": "light",
+    "sage-pale": "light",
+    "slate": "light",
+    "slate-pale": "light",
+    "pink": "light",
+    "pink-pale": "light",
+    "chartreuse": "light",
+    "grey-light": "light",
+    "grey-mid": "mid",
+    "mustard": "mid",
+    "orange": "mid",
+    "olive": "mid",
 }
 
 

@@ -3,7 +3,8 @@
 Builds an MCPServer (mcp SDK v2) whose tools call the Store directly, and
 exposes it as a Starlette app via streamable_http_app(stateless_http=True).
 
-Tools: set_display, preview, validate, get_display, status, clear_display.
+Tools: set_display, preview, validate, get_display, status, clear_display,
+describe, guide.
 Resources: display://spec, display://sample, display://current/{name}.
 Prompt: compose_display (text in prompts/compose.md).
 """
@@ -29,7 +30,14 @@ from starlette.types import ASGIApp
 from . import render
 from .auth import wrap_with_access_auth
 from .config import Settings
-from .store import DisplayError, FetchRecord, Store, UnknownDisplay, validate_name
+from .store import (
+    MAX_DOC_BYTES,
+    DisplayError,
+    FetchRecord,
+    Store,
+    UnknownDisplay,
+    validate_name,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +67,62 @@ _DITHERED_NOTE = (
 )
 
 COMPOSE_PROMPT = (_PROMPTS_DIR / "compose.md").read_text()
+
+
+def _hex(rgb: tuple) -> str:
+    return "#{:02X}{:02X}{:02X}".format(*rgb)
+
+
+def _describe() -> dict[str, Any]:
+    """Build `describe()`'s return from the renderer's own tables, at call
+    time, so it can never say something `render()` doesn't do.
+
+    Every hex comes from `INK` or `Ink.avg`, the same values `preview`
+    paints and `docs/SPEC.md`'s named-palette table publishes — never typed
+    twice. `OP_FIELDS`' `required` tuples become lists so the whole object
+    round-trips through plain JSON.
+    """
+    mixes = {
+        name: {
+            "c": c,
+            "c2": c2,
+            "mix": mix,
+            "hex": _hex(render.Ink(render.INK[c], render.INK[c2], mix).avg),
+            "tier": render.TIERS[name],
+        }
+        for name, (c, c2, mix) in render.BUILTIN_MIXES.items()
+    }
+    fonts = {
+        name: {"px": px, "bold": bold, "line_height": round(px * 1.24)}
+        for name, (px, bold) in render.FONTS.items()
+    }
+    ops = {
+        op: {"required": list(spec["required"]), "optional": dict(spec["optional"])}
+        for op, spec in render.OP_FIELDS.items()
+    }
+    # Only the size classes some compiled icon actually has — `md: 56` is
+    # in ICON_SIZES for arithmetic elsewhere but has no icon behind it, and
+    # advertising it here would invite `{"n": "check", "z": "md"}`, which
+    # `check()` then has to reject as "not compiled in".
+    used_sizes = {z for sizes in render.ICONS.values() for z in sizes}
+    icon_sizes = {z: px for z, px in render.ICON_SIZES.items() if z in used_sizes}
+    return {
+        "canvas": {
+            "w": render.WIDTH,
+            "h": render.HEIGHT,
+            "bezel_margin": render.BEZEL_MARGIN,
+        },
+        "inks": {name: _hex(rgb) for name, rgb in render.INK.items()},
+        "mixes": mixes,
+        "densities": list(render.DENSITIES),
+        "fonts": fonts,
+        "anchors": list(render.ANCHOR),
+        "icons": {name: sorted(sizes) for name, sizes in render.ICONS.items()},
+        "icon_sizes": icon_sizes,
+        "ops": ops,
+        "fmt_fields": list(render.system_fields({}).keys()),
+        "limits": {"max_bytes": MAX_DOC_BYTES},
+    }
 
 
 def _read_repo_or_bundled(repo_path: Path, bundled_path: Path) -> str:
@@ -411,6 +475,51 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
         except DisplayError as exc:
             raise ToolError(str(exc)) from exc
         return {"name": name, "cleared": cleared}
+
+    @mcp.tool(
+        annotations=ToolAnnotations(
+            title="Describe vocabulary",
+            read_only_hint=True,
+            idempotent_hint=True,
+            open_world_hint=False,
+        )
+    )
+    def describe() -> dict[str, Any]:
+        """The renderer's whole vocabulary as one JSON object: canvas size,
+        the inks and built-in mixes with their hexes and tiers, the fonts,
+        the icons and their size classes, the per-op field table, the
+        `fmt` template fields, and the document byte ceiling.
+
+        Built from the same tables `render()` draws with, so it cannot say
+        something `render()` doesn't accept. A session calls this once
+        before composing rather than guessing field names by trial and
+        error; `guide()` is its prose companion.
+
+        In `ops`, an optional field whose default is `null` has no fixed
+        default and may simply be omitted — `lh` is computed from the font
+        size, `w` means no width limit, `n` has no default.
+        """
+        return _describe()
+
+    @mcp.tool(
+        annotations=ToolAnnotations(
+            title="Composing guide",
+            read_only_hint=True,
+            idempotent_hint=True,
+            open_world_hint=False,
+        )
+    )
+    def guide() -> str:
+        """The prose guide to composing a display: canvas and bezel margin,
+        the op vocabulary, the type scale, colour and contrast rules, and
+        the validate -> preview -> set_display -> status workflow.
+
+        This is the same text the `compose_display` prompt carries, as a
+        plain tool call — for a client that surfaces tools but not prompts
+        or resources. `describe()` is its machine-readable companion: call
+        that for the exact names and fields, this for the why.
+        """
+        return COMPOSE_PROMPT
 
     # ---- resources -------------------------------------------------------
 

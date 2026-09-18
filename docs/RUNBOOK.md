@@ -17,11 +17,12 @@ leaves your network.
 | MCP | `127.0.0.1:8001/mcp` | Claude, via Cloudflare Tunnel + Access |
 | Panel | `<host-lan-ip>:8080/display.json` (and `127.0.0.1:8080` for you) | the e-paper, LAN only |
 
-Six MCP tools: `set_display` publishes a document, `preview` returns a
+Eight MCP tools: `set_display` publishes a document, `preview` returns a
 rendered PNG so I can see what the wall will look like before publishing,
 `validate` checks a draft without publishing, `get_display` reads back what's
-live, `status` reports whether the panel has collected it, and
-`clear_display` takes a display down. `compose_display` is a prompt that
+live, `status` reports whether the panel has collected it, `clear_display`
+takes a display down, `describe` returns the op vocabulary as JSON, and
+`guide` returns the prose composing guide. `compose_display` is a prompt that
 teaches the op vocabulary and design rules so a session can write a document
 without being handed the spec each time.
 

@@ -3,8 +3,13 @@
 You are building the document an e-paper panel will draw next. There is no
 other context beyond what you're given here and whatever the caller told
 you: no memory of a previous run, no clock unless you look one up. Fetch
-`display://sample` before you start — it is a known-good document worth
-copying the shape of.
+`display://sample` before you start — or, if your client only exposes
+tools, `get_display` on a published name / the shapes in `describe()` — it
+is a known-good document worth copying the shape of. `describe()` returns
+the same vocabulary this file describes — inks, mixes, fonts, icons, ops —
+as one JSON object built from the renderer's own tables, and `guide()`
+returns this very text; either is reachable as a tool call for a client
+that cannot read resources or prompts.
 
 ## Canvas
 
@@ -115,8 +120,8 @@ of taste.
 Six inks — `black white yellow red blue green` — plus any two-ink mix.
 Write `"c": "navy"` with no palette entry needed: twenty-one tested
 pairings are built in (full table with hexes: the `display://spec`
-resource → "The named palette"). Redefine one, or invent your own, as a
-`palette` entry:
+resource → "The named palette", or `describe()`). Redefine one, or invent
+your own, as a `palette` entry:
 `{"c": ..., "c2": ..., "mix": 25|50|75}`. `mix` is the share of **`c2`**, so
 with `c: black, c2: white` a *higher* number is *lighter* — backwards from
 print habit, and it has fooled everyone who's met it.
