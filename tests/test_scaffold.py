@@ -193,7 +193,9 @@ async def test_prose_tool_ops_font_and_mix_counts_match_the_code():
     tools_found = _found(rf"\b({_NUM_RE})\s+(?:MCP\s+)?tools\b", readme, spec, runbook)
     ops_found = _found(rf"\b({_NUM_RE})\s+ops\b", readme, spec)
     fonts_found = _found(rf"\b({_NUM_RE})\s+font sizes\b", readme, spec)
-    mixes_found = _found(r"\b(twenty-one)\b", readme, spec)
+    mixes_found = _found(rf"\b({_NUM_RE})\s+built-in\b", readme, spec) | _found(
+        rf"\ball\s+({_NUM_RE})\b", spec
+    )
 
     assert tools_found == {await _tool_count()}, tools_found
     assert ops_found == {len(OP_FIELDS)}, ops_found

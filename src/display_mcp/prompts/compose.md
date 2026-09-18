@@ -141,6 +141,11 @@ over an `md` subtitle sits the second line's `y` at `title_y + 60`. This is
 true for `mono` too — its default `lh` (30) is not its `cell_height` (33),
 and neither is the pitch that makes block art meet.
 
+Every face only has GF_Latin_Core compiled in, plus box drawing and block
+elements for `mono` alone — a character outside that (an emoji, a stray
+arrow) previews fine and has no glyph on the wall, so `check()` warns about
+it; `describe().fonts[*].glyphs` names the set each face actually has.
+
 **Block art is one `text` op per row, stacked `ink_height` apart, not a
 wrapped one.** A full-height `mono` glyph (`│`, `█`) inks 31 rows at 1bpp —
 `ink_height` — inside a 33px `cell_height` (ascent + descent, which is

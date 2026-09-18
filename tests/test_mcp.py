@@ -464,6 +464,7 @@ async def test_describe_fonts_matches_fonts_table(mcp):
             "line_height": round(face.size * 1.24),
             "cell_height": face.cell_height,
             "ink_height": face.ink_height,
+            "glyphs": "GF_Latin_Core" + (" + U+2500–U+259F" if face.extra_glyphs else ""),
         }
 
 
@@ -482,6 +483,7 @@ async def test_describe_mono_cell_height_differs_from_its_line_height(mcp):
         "line_height": 30,
         "cell_height": 33,
         "ink_height": 31,
+        "glyphs": "GF_Latin_Core + U+2500–U+259F",
     }
 
 

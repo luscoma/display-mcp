@@ -15,9 +15,12 @@ deliberate fixes called out in docs/PLAN.md ("Renderer"):
 
 Public surface (final):
     WIDTH, HEIGHT            1200, 1600
-    FONTS                    {name: Face(size, bold, file, cell_height)} for
-                              xl lg md sm xs mono; Face[0]/Face[1] keep the
-                              old (size, bold) two-tuple reads working
+    FONTS                    {name: Face(size, bold, file, cell_height,
+                              ink_height, extra_glyphs)} for xl lg md sm xs
+                              mono; Face[0]/Face[1] keep the old (size, bold)
+                              two-tuple reads working
+    GF_LATIN_CORE             frozenset[int]; the code points every compiled
+                              face has, vendored in gf_latin_core.txt
     ICONS                    {name: frozenset(size classes)} e.g. {"check": {"sm"}}
     ICON_SIZES               {size class: pixel size}
     COLORS                   the six ink names
@@ -61,9 +64,8 @@ COLORS = ("black", "white", "yellow", "red", "blue", "green")
 
 
 class Face(NamedTuple):
-    """One compiled type-scale entry. This is a plain `NamedTuple`; reading
-    `size`/`bold` positionally (`FONTS[name][0]`/`[1]`) instead of by name
-    still works but is legacy and should not be added to.
+    """One compiled type-scale entry. A plain `NamedTuple`: read fields by
+    name (`FONTS[name].size`); positional access works but is not used.
 
     `cell_height` is `size`'s ascent + descent as PIL's `font.getmetrics()`
     reports it for the *loaded* face (the selected weight instance, for
@@ -91,7 +93,33 @@ class Face(NamedTuple):
     file: str
     cell_height: int
     ink_height: int | None = None
+    # Code points the firmware compiles into this face beyond GF_LATIN_CORE
+    # (docs/plans/dragon-feedback.md D11), as ranges, so the YAML
+    # (`epaper-schedule.yaml`'s `glyphs:` string) and this table say the
+    # same thing — tests/test_firmware_parity.py checks that they do.
+    # Empty for every face but `mono`.
+    extra_glyphs: tuple[range, ...] = ()
 
+
+def _load_gf_latin_core() -> frozenset[int]:
+    """Parse `gf_latin_core.txt` (one hex code point per line, `#` comments
+    ignored) into the set every compiled face carries."""
+    path = Path(__file__).parent / "gf_latin_core.txt"
+    return frozenset(
+        int(line, 16)
+        for line in path.read_text().splitlines()
+        if line and not line.startswith("#")
+    )
+
+
+# The glyph set the firmware compiles into every face (docs/plans/
+# dragon-feedback.md D11) — see gf_latin_core.txt's own header for where
+# this comes from.
+GF_LATIN_CORE: frozenset[int] = _load_gf_latin_core()
+
+# mono alone also gets box drawing (U+2500-U+257F) and block elements
+# (U+2580-U+259F) — the whole reason a monospace face exists at all.
+MONO_EXTRA_GLYPHS: range = range(0x2500, 0x25A0)
 
 # name -> Face. Compiled into the firmware; changing one is a rebuild.
 FONTS: dict[str, Face] = {
@@ -105,7 +133,15 @@ FONTS: dict[str, Face] = {
     # with BASIC layout and no ligatures — see load_font(). ink_height=31
     # is measured (test_render.py), not derived: a full-height glyph at
     # 1bpp inks 31 rows inside the 33px cell.
-    "mono": Face(24, False, "JetBrainsMono-Regular.ttf", 33, 31),
+    "mono": Face(24, False, "JetBrainsMono-Regular.ttf", 33, 31, (MONO_EXTRA_GLYPHS,)),
+}
+
+# name -> every code point that face's op text/fmt strings can safely use —
+# GF_LATIN_CORE plus the face's own extra_glyphs — precomputed once so
+# _check_uncompiled_glyphs() is a plain set lookup per character.
+_FACE_GLYPHS: dict[str, frozenset[int]] = {
+    name: GF_LATIN_CORE | frozenset(cp for r in face.extra_glyphs for cp in r)
+    for name, face in FONTS.items()
 }
 
 # name -> size classes the firmware compiled. Keyed "name/z" on the panel.
@@ -981,10 +1017,10 @@ def swatch_document(palette: dict[str, Any] | None = None) -> dict[str, Any]:
     chip_w, chip_h = _SWATCH_CHIP_W, 80
     gap_x = 10
     chip_gap, line_gap = 6, 2
-    name_lh = round(FONTS["sm"][0] * 1.24)
-    xs_lh = round(FONTS["xs"][0] * 1.24)
+    name_lh = round(FONTS["sm"].size * 1.24)
+    xs_lh = round(FONTS["xs"].size * 1.24)
     row_gap = 8
-    heading_lh, heading_gap = round(FONTS["xs"][0] * 1.24), 6
+    heading_lh, heading_gap = round(FONTS["xs"].size * 1.24), 6
     # Roughly doubles the gap before a heading (row_gap, already left after
     # the previous group's last row) so it reads as belonging to the chips
     # below it rather than the group above.
@@ -1457,6 +1493,49 @@ def _check_mix_as_text(ctx: Ctx, ink: Ink, name: str, where: str) -> None:
         )
 
 
+def _check_uncompiled_glyphs(ctx: Ctx, face_name: str, text: str, where: str) -> None:
+    """Warning: a character `face_name` draws that the panel has not
+    compiled in (docs/plans/dragon-feedback.md D11).
+
+    The preview loads the whole TTF, so it draws any glyph the file has;
+    the panel compiles only GF_LATIN_CORE (every face) plus box drawing
+    and block elements (`mono` only, `Face.extra_glyphs`) — `"a → b"`
+    previews fine and loses the arrow on the wall, silently, unless
+    something says so. One warning per op, naming up to five distinct
+    offending characters with their code points.
+
+    `text` is what the op actually draws — after `fit_line`/`wrap_lines`
+    has already trimmed it, so a character that would have been cut
+    anyway is never reported — and a space or a literal `{`/`}` an
+    unexpanded `fmt` field leaves behind is never counted as one, even
+    though both are in GF_LATIN_CORE: a document's own template syntax
+    isn't a font question. A no-op unless `ctx.warn_ink`.
+    """
+    if not ctx.warn_ink:
+        return
+    allowed = _FACE_GLYPHS.get(face_name)
+    if allowed is None:
+        return
+    offenders: list[str] = []
+    seen: set[str] = set()
+    for ch in text:
+        # `seen` keeps this linear: a max-size document of distinct
+        # characters must not turn one op into a multi-second scan.
+        if ch == " " or ch in seen:
+            continue
+        seen.add(ch)
+        if ord(ch) not in allowed:
+            offenders.append(ch)
+    if not offenders:
+        return
+    examples = ", ".join(f"{ch} (U+{ord(ch):04X})" for ch in offenders[:5])
+    ctx.problems.append(
+        f"{where}: {len(offenders)} character(s) the panel has not compiled: "
+        f"{examples} — GF_Latin_Core only (plus box drawing and block "
+        "elements for mono)"
+    )
+
+
 _PARITY_OUTCOME = {25: "0% or 50%", 75: "50% or 100%"}
 
 
@@ -1905,7 +1984,8 @@ def render(
 
         elif kind == "text":
             c_name = op.get("c", "black")
-            f = ctx.font(op.get("f", "md"), where)
+            font_name = op.get("f", "md")
+            f = ctx.font(font_name, where)
             if f is None:
                 # Matches the firmware's `skipped++; continue`: abandon the
                 # op cleanly, nothing drawn, no tone/contrast checks run.
@@ -1921,8 +2001,7 @@ def render(
             if op.get("wrap") and max_w is not None:
                 lines_n = _optional_number(op.get("lines", 2))
                 lines = wrap_lines(f, op["s"], max_w, int(lines_n if lines_n is not None else 2))
-                fname = op.get("f", "md")
-                size = FONTS.get(fname, FONTS["md"])[0]
+                size = FONTS.get(font_name, FONTS["md"]).size
                 lh = _optional_number(op.get("lh"))
                 if lh is None:
                     lh = round(size * 1.24)
@@ -1932,6 +2011,7 @@ def render(
                 ]
                 _check_contrast(img, ctx, ink, c_name, where, boxes)
                 _check_mix_as_text(ctx, ink, c_name, where)
+                _check_uncompiled_glyphs(ctx, font_name, "".join(lines), where)
                 snap = _snapshot(img, _union_box(boxes)) if boxes else None
                 for _x, ly, line in positions:
                     paint_op(ink, lambda dr, col, ly=ly, line=line: dr.text(
@@ -1942,6 +2022,7 @@ def render(
                 box = d.textbbox((op["x"], op["y"]), text, font=f, anchor=anchor)
                 _check_contrast(img, ctx, ink, c_name, where, [box])
                 _check_mix_as_text(ctx, ink, c_name, where)
+                _check_uncompiled_glyphs(ctx, font_name, text, where)
                 snap = _snapshot(img, box)
                 paint_op(ink, lambda dr, col: dr.text(
                     (op["x"], op["y"]), text, font=f, fill=col, anchor=anchor))
@@ -1952,7 +2033,8 @@ def render(
             # values are never in the document, so meta.hash covers where and
             # how the line is drawn, never what it says.
             c_name = op.get("c", "black")
-            f = ctx.font(op.get("f", "xs"), where)
+            font_name = op.get("f", "xs")
+            f = ctx.font(font_name, where)
             if f is None:
                 # Same abandonment as `text`, and it matches the firmware:
                 # the header checks the font before it ever calls
@@ -1966,6 +2048,7 @@ def render(
             box = d.textbbox((op["x"], op["y"]), text, font=f, anchor=anchor)
             _check_contrast(img, ctx, ink, c_name, where, [box])
             _check_mix_as_text(ctx, ink, c_name, where)
+            _check_uncompiled_glyphs(ctx, font_name, text, where)
             snap = _snapshot(img, box)
             paint_op(ink, lambda dr, col: dr.text(
                 (op["x"], op["y"]), text, font=f, fill=col, anchor=anchor))
@@ -2230,7 +2313,7 @@ def bezel_problems(doc: dict[str, Any]) -> list[str]:
         if y < BEZEL_MARGIN:
             edges.append("top")
         if kind != "icon":
-            size = FONTS.get(op.get("f", "md" if kind == "text" else "xs"), FONTS["md"])[0]
+            size = FONTS.get(op.get("f", "md" if kind == "text" else "xs"), FONTS["md"]).size
             if y + size > HEIGHT - BEZEL_MARGIN:
                 edges.append("bottom")
         if edges:

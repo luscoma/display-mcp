@@ -181,6 +181,55 @@ def test_builtin_names_are_documented_in_the_spec():
 
 
 # --------------------------------------------------------------------------
+# Compiled glyph set (docs/plans/dragon-feedback.md D11): epaper-schedule.yaml
+# is what actually tells the ESPHome build which code points to compile in,
+# so it -- not display_list.h -- is the oracle here. No compiler needed:
+# this is a data comparison, like the BUILTIN_MIXES table above.
+# --------------------------------------------------------------------------
+
+YAML = HEADER.parent / "epaper-schedule.yaml"
+
+
+def _yaml_font_entries() -> list[str]:
+    """One block of text per `font:` list entry, id to id, so each font's
+    own `glyphsets:`/`glyphs:` lines can be checked in isolation."""
+    src = YAML.read_text()
+    start = src.index("\nfont:\n")
+    end = src.index("\n\n", start + 1)
+    block = src[start:end]
+    ids = [m.start() for m in re.finditer(r"^\s*- file:", block, re.MULTILINE)]
+    ids.append(len(block))
+    return [block[a:b] for a, b in zip(ids, ids[1:], strict=False)]
+
+
+def test_every_font_entry_lists_gf_latin_core():
+    entries = _yaml_font_entries()
+    assert len(entries) == 6, f"expected six font entries, found {len(entries)}"
+    missing = [e.splitlines()[1] for e in entries if "glyphsets: [GF_Latin_Core]" not in e]
+    assert not missing, f"entries missing 'glyphsets: [GF_Latin_Core]': {missing}"
+
+
+def test_mono_extra_glyph_range_matches_the_yaml():
+    """`font_mono`'s `glyphs:` string, decoded back to code points, must be
+    exactly `Face("mono").extra_glyphs` -- the YAML and the Python table
+    are two independent statements of the same range, and either one
+    drifting silently un-compiles or over-promises glyphs."""
+    from display_mcp.render import FONTS
+
+    entries = _yaml_font_entries()
+    mono_entry = next(e for e in entries if "font_mono" in e)
+    m = re.search(r'glyphs: "(.*?)"', mono_entry)
+    assert m, "font_mono entry has no glyphs: string"
+    yaml_codepoints = {ord(c) for c in m.group(1)}
+
+    (extra_range,) = FONTS["mono"].extra_glyphs
+    assert yaml_codepoints == set(extra_range), (
+        f"yaml has {len(yaml_codepoints)} code points, "
+        f"Face('mono').extra_glyphs has {len(set(extra_range))}"
+    )
+
+
+# --------------------------------------------------------------------------
 # sprite (docs/plans/dragon-feedback.md B1) -- the op loop must actually
 # dispatch on it, so the two sides cannot silently diverge on whether it
 # exists at all.

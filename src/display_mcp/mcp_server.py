@@ -48,11 +48,10 @@ _PROMPTS_DIR = _PACKAGE_DIR / "prompts"
 # parents[2]: src/display_mcp/mcp_server.py -> src/display_mcp -> src -> repo root.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
-# What `preview` says about the image it just produced. The old caveat lived in
-# the tool docstring, which is read once at tool-discovery time and a long way
-# from the picture; a reader looking at an aliased swatch believed the pixels
-# instead. These ride in the response, next to the image, and each says only
-# what is true of the image actually returned.
+# What `preview` says about the image it just produced. These ride in the
+# response, next to the image, rather than in the tool docstring a client
+# reads once at discovery time, and each says only what is true of the image
+# actually returned (docs/plans/preview-flat-colour.md).
 _FLAT_NOTE = (
     "Colours are ink-approximated, and each mix is drawn as the single colour it "
     "averages to. The panel instead dithers a 1 px checkerboard of two inks, so "
@@ -118,7 +117,12 @@ def _describe() -> dict[str, Any]:
     `cell_height` (ascent + descent of the loaded face — every face has
     one), and `ink_height` (how many rows a full-height glyph actually
     inks at 1bpp — the row pitch that makes block glyphs meet with no
-    seam; `null` except for `mono` (docs/plans/dragon-feedback.md D11).
+    seam; `null` except for `mono`) — docs/plans/dragon-feedback.md D11.
+    `glyphs` is a short string naming the compiled glyph set —
+    `"GF_Latin_Core"` for every face but `mono`, which adds box drawing
+    and block elements: `"GF_Latin_Core + U+2500–U+259F"`. A character
+    outside that set previews fine and has no glyph on the wall;
+    `check()` warns about it.
     """
     mixes = {
         name: {
@@ -137,6 +141,7 @@ def _describe() -> dict[str, Any]:
             "line_height": round(face.size * 1.24),
             "cell_height": face.cell_height,
             "ink_height": face.ink_height,
+            "glyphs": "GF_Latin_Core" + (" + U+2500–U+259F" if face.extra_glyphs else ""),
         }
         for name, face in render.FONTS.items()
     }

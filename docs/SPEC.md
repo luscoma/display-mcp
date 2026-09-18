@@ -249,7 +249,10 @@ them, and diffs both the fill and the outline pixel-for-pixel against
 **Fonts** — `xl` 84 bold, `lg` 48 bold, `md` 36, `sm` 28, `xs` 22 bold
 (Instrument Sans); `mono` 24 regular (JetBrains Mono, monospaced — box
 drawing and block art, aligned columns, code). Adding a size is a rebuild,
-so the scale is a commitment.
+so the scale is a commitment. Every face compiles GF_Latin_Core; `mono`
+also compiles box drawing and block elements (U+2500–U+259F) — a character
+outside that set previews fine and silently has no glyph on the wall,
+which `check()` warns about.
 
 **Icons** — `weather-{sunny,partly-cloudy,cloudy,rainy,snowy,night}` at `lg`
 (88 px); `check`, `map-marker`, `clock`, `alert`, `battery` at `sm` (36 px).

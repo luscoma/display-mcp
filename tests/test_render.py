@@ -2001,6 +2001,75 @@ def test_mix_as_text_does_not_apply_to_a_mixed_fill(font_dir):
     assert _mix_shift_msgs(check(doc, font_dir)) == []
 
 
+# ---- warning: a character the panel has not compiled in (D11) -----------
+
+
+def _glyph_msgs(problems: list[str]) -> list[str]:
+    return [p for p in problems if "has not compiled" in p]
+
+
+def test_uncompiled_glyphs_warn_on_a_proportional_face(font_dir):
+    doc = {
+        "v": 1, "meta": {}, "bg": "white",
+        "ops": [{"op": "text", "x": 100, "y": 300, "s": "a → ☃ █ b", "f": "sm"}],
+    }
+    msgs = _glyph_msgs(check(doc, font_dir))
+    assert len(msgs) == 1
+    assert "3 character(s)" in msgs[0]
+    assert "→ (U+2192)" in msgs[0]
+    assert "☃ (U+2603)" in msgs[0]
+    assert "█ (U+2588)" in msgs[0]
+    assert "GF_Latin_Core only" in msgs[0]
+
+
+def test_uncompiled_glyphs_silent_for_mono_block_element(font_dir):
+    """`mono` compiles U+2500-U+259F on top of GF_Latin_Core, so the same
+    block character that warns on `sm` above is silent here."""
+    doc = {
+        "v": 1, "meta": {}, "bg": "white",
+        "ops": [{"op": "text", "x": 100, "y": 300, "s": "█", "f": "mono"}],
+    }
+    assert _glyph_msgs(check(doc, font_dir)) == []
+
+
+def test_uncompiled_glyphs_silent_on_both_samples(sample_doc, sprite_sample_doc, font_dir):
+    assert _glyph_msgs(check(sample_doc, font_dir)) == []
+    assert _glyph_msgs(check(sprite_sample_doc, font_dir)) == []
+
+
+def test_uncompiled_glyphs_ignore_fmt_braces_and_space(font_dir):
+    """An unexpanded `fmt` field leaves its `{`/`}` literal — not a font
+    question — and a space is never counted either, even though both are
+    in GF_Latin_Core anyway."""
+    doc = {
+        "v": 1, "meta": {}, "bg": "white",
+        "ops": [{"op": "fmt", "x": 100, "y": 300, "s": "{nope} value", "f": "xs"}],
+    }
+    assert _glyph_msgs(check(doc, font_dir)) == []
+
+
+def test_uncompiled_glyphs_ignore_what_fit_line_would_drop(font_dir):
+    """The check runs on the text actually drawn, after `fit_line` has
+    already truncated it -- a character past the cut point never gets a
+    chance to be counted."""
+    doc = {
+        "v": 1, "meta": {}, "bg": "white",
+        "ops": [{"op": "text", "x": 1000, "y": 300, "s": "ok→", "f": "sm", "w": 20}],
+    }
+    assert _glyph_msgs(check(doc, font_dir)) == []
+
+
+def test_uncompiled_glyphs_is_a_no_op_on_a_bare_render(font_dir):
+    """Like the other authoring checks, this only runs under check()'s
+    warn_ink — a bare render() call stays silent."""
+    doc = {
+        "v": 1, "meta": {}, "bg": "white",
+        "ops": [{"op": "text", "x": 100, "y": 300, "s": "→", "f": "sm"}],
+    }
+    _, problems = render(doc, font_dir)
+    assert _glyph_msgs(problems) == []
+
+
 # ---- warning 3: a feature thinner than 2 px cannot carry 25%/75% ---------
 
 
