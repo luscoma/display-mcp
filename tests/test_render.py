@@ -131,7 +131,7 @@ def test_fit_line_cases(font_dir, case_id, text, max_w, expected):
     max_w=None never truncates."""
     from display_mcp.render import load_font, text_width
 
-    font = load_font(font_dir, FONTS["sm"].size, FONTS["sm"].bold)
+    font = load_font(font_dir, FONTS["sm"])
     if max_w == "exact":
         resolved_max_w = text_width(font, text)
     elif max_w == "third":
@@ -153,7 +153,7 @@ def test_fit_line_cases(font_dir, case_id, text, max_w, expected):
 def test_wrap_two_lines_with_overflow_ellipsis(font_dir):
     from display_mcp.render import load_font, text_width
 
-    font = load_font(font_dir, FONTS["md"].size, FONTS["md"].bold)
+    font = load_font(font_dir, FONTS["md"])
     s = "Order printer filament and a spare 0.4 nozzle for the workshop bench today"
     max_w = 300
     lines = wrap_lines(font, s, max_w, 2)
@@ -166,7 +166,7 @@ def test_wrap_two_lines_with_overflow_ellipsis(font_dir):
 def test_wrap_last_word_just_fits(font_dir):
     from display_mcp.render import load_font, text_width
 
-    font = load_font(font_dir, FONTS["md"].size, FONTS["md"].bold)
+    font = load_font(font_dir, FONTS["md"])
     words = ["Book", "the", "dentist"]
     s = " ".join(words)
     max_w = text_width(font, s)  # exactly enough for every word on one line
@@ -177,7 +177,7 @@ def test_wrap_last_word_just_fits(font_dir):
 def test_wrap_lines_equals_one(font_dir):
     from display_mcp.render import load_font, text_width
 
-    font = load_font(font_dir, FONTS["md"].size, FONTS["md"].bold)
+    font = load_font(font_dir, FONTS["md"])
     s = "Measure the driver board for the frame and order new screws"
     max_w = 250
     lines = wrap_lines(font, s, max_w, 1)
@@ -651,7 +651,7 @@ def test_cell_height_matches_getmetrics(font_dir):
     for name in sorted(FONTS):
         face = FONTS[name]
         assert face.cell_height == _MEASURED_CELL_HEIGHTS[name], name
-        f = load_font(font_dir, face.size, face.bold, face.file)
+        f = load_font(font_dir, face)
         ascent, descent = f.getmetrics()
         assert face.cell_height == ascent + descent, name
 
@@ -672,7 +672,7 @@ def test_mono_ink_height_matches_a_measured_block_glyph(font_dir):
     `test_mono_stacked_bars_meet_seamlessly_at_ink_height` pins below."""
     from PIL import Image, ImageDraw
 
-    f = load_font(font_dir, *FONTS["mono"][:2], FONTS["mono"].file)
+    f = load_font(font_dir, FONTS["mono"])
     img = Image.new("1", (60, 80), 0)
     dr = ImageDraw.Draw(img)
     dr.text((10, 10), "█", font=f, fill=1)
@@ -685,7 +685,7 @@ def test_mono_glyph_advance_is_a_constant_integer(font_dir):
     """The whole point of BASIC layout (D11's second finding): every glyph
     advances by the same integer width, `M`/`i`/a block character alike —
     not the fractional 14.4px raqm would use."""
-    f = load_font(font_dir, *FONTS["mono"][:2], FONTS["mono"].file)
+    f = load_font(font_dir, FONTS["mono"])
     advances = {f.getlength(ch) for ch in ("M", "i", "█")}
     assert len(advances) == 1
     (advance,) = advances
@@ -695,7 +695,7 @@ def test_mono_glyph_advance_is_a_constant_integer(font_dir):
 def test_mono_angle_brackets_render_as_two_glyphs_not_a_ligature(font_dir):
     """Raqm's default layout turns `<>` into one ligature glyph; BASIC keeps
     it two, so its width equals `<` + `>` measured separately."""
-    f = load_font(font_dir, *FONTS["mono"][:2], FONTS["mono"].file)
+    f = load_font(font_dir, FONTS["mono"])
     assert f.getlength("<>") == f.getlength("<") + f.getlength(">")
 
 

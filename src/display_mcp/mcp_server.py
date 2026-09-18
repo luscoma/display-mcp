@@ -113,7 +113,8 @@ def _describe() -> dict[str, Any]:
     round-trips through plain JSON.
 
     `fonts[*]` carries three sizes beside `px`/`bold`: `line_height`
-    (`round(px * 1.24)`, what wrapped `text` uses when `lh` is unset),
+    (`Face.line_height`, `round(px * 1.24)`, what wrapped `text` uses when
+    `lh` is unset),
     `cell_height` (ascent + descent of the loaded face — every face has
     one), and `ink_height` (how many rows a full-height glyph actually
     inks at 1bpp — the row pitch that makes block glyphs meet with no
@@ -138,7 +139,7 @@ def _describe() -> dict[str, Any]:
         name: {
             "px": face.size,
             "bold": face.bold,
-            "line_height": round(face.size * 1.24),
+            "line_height": face.line_height,
             "cell_height": face.cell_height,
             "ink_height": face.ink_height,
             "glyphs": "GF_Latin_Core" + (" + U+2500–U+259F" if face.extra_glyphs else ""),
@@ -409,7 +410,12 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
             # isn't installed, so a missing font directory never fails a
             # grid preview -- it just looks the way it always did.
             try:
-                grid_font = render.load_font(settings.font_dir, 22, False)
+                # A Face matching no compiled entry (`load_font` takes a
+                # `Face`; `cell_height` is unused there, so 0 is a safe
+                # filler) -- 22px, regular weight, chosen only to survive a
+                # client downscaling the PNG.
+                grid_face = render.Face(22, False, "InstrumentSans-Regular.ttf", 0)
+                grid_font = render.load_font(settings.font_dir, grid_face)
             except Exception:  # noqa: BLE001 - the grid must never break a preview
                 grid_font = None
             image = render.grid_overlay(image, font=grid_font)

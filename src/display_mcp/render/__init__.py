@@ -99,6 +99,26 @@ class Face(NamedTuple):
     # same thing — tests/test_firmware_parity.py checks that they do.
     # Empty for every face but `mono`.
     extra_glyphs: tuple[range, ...] = ()
+    # "raqm" (Pillow's default layout engine) for every face but `mono`,
+    # which is "basic" — see load_font(). What used to be a string compare
+    # against a mono filename lives here instead, so load_font()/_load_fonts()
+    # read a face's own layout rather than recognising it by name.
+    layout: str = "raqm"
+    # Whether this face's file missing from `font_dir` is tolerated —
+    # `mono`'s alone: it is the one face this repo doesn't ship pre-fetched
+    # (deploy/fetch-fonts.sh's newer half), so _load_fonts() turns its
+    # OSError into a plain `None` instead of letting it raise. Every other
+    # face missing is still fatal, as it always was.
+    optional: bool = False
+
+    @property
+    def line_height(self) -> int:
+        """The wrap default every face uses when an op's `lh` is unset:
+        `round(size * 1.24)`, including for `mono` — the firmware has no
+        per-face default, so this stays one formula for every face, and
+        `cell_height`/`ink_height` are published separately in
+        `describe().fonts[*]` instead of changing what an unset `lh` means."""
+        return round(self.size * 1.24)
 
 
 def _load_gf_latin_core() -> frozenset[int]:
@@ -133,7 +153,10 @@ FONTS: dict[str, Face] = {
     # with BASIC layout and no ligatures — see load_font(). ink_height=31
     # is measured (test_render.py), not derived: a full-height glyph at
     # 1bpp inks 31 rows inside the 33px cell.
-    "mono": Face(24, False, "JetBrainsMono-Regular.ttf", 33, 31, (MONO_EXTRA_GLYPHS,)),
+    "mono": Face(
+        24, False, "JetBrainsMono-Regular.ttf", 33, 31, (MONO_EXTRA_GLYPHS,),
+        layout="basic", optional=True,
+    ),
 }
 
 # name -> every code point that face's op text/fmt strings can safely use —
@@ -316,45 +339,36 @@ def _font_path(font_dir: Path, file: str) -> Path:
     return Path(font_dir) / file
 
 
-_MONO_FILE = "JetBrainsMono-Regular.ttf"
-
-
-def load_font(
-    font_dir: Path, size: int, bold: bool, file: str | None = None
-) -> ImageFont.FreeTypeFont:
-    """Load one face. `bold` also selects the variable font's "Bold" instance.
-
-    `file` names the font file directly (`FONTS[name].file`); omitted, it is
-    chosen from `bold` the way it always has been — Instrument Sans Regular
-    or Bold, the pair `preview`'s grid label still asks for by size and
-    weight alone.
+def load_font(font_dir: Path, face: Face) -> ImageFont.FreeTypeFont:
+    """Load one compiled face (`FONTS[name]`). `face.bold` also selects the
+    variable font's "Bold" instance; `face.layout` picks Pillow's layout
+    engine, table-driven instead of a filename comparison.
 
     Google Fonts ships Instrument Sans as a variable font: Pillow loads the
     default instance (Regular) unless the named instance is selected, and
     the wrong weight means text wraps in different places than the panel
     does. A static Bold face (nothing to select) is fine too.
 
-    JetBrains Mono (`file == "JetBrainsMono-Regular.ttf"`) is loaded with
+    A `"basic"`-layout face (`mono`, the only one today) is loaded with
     `ImageFont.Layout.BASIC` instead of Pillow's default raqm layout:
     raqm turns `<>`/`->`/`!=` into single ligature glyphs and positions
     every glyph at a fractional advance (14.4px at 24px here), and at 1bpp
     that fractional advance opened a 1px gap in every box-drawing rule —
     the panel's own bitmap font does neither (docs/plans/dragon-feedback.md
     D11's second finding). Its "Regular" instance is selected the same way
-    Bold is, in its own try/except.
+    Bold is, in its own try/except — every `"basic"` face's `bold` is False,
+    so a raqm face and a basic one never fight over which name to select.
     """
-    if file is None:
-        file = "InstrumentSans-Bold.ttf" if bold else "InstrumentSans-Regular.ttf"
-    path = _font_path(font_dir, file)
-    if file == _MONO_FILE:
-        f = ImageFont.truetype(str(path), size, layout_engine=ImageFont.Layout.BASIC)
+    path = _font_path(font_dir, face.file)
+    if face.layout == "basic":
+        f = ImageFont.truetype(str(path), face.size, layout_engine=ImageFont.Layout.BASIC)
         try:
             f.set_variation_by_name("Regular")
         except Exception:
             pass  # a static Regular face: nothing to select
         return f
-    f = ImageFont.truetype(str(path), size)
-    if bold:
+    f = ImageFont.truetype(str(path), face.size)
+    if face.bold:
         try:
             f.set_variation_by_name("Bold")
         except Exception:
@@ -363,32 +377,35 @@ def load_font(
 
 
 def _load_fonts(font_dir: Path) -> dict[str, ImageFont.FreeTypeFont | None]:
-    """Every compiled face, keyed by name. `mono` alone may come back `None`:
-    its file is the one face this repo doesn't ship pre-fetched, so a font
-    directory that hasn't run `deploy/fetch-fonts.sh`'s newer half must not
-    break every other render — `Ctx.font()` turns a `None` here into the
-    same "abandon the op" path an unknown font name gets. Instrument Sans
-    missing still raises `OSError` out of this function, exactly as before
-    `mono` existed (there is a test pinning that)."""
+    """Every compiled face, keyed by name. An `optional` face (`mono`,
+    today) may come back `None`: its file is the one face this repo doesn't
+    ship pre-fetched, so a font directory that hasn't run
+    `deploy/fetch-fonts.sh`'s newer half must not break every other render —
+    `Ctx.font()` turns a `None` here into the same "abandon the op" path an
+    unknown font name gets. A non-optional face missing still raises
+    `OSError` out of this function, exactly as before `mono` existed (there
+    is a test pinning that)."""
     fonts: dict[str, ImageFont.FreeTypeFont | None] = {}
     for name, face in FONTS.items():
-        if name == "mono":
+        if face.optional:
             try:
-                fonts[name] = load_font(font_dir, face.size, face.bold, face.file)
+                fonts[name] = load_font(font_dir, face)
             except OSError:
                 fonts[name] = None
         else:
-            fonts[name] = load_font(font_dir, face.size, face.bold, face.file)
+            fonts[name] = load_font(font_dir, face)
     return fonts
 
 
 def fonts_available(font_dir: Path) -> bool:
+    """Every compiled face's file present in `font_dir` — including
+    `mono`'s, even though `_load_fonts()` alone tolerates it missing: this
+    is the /healthz and setup.sh gate, which wants to know the font
+    directory is genuinely complete, not just render-safe. Deduped by
+    filename (several faces share the two Instrument Sans files), so this
+    stays table-driven rather than three names spelled out by hand."""
     font_dir = Path(font_dir)
-    return (
-        (font_dir / "InstrumentSans-Regular.ttf").exists()
-        and (font_dir / "InstrumentSans-Bold.ttf").exists()
-        and (font_dir / _MONO_FILE).exists()
-    )
+    return all((font_dir / file).exists() for file in {face.file for face in FONTS.values()})
 
 
 # The 2x2 ordered (Bayer) matrix behind every mix, indexed [y & 1][x & 1].
@@ -1017,10 +1034,10 @@ def swatch_document(palette: dict[str, Any] | None = None) -> dict[str, Any]:
     chip_w, chip_h = _SWATCH_CHIP_W, 80
     gap_x = 10
     chip_gap, line_gap = 6, 2
-    name_lh = round(FONTS["sm"].size * 1.24)
-    xs_lh = round(FONTS["xs"].size * 1.24)
+    name_lh = FONTS["sm"].line_height
+    xs_lh = FONTS["xs"].line_height
     row_gap = 8
-    heading_lh, heading_gap = round(FONTS["xs"].size * 1.24), 6
+    heading_lh, heading_gap = FONTS["xs"].line_height, 6
     # Roughly doubles the gap before a heading (row_gap, already left after
     # the previous group's last row) so it reads as belonging to the chips
     # below it rather than the group above.
@@ -2001,10 +2018,9 @@ def render(
             if op.get("wrap") and max_w is not None:
                 lines_n = _optional_number(op.get("lines", 2))
                 lines = wrap_lines(f, op["s"], max_w, int(lines_n if lines_n is not None else 2))
-                size = FONTS.get(font_name, FONTS["md"]).size
                 lh = _optional_number(op.get("lh"))
                 if lh is None:
-                    lh = round(size * 1.24)
+                    lh = FONTS.get(font_name, FONTS["md"]).line_height
                 positions = [(op["x"], op["y"] + n * lh, line) for n, line in enumerate(lines)]
                 boxes = [
                     d.textbbox((px, py), line, font=f, anchor=anchor) for px, py, line in positions
