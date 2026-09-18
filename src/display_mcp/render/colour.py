@@ -127,8 +127,8 @@ class Ink(NamedTuple):
 
         This is the colour `render(dithered_colors=False)` paints, and it
         reproduces every hex in the named-palette table in docs/SPEC.md
-        exactly — tests/test_render.py pins that, so the table cannot drift
-        away from the renderer.
+        exactly — tests/render/test_colour.py pins that, so the table
+        cannot drift away from the renderer.
 
         It is honest for a fill and optimistic for a glyph: a few pixels of
         stroke cannot average two inks, so text reads shifted toward the

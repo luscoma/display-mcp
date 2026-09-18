@@ -68,56 +68,44 @@ def test_vocabulary_sample_checks_clean(vocabulary_sample_doc, font_dir):
     assert check(vocabulary_sample_doc, font_dir) == []
 
 
-def _fenced_json_sprite_op(text: str) -> dict:
+def _fenced_op(text: str, kind: str) -> dict:
     """The first ```json fenced block in `text` whose parsed object is a
-    sprite op — docs/SPEC.md and compose.md each carry exactly one."""
+    `kind` op — docs/SPEC.md and compose.md each carry exactly one sprite
+    example and one poly example (docs/plans/dragon-feedback.md D12/B4)."""
     for block in re.findall(r"[ \t]*```json\n(.*?)\n[ \t]*```", text, re.DOTALL):
         try:
             obj = json.loads(block)
         except json.JSONDecodeError:
             continue  # a structural placeholder ("ops": [ ... ]), not a real example
-        if isinstance(obj, dict) and obj.get("op") == "sprite":
+        if isinstance(obj, dict) and obj.get("op") == kind:
             return obj
-    raise AssertionError(f"no fenced json sprite example found in {text[:40]!r}...")
+    raise AssertionError(f"no fenced json {kind} example found in {text[:40]!r}...")
 
 
 def test_spec_sprite_example_checks_clean(font_dir):
     """docs/SPEC.md's ### sprite example has to be something an agent can
     paste straight into a document — check() on it must come back clean,
     the same rule compose.md's example is held to below."""
-    op = _fenced_json_sprite_op((ROOT / "docs" / "SPEC.md").read_text())
+    op = _fenced_op((ROOT / "docs" / "SPEC.md").read_text(), "sprite")
     assert check({"v": 1, "bg": "white", "ops": [op]}, font_dir) == []
 
 
 def test_compose_sprite_example_checks_clean(font_dir):
     """The compose_display prompt's own sprite example, same rule."""
-    op = _fenced_json_sprite_op((PROMPTS / "compose.md").read_text())
+    op = _fenced_op((PROMPTS / "compose.md").read_text(), "sprite")
     assert check({"v": 1, "bg": "white", "ops": [op]}, font_dir) == []
-
-
-def _fenced_json_poly_op(text: str) -> dict:
-    """Like `_fenced_json_sprite_op`, for the `poly` example
-    (docs/plans/dragon-feedback.md D12/B4)."""
-    for block in re.findall(r"[ \t]*```json\n(.*?)\n[ \t]*```", text, re.DOTALL):
-        try:
-            obj = json.loads(block)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(obj, dict) and obj.get("op") == "poly":
-            return obj
-    raise AssertionError(f"no fenced json poly example found in {text[:40]!r}...")
 
 
 def test_spec_poly_example_checks_clean(font_dir):
     """docs/SPEC.md's ### poly example has to be pasteable as-is, the same
     rule the sprite example is held to."""
-    op = _fenced_json_poly_op((ROOT / "docs" / "SPEC.md").read_text())
+    op = _fenced_op((ROOT / "docs" / "SPEC.md").read_text(), "poly")
     assert check({"v": 1, "bg": "white", "ops": [op]}, font_dir) == []
 
 
 def test_compose_poly_example_checks_clean(font_dir):
     """The compose_display prompt's own poly example, same rule."""
-    op = _fenced_json_poly_op((PROMPTS / "compose.md").read_text())
+    op = _fenced_op((PROMPTS / "compose.md").read_text(), "poly")
     assert check({"v": 1, "bg": "white", "ops": [op]}, font_dir) == []
 
 

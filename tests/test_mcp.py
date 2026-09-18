@@ -14,7 +14,7 @@ from starlette.testclient import TestClient
 from display_mcp import mcp_server, render
 from display_mcp.config import Settings
 from fakes import FakeStore, fake_check, fake_render
-from test_render import _spec_palette_hexes
+from render.conftest import _spec_palette_hexes
 
 
 @pytest.fixture(autouse=True)
@@ -284,7 +284,7 @@ def test_merge_color_problems_dedupes_by_message_text_keeping_check_order_first(
 
 # The end-to-end version of this — the real check() (not this file's fake)
 # feeding _merge_color_problems() — is
-# tests/test_render.py::test_check_and_document_colors_merge_does_not_duplicate,
+# tests/render/test_colour.py::test_check_and_document_colors_merge_does_not_duplicate,
 # since this file's autouse fixture fakes render.check()/.render(), and
 # check() calls render() as a same-module global, so even a reference
 # captured before the fixture runs would still call the fake.
@@ -426,7 +426,7 @@ async def test_describe_mixes_match_spec_md(mcp):
     `describe()` reports the renderer's own tables verbatim — not a second,
     independent read of SPEC.md. The guard that those renderer tables
     themselves match docs/SPEC.md's prose is
-    tests/test_render.py::test_tier_matches_the_spec_heading; this test
+    tests/render/test_colour.py::test_tiers_match_the_spec_headings; this test
     only reuses that file's SPEC-table parser for its expected hexes."""
     async with Client(mcp) as c:
         result = await c.call_tool("describe", {})
@@ -507,7 +507,7 @@ async def test_guide_returns_compose_md_verbatim(mcp):
 # The image comes from the real `render.swatch_document`/`swatch_groups`
 # fed through the fake `render.render` (this module's autouse fixture), so
 # these pin the tool's plumbing and the text listing; the actual pixels are
-# pinned for real in tests/test_render.py, against the real renderer.
+# pinned for real in tests/render/test_swatches.py, against the real renderer.
 
 
 async def test_swatches_returns_image_and_lists_every_chip(mcp):
