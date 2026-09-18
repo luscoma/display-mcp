@@ -2,7 +2,7 @@
 
 A few KB of JSON describing what to draw. The firmware is a renderer, not a
 design: layout lives entirely in the document, so changing the dashboard is a
-file edit. Only the **vocabulary** — six font sizes, eleven icons, seven ops —
+file edit. Only the **vocabulary** — six font sizes, eleven icons, eight ops —
 is compiled in, and changing that is a rebuild.
 
 Two implementations must agree:
@@ -81,6 +81,7 @@ not `c`.
 | `icon` | `x y n z` · `bgc` | `n` = MDI name, `z` = size class, `x,y` = top-left |
 | `fmt` | `x y s` · `f` · `a` | `text` without wrap whose `s` is a template of system fields: `{hash}` `{hash16}` `{time}` `{time24}` `{battery}` `{battv}`; `f` defaults to `xs` |
 | `sprite` | `x y cell rows palette` · `mirror` | pixel art — a grid of characters, one `palette` entry per colour; no `c` (see below) |
+| `poly` | `pts` · `c` · `fill` (default true) · `t` | a point list; `fill: false` draws an outline `t` px thick |
 
 ### rect
 
@@ -195,6 +196,54 @@ cannot draw a grid it cannot parse either. A mixed colour on a `cell`
 under 2 px still can't carry a 25%/75% density, exactly as a thin rect
 fill can't — see "Mixes" below.
 
+### poly
+
+A point list — a triangle, a chevron, an arrow, a ground shadow — filled or
+outlined:
+
+```json
+{"op": "poly", "pts": [[100, 100], [300, 100], [200, 260]], "c": "navy"}
+```
+
+`pts` is required: at least three `[x, y]` integer pairs; fewer than three,
+or any element that isn't exactly one, is malformed and the whole op is
+skipped with one warning — nothing sensible to draw, the same rule
+`sprite`'s `cell`/`rows`/`palette` are held to. `c` is an ordinary op
+colour (default `black`). `fill` defaults to `true`; `t` (default `1`) is
+read only for the outline.
+
+**Filled**, both implementations paint the identical set of pixels: an
+even-odd scanline fill, not left to PIL or to whatever the firmware's own
+polygon primitive would do (there isn't one). For each integer scanline `y`
+from `min(ys)` to `max(ys)` inclusive, every edge of the closed point list
+— consecutive points, plus the edge closing the last back to the first —
+with `y0 != y1` contributes a crossing when `y` is in
+`[min(y0, y1), max(y0, y1))` — half-open, so a vertex two edges share is
+counted on exactly one of them — at
+`x = x0 + (y - y0) * (x1 - x0) // (y1 - y0)`, floor division (rounding
+toward negative infinity for a negative operand on either side; Python's
+`//` already means that, the firmware reaches for a small sign-correct
+`floor_div()` since its `/` truncates toward zero instead). Crossings on a
+scanline are sorted and filled in pairs, **inclusive** of both ends, as
+horizontal runs — through the same dithering path a `rect` fill uses, so a
+mixed `c` interleaves with the same absolute phase. This makes x and y
+asymmetric: x-spans are inclusive of both ends but the scanline itself is
+half-open, so a poly matching `rect x,y,w,h`'s box puts its points at
+`x`/`x+w-1` on the sides but `y`/`y+h` — not `y+h-1` — on the top/bottom.
+
+**Outlined** (`fill: false`): every edge, including the one closing the
+shape, drawn `t` px thick — the same primitive and thickness rule the
+`line` op uses.
+
+Off-canvas is judged on the bounding box of every point — `min`/`max` of
+`pts`, the same ±64px tolerance every other op's `x`/`y` gets — since a
+poly has no single anchor of its own to check.
+
+`tests/test_firmware_parity.py` extracts the C++ scanline function
+(`poly_spans()`) and the outline's own line-walking primitive, compiles
+them, and diffs both the fill and the outline pixel-for-pixel against
+`display_mcp.render` over convex, concave and self-touching shapes.
+
 ## Vocabulary
 
 **Fonts** — `xl` 84 bold, `lg` 48 bold, `md` 36, `sm` 28, `xs` 22 bold
@@ -208,8 +257,8 @@ so the scale is a commitment.
 **Colours** — six inks, `black white yellow red blue green`, plus any
 two-ink **mix** declared in the palette (below). Nothing else exists.
 
-**Ops** — `rect`, `line`, `circle`, `text`, `icon`, `fmt`, `sprite`. Seven,
-compiled in; adding one is a rebuild.
+**Ops** — `rect`, `line`, `circle`, `text`, `icon`, `fmt`, `sprite`, `poly`.
+Eight, compiled in; adding one is a rebuild.
 
 ## Mixes
 

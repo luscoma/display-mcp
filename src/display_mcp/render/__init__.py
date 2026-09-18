@@ -214,6 +214,16 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
         "required": ("x", "y", "cell", "rows", "palette"),
         "optional": {"mirror": None},
     },
+    "poly": {
+        # No `x`/`y` — a poly has no single anchor, only `pts`
+        # (docs/plans/dragon-feedback.md D12). `t` is read but only used
+        # for the outline (`fill: false`); listing it unconditionally
+        # keeps this table the one place fields are enumerated, the way
+        # `sprite`'s `mirror` is listed even though only one of its values
+        # does anything.
+        "required": ("pts",),
+        "optional": {"c": "black", "fill": True, "t": 1},
+    },
 }
 
 # The report's whole "mixes don't render" section, in one sentence: `c2`
@@ -1533,6 +1543,58 @@ def _resolved_rect_radius(r_raw: Any, w: int, h: int, where: str, ctx: Ctx) -> i
     return r_raw
 
 
+# Bound on an outline's `t` (line, rect/circle/poly outline). Mirrors
+# `kThickMax` in display_list.h, where thick_line() and the rect outline
+# loop's `for (int i = 0; i < t; i++)` clamp to the same constant silently
+# -- a document-supplied `t` in the millions must never turn one op into a
+# multi-second loop on either side (review of D12, P7). 64 is generous for
+# anything actually drawn on a 1200x1600 canvas.
+_THICK_MAX = 64
+
+
+def _resolved_thickness(t_raw: Any, where: str, ctx: Ctx) -> int:
+    """`t` for an outline: an integer >= 1, clamped to `_THICK_MAX`. A `t`
+    that isn't an int (`bool` excluded, same as every other malformed-field
+    check here), or is < 1, warns and uses 1 -- the same "warn and draw
+    something" rule every other bad value gets (A1). A `t` larger than
+    `_THICK_MAX` warns and clamps rather than silently, unlike the
+    firmware's own clamp: a bad value is authoring feedback and stays on
+    this side (D1).
+
+    Before this helper, a non-numeric `t` raised `TypeError` out of
+    `render()` and `t: 2000000` took over 100s (PIL's `width=` scales with
+    it) -- pre-existing for `line`/`rect`/`circle`, and the bug this closes
+    (P7).
+    """
+    if isinstance(t_raw, bool) or not isinstance(t_raw, int) or t_raw < 1:
+        ctx.problems.append(f"{where}: t={t_raw!r} is not a positive integer; using 1")
+        return 1
+    if t_raw > _THICK_MAX:
+        ctx.problems.append(
+            f"{where}: t={t_raw} is larger than {_THICK_MAX}; clamped to {_THICK_MAX}"
+        )
+        return _THICK_MAX
+    return t_raw
+
+
+def _resolved_fill(op: dict[str, Any], where: str, ctx: Ctx) -> bool:
+    """`fill` for rect/circle/poly: a plain `bool`, default `True`.
+
+    ArduinoJson's `o["fill"] | true` yields the default for anything that
+    isn't a JSON bool, while Python's `op.get("fill", True)` is truthy on
+    `0`/`null`/anything else that isn't literally `False` — so `"fill": 0`
+    used to outline on the panel and fill in the preview (review of D12,
+    P3). A `fill` that is present but not a `bool` warns and uses the
+    default, matching the firmware's behaviour instead of Python's own
+    truthiness.
+    """
+    v = op.get("fill", True)
+    if not isinstance(v, bool):
+        ctx.problems.append(f"{where}: fill={v!r} is not true/false; using true")
+        return True
+    return v
+
+
 def _draw_rounded_rect(
     dr: ImageDraw.ImageDraw, x: int, y: int, w: int, h: int, r: int, col
 ) -> None:
@@ -1579,6 +1641,157 @@ def _anchor_of(op: dict[str, Any], ctx: Ctx, where: str) -> str:
     if a_value not in ANCHOR:
         ctx.problems.append(f"{where}: unknown alignment {a_value!r}, using left")
     return ANCHOR.get(a_value, "la")
+
+
+# Bound on a poly point's magnitude (device-safety review of D12, P1): a
+# document whose `pts` reach this far out is malformed, not merely
+# off-canvas -- pts [[10, -5000000], [20, 5000000], [0, 0]] used to make
+# poly_spans() walk five million scanlines, ~14s in check() and ~120MB of
+# accumulated spans on the firmware, every wake, forever. Rejecting a point
+# past this bound outright means the scanline/span clamp in _poly_spans()
+# below never has to reconcile a crossing computed from a coordinate this
+# large. 1 << 20 is comfortably past any real document (the canvas is
+# 1200 x 1600) and comfortably inside the headroom the firmware's
+# int64_t crossing arithmetic needs (HEIGHT scanlines * 2*bound, nowhere
+# near overflowing) -- the same role kSpriteMaxCell plays for `cell`.
+# Mirrors `kPolyMaxCoord` in display_list.h.
+_POLY_MAX_COORD = 1 << 20
+
+
+def _valid_poly_points(raw: Any) -> list[tuple[int, int]] | None:
+    """`pts` parsed to a list of `(x, y)` int pairs, or `None` if it isn't
+    at least three of them (docs/plans/dragon-feedback.md D12).
+
+    Strict about the shape — a list of exactly-two-element lists/tuples of
+    plain `int`s, `bool` excluded the way every other malformed-field check
+    in this module excludes it — because the fill rule below is integer
+    arithmetic and a float coordinate would silently mean something
+    different on the two sides. Mirrors draw_poly()'s own all-or-nothing
+    parse: one bad point invalidates the whole op, same as `rows` in
+    `sprite`.
+    """
+    if not isinstance(raw, list) or len(raw) < 3:
+        return None
+    pts: list[tuple[int, int]] = []
+    for p in raw:
+        if (
+            not isinstance(p, (list, tuple))
+            or len(p) != 2
+            or any(isinstance(v, bool) or not isinstance(v, int) for v in p)
+        ):
+            return None
+        pts.append((p[0], p[1]))
+    return pts
+
+
+def _poly_spans(pts: list[tuple[int, int]]) -> list[tuple[int, int, int]]:
+    """Even-odd scanline fill (docs/plans/dragon-feedback.md D12) — mirrors
+    `poly_spans()` in display_list.h integer for integer, including the
+    crossing's rounding with negative operands, so the two are bit-for-bit
+    the same raster and the fill is not left to PIL to interpret.
+
+    For each integer scanline `y` from `min(ys)` to `max(ys)` inclusive:
+    take each edge of the closed point list — consecutive points, plus the
+    closing edge from the last point back to the first — with `y0 != y1`.
+    It contributes a crossing when `min(y0, y1) <= y < max(y0, y1)` —
+    half-open, so a vertex shared by two edges is counted on exactly one of
+    them, never twice and never zero times. The crossing's x is
+    `x0 + (y - y0) * (x1 - x0) // (y1 - y0)`: floor division, rounding
+    toward negative infinity for a negative operand on either side. Python's
+    `//` already means exactly that, so — unlike the C++ mirror, which has
+    to reach for a sign-correct `floor_div()` because `/` truncates toward
+    zero — this line needs no helper of its own to get the same answer.
+
+    Crossings on a scanline are sorted and paired up (1st/2nd, 3rd/4th, ...)
+    into `(y, xa, xb)` spans, each filled **inclusive** of both ends. Return
+    order is scanline by scanline, top to bottom, left to right within a
+    scanline — the order `draw_poly()` emits them in too, though nothing
+    downstream depends on that beyond making a diff readable.
+
+    The scanline range is clamped to `[0, HEIGHT)` and each span's x to
+    `[0, WIDTH)` **before** anything is appended (device-safety review of
+    D12, P1): a polygon whose points sit far outside the canvas — but
+    inside `_POLY_MAX_COORD` — must not make this loop, or its output,
+    scale with how far outside it they are. A span that clamps to nothing
+    (`xa > xb` after clamping) is dropped rather than appended empty or
+    inverted.
+    """
+    ys = [p[1] for p in pts]
+    y_lo = max(0, min(ys))
+    y_hi = min(HEIGHT - 1, max(ys))
+    n = len(pts)
+    spans: list[tuple[int, int, int]] = []
+    for y in range(y_lo, y_hi + 1):
+        xs: list[int] = []
+        for i in range(n):
+            ax, ay = pts[i]
+            bx, by = pts[(i + 1) % n]
+            if ay == by:
+                continue  # horizontal edges never cross a scanline
+            edge_lo, edge_hi = (ay, by) if ay < by else (by, ay)
+            if edge_lo <= y < edge_hi:
+                xs.append(ax + (y - ay) * (bx - ax) // (by - ay))
+        xs.sort()
+        for i in range(0, len(xs) - 1, 2):
+            xa, xb = max(0, xs[i]), min(WIDTH - 1, xs[i + 1])
+            if xa <= xb:
+                spans.append((y, xa, xb))
+    return spans
+
+
+def _bresenham_points(x1: int, y1: int, x2: int, y2: int):
+    """The panel's own line rasterisation, walked pixel by pixel — mirrors
+    `esphome::display::Display::line()` (esphome/components/display/
+    display.cpp) exactly, integer for integer, rather than delegating to
+    PIL's `ImageDraw.line()`.
+
+    That distinction matters here specifically because it doesn't for the
+    plain `line` op: PIL's `width=` parameter centres a thick stroke on the
+    path, while the firmware's `thick_line()` (`_thick_line_points` below)
+    offsets `t` parallel 1px lines to one side — the two already draw
+    visibly different pixels for `t > 1`, which is accepted as eyeball
+    parity for `line`/`rect` (docs/plans/dragon-feedback.md D10) because
+    nothing has ever diffed them. `poly`'s outline is diffed
+    (tests/test_firmware_parity.py), so it earns its own exact walk instead
+    of inheriting that gap.
+    """
+    dx = abs(x2 - x1)
+    sx = 1 if x1 < x2 else -1
+    dy = -abs(y2 - y1)
+    sy = 1 if y1 < y2 else -1
+    err = dx + dy
+    x, y = x1, y1
+    while True:
+        yield x, y
+        if x == x2 and y == y2:
+            return
+        e2 = 2 * err
+        if e2 >= dy:
+            err += dy
+            x += sx
+        if e2 <= dx:
+            err += dx
+            y += sy
+
+
+def _thick_line_points(x1: int, y1: int, x2: int, y2: int, t: int):
+    """Mirrors `thick_line()` in display_list.h: `t` parallel 1px runs of
+    `_bresenham_points`, offset the same way the firmware offsets
+    `it.line()` calls — vertical thickens in x, horizontal in y, anything
+    else (a genuine diagonal) thickens in y only. `t <= 1` is a single
+    plain line, same as the firmware's early return."""
+    if t <= 1:
+        yield from _bresenham_points(x1, y1, x2, y2)
+        return
+    vertical = x1 == x2
+    horizontal = y1 == y2
+    for i in range(t):
+        if vertical:
+            yield from _bresenham_points(x1 + i, y1, x2 + i, y2)
+        elif horizontal:
+            yield from _bresenham_points(x1, y1 + i, x2, y2 + i)
+        else:
+            yield from _bresenham_points(x1, y1 + i, x2, y2 + i)
 
 
 def render(
@@ -1652,7 +1865,7 @@ def render(
 
         if kind == "rect":
             x, y, w, h = op["x"], op["y"], op["w"], op["h"]
-            if op.get("fill", True):
+            if _resolved_fill(op, where, ctx):
                 _check_thin_mix(ctx, ink, where, "fill", w=w, h=h)
                 r = _resolved_rect_radius(op.get("r", 0), w, h, where, ctx)
                 if r > 0:
@@ -1666,7 +1879,7 @@ def render(
                     ctx.problems.append(
                         f"{where}: r is ignored on an outline; drawing square corners"
                     )
-                t = op.get("t", 1)
+                t = _resolved_thickness(op.get("t", 1), where, ctx)
                 _check_thin_mix(ctx, ink, where, "outline", t=t)
                 paint_op(ink, lambda dr, col: dr.rectangle(
                     [x, y, x + w - 1, y + h - 1], outline=col, width=t))
@@ -1677,7 +1890,7 @@ def render(
                 ctx.problems.append(f"{where}: y+h={yr} is off-canvas")
 
         elif kind == "line":
-            t = op.get("t", 1)
+            t = _resolved_thickness(op.get("t", 1), where, ctx)
             _check_thin_mix(ctx, ink, where, "line", t=t)
             paint_op(ink, lambda dr, col: dr.line(
                 [op["x"], op["y"], op["x2"], op["y2"]], fill=col, width=t))
@@ -1690,10 +1903,10 @@ def render(
         elif kind == "circle":
             x, y, r = op["x"], op["y"], op["r"]
             box = [x - r, y - r, x + r, y + r]
-            if op.get("fill", True):
+            if _resolved_fill(op, where, ctx):
                 paint_op(ink, lambda dr, col: dr.ellipse(box, fill=col))
             else:
-                t = op.get("t", 1)
+                t = _resolved_thickness(op.get("t", 1), where, ctx)
                 paint_op(ink, lambda dr, col: dr.ellipse(box, outline=col, width=t))
 
         elif kind == "text":
@@ -1899,6 +2112,89 @@ def render(
                 ctx.problems.append(f"{where}: x+cols*cell={xr} is off-canvas")
             if not (-64 <= yr <= HEIGHT + 64):
                 ctx.problems.append(f"{where}: y+rows*cell={yr} is off-canvas")
+
+        elif kind == "poly":
+            # A point list, filled by the even-odd scanline rule
+            # (docs/plans/dragon-feedback.md D12) or outlined edge by
+            # edge. Like sprite, a malformed `pts` skips the whole op —
+            # there's nothing sensible to draw from fewer than three
+            # points, and the firmware bails the same way.
+            pts = _valid_poly_points(op.get("pts"))
+            if pts is None:
+                ctx.problems.append(
+                    f"{where}: poly needs at least three [x, y] points; "
+                    "nothing to draw, skipped"
+                )
+                continue
+
+            # A coordinate this far out is malformed, not merely
+            # off-canvas (P1): reject it before the bounding box or the
+            # scanline fill below ever has to reconcile a magnitude this
+            # large. See _POLY_MAX_COORD's own comment for why.
+            if any(
+                abs(px) > _POLY_MAX_COORD or abs(py) > _POLY_MAX_COORD for px, py in pts
+            ):
+                ctx.problems.append(
+                    f"{where}: poly point out of range "
+                    f"(|x|,|y| <= {_POLY_MAX_COORD}); nothing to draw, skipped"
+                )
+                continue
+
+            xs = [p[0] for p in pts]
+            ys = [p[1] for p in pts]
+            x0, x1 = min(xs), max(xs)
+            y0, y1 = min(ys), max(ys)
+            # There's no single x/y to check here (a poly has no anchor),
+            # so the ordinary off-canvas check at the bottom of this loop
+            # doesn't fire — this is its replacement, on the bounding box
+            # of every point, same +/-64px tolerance as everywhere else.
+            if not (
+                -64 <= x0 <= WIDTH + 64
+                and -64 <= x1 <= WIDTH + 64
+                and -64 <= y0 <= HEIGHT + 64
+                and -64 <= y1 <= HEIGHT + 64
+            ):
+                ctx.problems.append(
+                    f"{where}: pts range x {x0}..{x1}, y {y0}..{y1} is off-canvas"
+                )
+
+            box = (x0, y0, x1 + 1, y1 + 1)
+            snap = _snapshot(img, box)
+            if _resolved_fill(op, where, ctx):
+                spans = _poly_spans(pts)
+                # `w`/`h` for the thin-mix check (P4) — a poly has no
+                # single fill box like a rect's `w x h`, so this stands in
+                # for it: the widest span (the narrowest a row of the fill
+                # ever gets, in the sense that matters — the maximum,
+                # since a warning should fire only when *every* row is too
+                # thin to carry the density) and how many scanlines have
+                # any fill at all.
+                if spans:
+                    widest = max(xb - xa + 1 for _y, xa, xb in spans)
+                    n_scanlines = len({yy for yy, _xa, _xb in spans})
+                else:
+                    widest = n_scanlines = 0
+                _check_thin_mix(ctx, ink, where, "fill", w=widest, h=n_scanlines)
+
+                def draw_fn(dr, col, spans=spans):
+                    for yy, xa, xb in spans:
+                        dr.rectangle([xa, yy, xb, yy], fill=col)
+
+                paint_op(ink, draw_fn)
+            else:
+                t = _resolved_thickness(op.get("t", 1), where, ctx)
+                _check_thin_mix(ctx, ink, where, "line", t=t)
+                n_pts = len(pts)
+
+                def draw_fn(dr, col, pts=pts, t=t, n_pts=n_pts):
+                    for i in range(n_pts):
+                        ex1, ey1 = pts[i]
+                        ex2, ey2 = pts[(i + 1) % n_pts]
+                        for px, py in _thick_line_points(ex1, ey1, ex2, ey2, t):
+                            dr.point((px, py), fill=col)
+
+                paint_op(ink, draw_fn)
+            _check_drew_nothing(img, ctx, snap, where)
 
         else:
             ctx.problems.append(f"{where}: unknown op {kind!r}")

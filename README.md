@@ -153,7 +153,7 @@ design rules, so a scheduled session does not need the spec pasted into it.
 
 **Two renderers, one vocabulary.** The firmware draws the document on the
 panel; `display_mcp.render` draws it as a PNG. They share six font sizes,
-eleven icons, six inks plus twenty-one built-in two-ink mixes, and seven ops
+eleven icons, six inks plus twenty-one built-in two-ink mixes, and eight ops
 — and nothing else, which is what keeps "what Claude previewed" and "what the
 wall shows" from drifting. The wrap and truncate logic is differentially
 tested between them. The one deliberate divergence is colour: the panel

@@ -10,12 +10,15 @@ from __future__ import annotations
 import copy
 import re
 import shutil
+import time
 from pathlib import Path
 
 import pytest
 from PIL import Image, ImageDraw
 
 from display_mcp.render import (
+    _POLY_MAX_COORD,
+    _THICK_MAX,
     BEZEL_MARGIN,
     BUILTIN_MIXES,
     COLORS,
@@ -1088,7 +1091,9 @@ def test_op_field_table_covers_every_op_the_renderer_handles():
     every field named in the module docstring's audit is present."""
     from display_mcp.render import OP_FIELDS
 
-    assert set(OP_FIELDS) == {"rect", "line", "circle", "text", "fmt", "icon", "sprite"}
+    assert set(OP_FIELDS) == {
+        "rect", "line", "circle", "text", "fmt", "icon", "sprite", "poly",
+    }
     audited = {
         "rect": {"x", "y", "w", "h", "c", "fill", "t", "r"},
         "line": {"x", "y", "x2", "y2", "c", "t"},
@@ -1097,6 +1102,7 @@ def test_op_field_table_covers_every_op_the_renderer_handles():
         "fmt": {"x", "y", "s", "c", "f", "a"},
         "icon": {"x", "y", "n", "z", "c", "bgc"},
         "sprite": {"x", "y", "cell", "rows", "palette", "mirror"},
+        "poly": {"pts", "c", "fill", "t"},
     }
     for kind, expected in audited.items():
         spec = OP_FIELDS[kind]
@@ -2847,3 +2853,412 @@ def test_swatch_document_reserved_sw_key_collision_favours_the_canonical_chip(fo
     assert problems == []
     cx, cy = canonical["x"] + canonical["w"] // 2, canonical["y"] + canonical["h"] // 2
     assert _hex(img.load()[cx, cy]) == "#272F50"  # docs/SPEC.md navy, not the collision's recipe
+
+
+# --------------------------------------------------------------------------
+# poly (docs/plans/dragon-feedback.md D12): a point list, filled by the
+# shared even-odd scanline rule or outlined edge by edge. The fill is
+# pixel-diffed against the firmware in tests/test_firmware_parity.py; these
+# pin the Python side's own behaviour — the geometry rule itself, the
+# malformed-input handling, and how it shares the warnings every other op
+# already has.
+# --------------------------------------------------------------------------
+
+
+def test_poly_fill_right_triangle_pixel_count_matches_the_closed_form(font_dir):
+    """The rule itself (D12): for scanline y, the only two edges that cross
+    it are the vertical leg (always at x=ox) and the hypotenuse (at
+    `ox + W + (-y' * W) // H`, y' being the row within the triangle) — a
+    closed-form sum over the fill rule, computed independently of
+    `_poly_spans`, so this pins the *definition*, not just the code that
+    implements it."""
+    ox, oy, w, h = 20, 30, 60, 45
+    pts = [[ox, oy], [ox + w, oy], [ox, oy + h]]
+    expected = sum((w + (-y * w) // h) + 1 for y in range(h))
+    doc = {"bg": "white", "ops": [{"op": "poly", "pts": pts, "c": "black"}]}
+    img, problems = render(doc, font_dir)
+    assert problems == []
+    px = img.load()
+    drawn = sum(
+        1
+        for y in range(oy - 2, oy + h + 3)
+        for x in range(ox - 2, ox + w + 3)
+        if px[x, y] == INK["black"]
+    )
+    assert drawn == expected
+
+
+def test_poly_fill_concave_shape_leaves_the_notch_unfilled(font_dir):
+    """An L-shaped hexagon: the missing quadrant — its concave notch —
+    stays background, not the ground a bounding-box fill would give it."""
+    doc = {
+        "bg": "white",
+        "ops": [
+            {
+                "op": "poly",
+                "pts": [[0, 0], [80, 0], [80, 40], [40, 40], [40, 80], [0, 80]],
+                "c": "black",
+            }
+        ],
+    }
+    img, problems = render(doc, font_dir)
+    assert problems == []
+    px = img.load()
+    assert px[60, 60] == INK["white"]  # inside the missing quadrant
+    assert px[20, 60] == INK["black"]  # the vertical arm of the L
+    assert px[60, 20] == INK["black"]  # the horizontal arm of the L
+    assert px[10, 10] == INK["black"]  # the outer corner
+
+
+def test_poly_fill_bowtie_fills_both_lobes(font_dir):
+    """Two triangles sharing a vertex, drawn as one self-touching path —
+    both lobes fill solidly; only the shared vertex itself is a single
+    point, never a hole."""
+    doc = {
+        "bg": "white",
+        "ops": [{"op": "poly", "pts": [[0, 0], [40, 40], [0, 40], [40, 0]], "c": "red"}],
+    }
+    img, problems = render(doc, font_dir)
+    assert problems == []
+    px = img.load()
+    assert px[10, 10] == INK["red"]  # top-left lobe
+    assert px[30, 10] == INK["red"]  # top-right lobe
+    assert px[10, 30] == INK["red"]  # bottom-left lobe
+    assert px[30, 30] == INK["red"]  # bottom-right lobe
+    assert px[20, 20] == INK["red"]  # the shared vertex itself
+
+
+def test_poly_fill_horizontal_edge_polygon_fills_its_full_height(font_dir):
+    """A pentagon with a flat top edge: horizontal edges contribute no
+    crossings, so every row from the top edge down to the bottom vertex
+    still has to be filled by the two slanted edges either side of it."""
+    doc = {
+        "bg": "white",
+        "ops": [
+            {
+                "op": "poly",
+                "pts": [[10, 0], [30, 0], [40, 20], [20, 35], [0, 20]],
+                "c": "blue",
+            }
+        ],
+    }
+    img, problems = render(doc, font_dir)
+    assert problems == []
+    px = img.load()
+    rows_with_ink = {y for y in range(36) for x in range(41) if px[x, y] == INK["blue"]}
+    assert rows_with_ink == set(range(35))  # every row 0..34, the top edge included
+
+
+def test_poly_fill_even_odd_star_leaves_the_centre_empty(font_dir):
+    """A self-overlapping five-point star, drawn as one path: even-odd
+    fill leaves the pentagon at its centre unfilled, the classic case a
+    non-zero winding-rule fill would get wrong."""
+    import math
+
+    cx, cy, r = 100, 100, 80
+    pts = [
+        [
+            round(cx + r * math.cos(-math.pi / 2 + i * (4 * math.pi / 5))),
+            round(cy + r * math.sin(-math.pi / 2 + i * (4 * math.pi / 5))),
+        ]
+        for i in range(5)
+    ]
+    doc = {"bg": "white", "ops": [{"op": "poly", "pts": pts, "c": "black"}]}
+    img, problems = render(doc, font_dir)
+    assert problems == []
+    px = img.load()
+    assert px[cx, cy] == INK["white"]  # the centre — hollow under even-odd
+    assert px[cx, cy - r + 2] == INK["black"]  # an outer point — solid
+
+
+def test_poly_outline_t3_draws_3px_edges_including_the_closing_one(font_dir):
+    doc = {
+        "bg": "white",
+        "ops": [
+            {
+                "op": "poly",
+                "pts": [[10, 10], [50, 10], [50, 40], [10, 40]],
+                "c": "black", "fill": False, "t": 3,
+            }
+        ],
+    }
+    img, problems = render(doc, font_dir)
+    assert problems == []
+    px = img.load()
+    # Top edge, horizontal: thick_line's rule thickens down from y=10.
+    assert all(px[x, y] == INK["black"] for x in (10, 30, 50) for y in (10, 11, 12))
+    # Right edge, vertical: thickens right from x=50.
+    assert all(px[x, 25] == INK["black"] for x in (50, 51, 52))
+    # The closing edge, from the last point back to the first (left,
+    # vertical, x=10): also drawn, not just the three explicit edges.
+    assert all(px[x, 25] == INK["black"] for x in (10, 11, 12))
+    # The centre never got touched.
+    assert px[30, 25] == INK["white"]
+
+
+@pytest.mark.parametrize(
+    ("pts", "label"),
+    [
+        ([[1, 1], [2, 2]], "two points"),
+        ([[1, 1], [2, 2], [3, "x"]], "a non-pair (bad value)"),
+        ([[1, 1], [2, 2], [3, 4, 5]], "a non-pair (wrong length)"),
+        ("not a list", "pts a string"),
+        (None, "pts missing"),
+    ],
+)
+def test_poly_malformed_pts_warns_once_and_draws_nothing(font_dir, pts, label):
+    doc = {"bg": "white", "ops": [{"op": "poly", "pts": pts, "c": "black"}]}
+    img, problems = render(doc, font_dir)
+    assert problems == [
+        "ops[0] poly: poly needs at least three [x, y] points; nothing to draw, skipped"
+    ], label
+    blank, _ = render({"bg": "white", "ops": []}, font_dir)
+    assert img.tobytes() == blank.tobytes(), label
+
+
+def test_poly_off_canvas_pts_warns(font_dir):
+    doc = {
+        "bg": "white",
+        "ops": [{"op": "poly", "pts": [[-200, -200], [50, -100], [10, 50]], "c": "black"}],
+    }
+    _, problems = render(doc, font_dir)
+    assert any("pts range" in p and "off-canvas" in p for p in problems)
+
+
+def test_poly_on_canvas_pts_within_tolerance_does_not_warn(font_dir):
+    """The same +/-64px tolerance every other op's x/y gets."""
+    doc = {
+        "bg": "white",
+        "ops": [{"op": "poly", "pts": [[-50, -50], [50, -30], [10, 50]], "c": "black"}],
+    }
+    _, problems = render(doc, font_dir)
+    assert problems == []
+
+
+def test_poly_mixed_fill_dithers_with_absolute_phase_like_a_rect(font_dir):
+    """An axis-aligned poly at an odd origin, filled with a mix, must be
+    pixel-identical to a `rect` of the same box and colour — proof the
+    fill goes through the same `paint()`/absolute-phase machinery, not a
+    PIL primitive of its own."""
+    x, y, w, h = 7, 11, 20, 14
+    poly_doc = {
+        "v": 1, "meta": {}, "bg": "white",
+        "palette": {"navymix": {"c": "black", "c2": "blue", "mix": 50}},
+        "ops": [
+            {
+                "op": "poly",
+                "pts": [[x, y], [x + w - 1, y], [x + w - 1, y + h], [x, y + h]],
+                "c": "navymix",
+            }
+        ],
+    }
+    rect_doc = {
+        "v": 1, "meta": {}, "bg": "white",
+        "palette": {"navymix": {"c": "black", "c2": "blue", "mix": 50}},
+        "ops": [{"op": "rect", "x": x, "y": y, "w": w, "h": h, "c": "navymix"}],
+    }
+    poly_img, p1 = render(poly_doc, font_dir)
+    rect_img, p2 = render(rect_doc, font_dir)
+    assert p1 == [] and p2 == []
+    assert poly_img.tobytes() == rect_img.tobytes()
+
+
+def test_poly_c_field_resolves_like_any_other_op(font_dir):
+    doc = {
+        "bg": "white",
+        "ops": [{"op": "poly", "pts": [[0, 0], [10, 0], [5, 10]], "c": "not-a-colour"}],
+    }
+    _, problems = render(doc, font_dir)
+    assert problems == ["ops[0] poly: unknown colour 'not-a-colour'"]
+
+
+def test_poly_unknown_field_warns(font_dir):
+    doc = {
+        "bg": "white",
+        "ops": [{"op": "poly", "pts": [[0, 0], [10, 0], [5, 10]], "bogus": 1}],
+    }
+    _, problems = render(doc, font_dir)
+    assert problems == [
+        "ops[0] poly: no such field 'bogus' (poly takes pts, c, fill, t)"
+    ]
+
+
+def test_poly_drew_nothing_warns(font_dir):
+    doc = {
+        "bg": "white",
+        "ops": [{"op": "poly", "pts": [[0, 0], [10, 0], [5, 10]], "c": "white"}],
+    }
+    problems = check(doc, font_dir)
+    assert any("drew nothing visible" in p for p in problems)
+
+
+def test_document_colors_includes_poly_c():
+    doc = {
+        "bg": "white",
+        "palette": {"flame": {"c": "red", "c2": "yellow", "mix": 50}},
+        "ops": [{"op": "poly", "pts": [[0, 0], [10, 0], [5, 10]], "c": "flame"}],
+    }
+    colors, problems = document_colors(doc)
+    assert problems == []
+    assert set(colors) == {"white", "flame"}
+
+
+def test_bezel_problems_ignores_poly():
+    """poly has no anchor for the bezel margin to judge — geometry, not
+    text/fmt/icon — so bezel_problems() must not even look at it."""
+    doc = {
+        "bg": "white",
+        "ops": [{"op": "poly", "pts": [[0, 0], [10, 0], [5, 10]], "c": "black"}],
+    }
+    assert bezel_problems(doc) == []
+
+
+# --------------------------------------------------------------------------
+# poly review fixes (docs/plans/dragon-feedback.md, review of D12): a
+# coordinate bound and a clamped scanline (P1/P2), non-bool `fill` (P3),
+# the thin-mix check for poly's fill (P4), and a shared `t` helper (P7).
+# --------------------------------------------------------------------------
+
+
+def test_poly_extreme_coordinate_is_rejected_and_fast(font_dir):
+    """P1: `pts [[10, -5000000], [20, 5000000], [0, 0]]` used to make the
+    scanline fill walk five million rows -- ~14s in check() and ~120MB of
+    accumulated spans on the firmware, every wake. A point past
+    `_POLY_MAX_COORD` is malformed instead, and the whole op is skipped —
+    checked in well under a second."""
+    doc = {
+        "bg": "white",
+        "ops": [{"op": "poly", "pts": [[10, -5000000], [20, 5000000], [0, 0]], "c": "black"}],
+    }
+    t0 = time.monotonic()
+    problems = check(doc, font_dir)
+    elapsed = time.monotonic() - t0
+    assert elapsed < 1.0, elapsed
+    assert problems == [
+        f"ops[0] poly: poly point out of range (|x|,|y| <= {_POLY_MAX_COORD}); "
+        "nothing to draw, skipped"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("coord", "should_warn"),
+    [
+        (_POLY_MAX_COORD, False),
+        (-_POLY_MAX_COORD, False),
+        (_POLY_MAX_COORD + 1, True),
+        (-_POLY_MAX_COORD - 1, True),
+    ],
+)
+def test_poly_point_at_the_coordinate_bound(font_dir, coord, should_warn):
+    """P1: a point at exactly +/-`_POLY_MAX_COORD` is accepted; one past it
+    is skipped."""
+    doc = {
+        "bg": "white",
+        "ops": [{"op": "poly", "pts": [[coord, 0], [0, 100], [100, 100]], "c": "black"}],
+    }
+    problems = check(doc, font_dir)
+    assert any("out of range" in p for p in problems) == should_warn
+
+
+def test_poly_canvas_spanning_pts_still_draws_correctly(font_dir):
+    """P1's clamp (the scanline range to `[0, HEIGHT)`, each span's x to
+    `[0, WIDTH)`) must still fill the same pixels a naive, unclamped
+    computation would have — proven on the firmware side by the
+    canvas-spanning parity case in test_firmware_parity.py; this pins the
+    Python behaviour the clamp must not disturb: a polygon that covers the
+    whole canvas and then some still paints it solidly, corner to corner."""
+    doc = {
+        "bg": "white",
+        "ops": [
+            {
+                "op": "poly",
+                "pts": [[-9000, -9000], [9000, -9000], [9000, 9000], [-9000, 9000]],
+                "c": "black",
+            }
+        ],
+    }
+    img, problems = render(doc, font_dir)
+    assert any("off-canvas" in p for p in problems)
+    px = img.load()
+    for corner in ((0, 0), (WIDTH - 1, 0), (0, HEIGHT - 1), (WIDTH - 1, HEIGHT - 1)):
+        assert px[corner] == INK["black"], corner
+
+
+def test_fill_non_bool_warns_and_uses_true(font_dir):
+    """P3: ArduinoJson's `o["fill"] | true` yields the default for anything
+    that isn't a JSON bool, while Python's old `op.get("fill", True)` read
+    `0`/`null` as falsy — so `"fill": 0` used to outline on the panel and
+    fill in the preview. Now both sides fill, and the mismatch is a
+    warning, for rect, circle and poly alike."""
+    box = (30, 30)
+    ops = [
+        {"op": "rect", "x": 10, "y": 10, "w": 40, "h": 40, "c": "black", "fill": 0},
+        {"op": "circle", "x": 30, "y": 30, "r": 15, "c": "black", "fill": 0},
+        {"op": "poly", "pts": [[10, 10], [50, 10], [30, 50]], "c": "black", "fill": 0},
+    ]
+    for op in ops:
+        doc = {"bg": "white", "ops": [op]}
+        img, problems = render(doc, font_dir)
+        assert any(
+            "fill=0" in p and "using true" in p for p in problems
+        ), (op["op"], problems)
+        assert img.load()[box] == INK["black"], op["op"]
+
+
+def test_thin_mix_warns_a_poly_fill_sliver(font_dir):
+    """P4: a degenerate zero-width poly (three collinear points) fills a
+    single-pixel-wide vertical run for 40 scanlines — the same 2px-minimum
+    rule a thin rect fill gets (docs/plans/ink-mixing.md decision 2),
+    applied to poly's widest span and its scanline count."""
+    doc = {
+        "v": 1, "meta": {}, "bg": "white",
+        "palette": {"grey-25": {"c": "black", "c2": "white", "mix": 25}},
+        "ops": [{"op": "poly", "pts": [[10, 10], [10, 30], [10, 50]], "c": "grey-25"}],
+    }
+    msgs = _thin_mix_msgs(check(doc, font_dir))
+    assert len(msgs) == 1
+    assert "1x40 fill" in msgs[0]
+
+
+def test_thin_mix_does_not_warn_a_wide_poly_fill(font_dir):
+    doc = {
+        "v": 1, "meta": {}, "bg": "white",
+        "palette": {"grey-25": {"c": "black", "c2": "white", "mix": 25}},
+        "ops": [{"op": "poly", "pts": [[10, 10], [50, 10], [10, 50], [50, 50]], "c": "grey-25"}],
+    }
+    assert _thin_mix_msgs(check(doc, font_dir)) == []
+
+
+@pytest.mark.parametrize(
+    "op",
+    [
+        {"op": "line", "x": 10, "y": 10, "x2": 400, "y2": 10, "c": "black"},
+        {"op": "rect", "x": 10, "y": 10, "w": 40, "h": 40, "c": "black", "fill": False},
+        {"op": "circle", "x": 30, "y": 30, "r": 20, "c": "black", "fill": False},
+        {"op": "poly", "pts": [[10, 10], [50, 10], [30, 50]], "c": "black", "fill": False},
+    ],
+    ids=["line", "rect", "circle", "poly"],
+)
+class TestThicknessIsBoundedAndValidated:
+    """P7: before this helper, a non-numeric `t` raised `TypeError` out of
+    `render()`, and `t: 2000000` took over 100s — pre-existing for
+    `line`/`rect`/`circle`, and the same rule as every other bad value:
+    warn and draw something (A1)."""
+
+    def test_string_t_warns_and_uses_1(self, font_dir, op):
+        doc = {"bg": "white", "ops": [dict(op, t="thick")]}
+        _, problems = render(doc, font_dir)
+        assert any("t='thick'" in p and "using 1" in p for p in problems)
+
+    def test_zero_t_warns_and_uses_1(self, font_dir, op):
+        doc = {"bg": "white", "ops": [dict(op, t=0)]}
+        _, problems = render(doc, font_dir)
+        assert any("t=0" in p and "using 1" in p for p in problems)
+
+    def test_huge_t_warns_and_clamps_fast(self, font_dir, op):
+        doc = {"bg": "white", "ops": [dict(op, t=2_000_000)]}
+        t0 = time.monotonic()
+        _, problems = render(doc, font_dir)
+        elapsed = time.monotonic() - t0
+        assert elapsed < 2.0, elapsed
+        assert any(f"larger than {_THICK_MAX}" in p and "clamped" in p for p in problems)

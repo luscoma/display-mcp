@@ -94,6 +94,20 @@ saying where they belong. Check `warnings` either way.
 
   This is how pixel art gets drawn at all — never as a hand-compiled wall
   of `rect` ops standing in for stair-stepped pixels.
+- **`poly`** — `pts` (at least three `[x, y]` integer pairs), `c`, `fill`
+  (default true), `t` (outline thickness when `fill: false`). A triangle,
+  chevron, arrow or ground shadow — whatever `rect`/`circle` can't shape.
+  Filled polygons use an even-odd scanline rule shared exactly between the
+  panel and the preview (docs/SPEC.md "poly"), so a self-crossing shape
+  (a bow-tie, a star) fills the way you'd expect rather than however PIL
+  happens to; x and y aren't symmetric, so a poly matching a `rect`'s box
+  puts its points at `x`/`x+w-1` but `y`/`y+h` (not `y+h-1`). Fewer than
+  three points, or a point that isn't a two-number pair, is a warning and
+  the op is skipped:
+
+  ```json
+  {"op": "poly", "pts": [[100, 100], [300, 100], [200, 260]], "c": "navy"}
+  ```
 - **`fmt`** — `x y s`, `f` (default `xs`), `a`, `c`. Like
   `text` but `s` is a template of system fields: `{hash}` (last 5 of the
   document's hash), `{hash16}`, `{time}` (`1:43 PM`, when the panel drew

@@ -455,6 +455,27 @@ fix is a per-face constant the firmware reads out of `DisplayListAssets`
 than computing `font_height` at all — not attempted here, since nothing
 suggests it matters yet.
 
+### Noted in passing: `line`/`rect` outline still centre their stroke; `poly`'s doesn't
+
+Review of D12 found the asymmetry this leaves: the firmware's `thick_line()`
+and the rect outline loop offset `t` parallel 1px lines to one side, while
+the Python's `line`/`rect` outline both lean on PIL's `ImageDraw` `width=`,
+which centres a thick stroke on the path instead. That gap was accepted as
+eyeball parity for those two ops — nothing has ever diffed them — but
+`poly`'s outline *is* diffed (`tests/test_firmware_parity.py`), so it earns
+its own exact transcribed Bresenham walk (`_thick_line_points` /
+`_bresenham_points` in `display_mcp.render`) instead of inheriting the gap.
+
+Switching `line`/`rect` outlines to the same `_thick_line_points` walk is a
+no-op for every `t: 1` document (the common case, and the only thickness
+either preview has ever matched exactly) and makes a thick stroke preview
+where the panel actually draws it for `t > 1`. It is a real behaviour
+change, though — every existing `t > 1` `line`/`rect` outline shifts by up
+to `t - 1` px on one side — so it is deferred rather than folded in here:
+no shipped document pins a `t > 1` outline's hash today, but the change
+deserves its own commit and its own note in the log, not a silent side
+effect of a poly review.
+
 ### D14. The document version stays at 1
 
 Everything above is additive: an old firmware meets `sprite` or `poly` and

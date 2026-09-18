@@ -40,7 +40,7 @@ def test_sprite_sample_hash(sprite_sample_doc):
     """samples/sprite.json (docs/plans/dragon-feedback.md B1) — the second
     sample, showing off the `sprite` op the way samples/display.json shows
     off everything else."""
-    assert render_hash(sprite_sample_doc) == "d5d25873e7907f20"
+    assert render_hash(sprite_sample_doc) == "16274a2fe47fbd06"
 
 
 def test_sprite_sample_checks_clean(sprite_sample_doc, font_dir):
@@ -74,6 +74,32 @@ def test_spec_sprite_example_checks_clean(font_dir):
 def test_compose_sprite_example_checks_clean(font_dir):
     """The compose_display prompt's own sprite example, same rule."""
     op = _fenced_json_sprite_op((PROMPTS / "compose.md").read_text())
+    assert check({"v": 1, "bg": "white", "ops": [op]}, font_dir) == []
+
+
+def _fenced_json_poly_op(text: str) -> dict:
+    """Like `_fenced_json_sprite_op`, for the `poly` example
+    (docs/plans/dragon-feedback.md D12/B4)."""
+    for block in re.findall(r"[ \t]*```json\n(.*?)\n[ \t]*```", text, re.DOTALL):
+        try:
+            obj = json.loads(block)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict) and obj.get("op") == "poly":
+            return obj
+    raise AssertionError(f"no fenced json poly example found in {text[:40]!r}...")
+
+
+def test_spec_poly_example_checks_clean(font_dir):
+    """docs/SPEC.md's ### poly example has to be pasteable as-is, the same
+    rule the sprite example is held to."""
+    op = _fenced_json_poly_op((ROOT / "docs" / "SPEC.md").read_text())
+    assert check({"v": 1, "bg": "white", "ops": [op]}, font_dir) == []
+
+
+def test_compose_poly_example_checks_clean(font_dir):
+    """The compose_display prompt's own poly example, same rule."""
+    op = _fenced_json_poly_op((PROMPTS / "compose.md").read_text())
     assert check({"v": 1, "bg": "white", "ops": [op]}, font_dir) == []
 
 

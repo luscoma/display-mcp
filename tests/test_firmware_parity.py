@@ -270,6 +270,33 @@ class Display {
       for (int xx = x1; xx < x1 + w; xx++)
         this->draw_pixel_at(xx, yy, c);
   }
+  // esphome::display::Display::line(), transcribed verbatim from
+  // esphome/components/display/display.cpp (the real package, pip
+  // downloaded to check this, not reinvented) -- what draw_poly()'s
+  // thick_line() calls on the real panel, and the one primitive this
+  // module's own stub had never needed before poly's outline (line/rect
+  // outline thickness is eyeball parity, not diffed here). A from-scratch
+  // Bresenham risks disagreeing with the real one at some tie-break;
+  // this doesn't, because it isn't one.
+  void line(int x1, int y1, int x2, int y2, Color color) {
+    const int32_t dx = std::abs(x2 - x1), sx = x1 < x2 ? 1 : -1;
+    const int32_t dy = -std::abs(y2 - y1), sy = y1 < y2 ? 1 : -1;
+    int32_t err = dx + dy;
+    while (true) {
+      this->draw_pixel_at(x1, y1, color);
+      if (x1 == x2 && y1 == y2)
+        break;
+      int32_t e2 = 2 * err;
+      if (e2 >= dy) {
+        err += dy;
+        x1 += sx;
+      }
+      if (e2 <= dx) {
+        err += dx;
+        y1 += sy;
+      }
+    }
+  }
  protected:
   virtual int get_width_internal() = 0;
   virtual int get_height_internal() = 0;
@@ -324,6 +351,14 @@ class JsonArray {
   JsonArray() = default;
   explicit JsonArray(NodePtr p) : n(p) {}
   bool isNull() const { return !n || n->t != Node::ARR; }
+  // Real ArduinoJson's JsonArray has both of these; this stub didn't, which
+  // is the whole reason draw_poly() used to prove a two-element array via a
+  // manual begin()/end() walk instead (P8, docs/plans/dragon-feedback.md
+  // review of D12).
+  size_t size() const { return n ? n->arr.size() : 0; }
+  JsonVariant operator[](size_t i) const {
+    return (n && i < n->arr.size()) ? JsonVariant(n->arr[i]) : JsonVariant();
+  }
   struct iterator {
     const std::vector<NodePtr> *v;
     size_t i;
@@ -636,7 +671,7 @@ def sprite_harness(tmp_path_factory) -> _SpriteHarness:
         "// Host-compile harness for draw_sprite(), extracted verbatim from\n"
         "// firmware/display_list.h. ArduinoJson and ESPHome are stubbed.\n"
         "#include <algorithm>\n#include <cctype>\n#include <cstdint>\n"
-        "#include <cstdio>\n#include <cstring>\n#include <map>\n"
+        "#include <cstdio>\n#include <cstdlib>\n#include <cstring>\n#include <map>\n"
         "#include <memory>\n#include <set>\n#include <string>\n#include <vector>\n\n"
         + _STUB_ESPHOME_AND_JSON
         + "\n" + matrix + "\n" + mix_on_fn
@@ -1002,3 +1037,332 @@ def test_circle_ring_has_no_diagonal_holes(circle_ring_harness, r, t):
         if outer[y][x] and not ring[y][x]:
             holes.append((deg, x, y))
     assert not holes, holes[:8]
+
+
+# --------------------------------------------------------------------------
+# poly, differentially (docs/plans/dragon-feedback.md D12/B4). draw_poly()
+# and its own poly_spans() -- plus thick_line() (already in the header) and
+# this module's own Display::line() (see _STUB_ESPHOME_AND_JSON) -- are
+# extracted verbatim, compiled, and diffed pixel-for-pixel against
+# display_mcp.render.render(). Unlike sprite, poly's fill is the one place
+# the two renderers could genuinely disagree (D12), and its outline is
+# diffed too, since display_mcp.render draws it with the same Bresenham
+# walk the header uses rather than PIL's `width=` (see
+# render._bresenham_points's own docstring for why that distinction only
+# matters here).
+#
+# Needs a host C++ compiler; skips cleanly without one, like sprite_harness.
+# --------------------------------------------------------------------------
+
+
+def test_op_loop_has_a_poly_branch():
+    src = HEADER.read_text()
+    assert 'strcmp(kind, "poly")' in src
+
+
+# Everything sprite_harness's main() needs before `int main() {` -- the
+# Canvas and the tiny JSON parser -- reused rather than retyped, so the two
+# harnesses can't drift on how they read stdin or bounds-check a pixel.
+_CANVAS_AND_PARSER = _HARNESS_MAIN.split("int main() {")[0]
+
+# draw_poly()'s own harness main(): resolve `c` through the same
+# resolve_ink() stub sprite_harness uses (so "navy", "grey-dark" etc. work
+# here too), build the MixDisplay the real op loop builds before dispatch
+# -- draw_poly() receives that proxy already carrying `c`, not a bare
+# Display, so the harness has to hand it the same thing -- and call
+# draw_poly() exactly as the loop does.
+_POLY_HARNESS_MAIN = (
+    _CANVAS_AND_PARSER
+    + r"""int main() {
+  std::string body;
+  { int c; while ((c = getchar()) != EOF) body += (char) c; }
+  P p(body);
+  NodePtr root = p.val();
+  JsonObject o(root);
+  JsonObject palette;  // draw_poly() takes none; the resolve_ink stub ignores it too
+  const int cw = o["_cw"] | 64;
+  const int ch = o["_ch"] | 64;
+  Canvas canvas(cw, ch);
+  const Ink ink = resolve_ink(o["c"] | "black", palette);
+  MixDisplay mix(canvas);
+  mix.add_ink(ink.a, ink);
+  const bool drew = draw_poly(mix, o, ink);
+  const unsigned char drew_byte = drew ? 1 : 0;
+  std::fwrite(&drew_byte, 1, 1, stdout);
+  for (auto &px : canvas.px) {
+    std::fwrite(&px.r, 1, 1, stdout);
+    std::fwrite(&px.g, 1, 1, stdout);
+    std::fwrite(&px.b, 1, 1, stdout);
+  }
+  return 0;
+}
+"""
+)
+
+
+class _PolyHarness:
+    def __init__(self, exe: Path):
+        self.exe = exe
+
+    def run(
+        self, op: dict, cw: int, ch: int
+    ) -> tuple[bool, list[list[tuple[int, int, int]]], list[str]]:
+        payload = dict(op)
+        payload["_cw"] = cw
+        payload["_ch"] = ch
+        out = subprocess.run(
+            [str(self.exe)],
+            input=json.dumps(payload).encode(),
+            capture_output=True,
+            check=True,
+        )
+        data = out.stdout
+        drew = bool(data[0])
+        raster = data[1:]
+        assert len(raster) == cw * ch * 3, "harness printed the wrong number of bytes"
+        pixels = [
+            [tuple(raster[(y * cw + x) * 3 : (y * cw + x) * 3 + 3]) for x in range(cw)]
+            for y in range(ch)
+        ]
+        logs = out.stderr.decode(errors="replace").splitlines()
+        return drew, pixels, logs
+
+
+@pytest.fixture(scope="module")
+def poly_harness(tmp_path_factory) -> _PolyHarness:
+    """Compile draw_poly() -- extracted verbatim from the shipped header,
+    never retyped -- against the same stubs sprite_harness uses, plus
+    floor_div()/poly_spans()/thick_line(), once for the module."""
+    if shutil.which("c++") is None:
+        pytest.skip("no host C++ compiler")
+
+    matrix = _extract(r"^static const uint8_t B\[2\]\[2\].*;$", "the Bayer matrix")
+    mix_on_fn = _extract(r"^inline bool mix_on\(.*$", "mix_on()")
+    ink_struct = _extract_block(r"^struct Ink \{", "struct Ink")
+    mixdisplay_cls = _extract_block(
+        r"^class MixDisplay : public esphome::display::Display \{", "MixDisplay"
+    )
+    thick_max_const = _extract(r"^static const int kThickMax = \d+;$", "kThickMax")
+    thick_line_fn = _extract_block(r"^inline void thick_line\(", "thick_line()")
+    floor_div_fn = _extract_block(r"^inline int64_t floor_div\(", "floor_div()")
+    poly_max_coord_const = _extract(
+        r"^static const int32_t kPolyMaxCoord = .*;$", "kPolyMaxCoord"
+    )
+    poly_spans_fn = _extract_block(r"^inline void poly_spans\(", "poly_spans()")
+    draw_poly_fn = _extract_block(r"^inline bool draw_poly\(", "draw_poly()")
+
+    d = tmp_path_factory.mktemp("poly_parity")
+    src = d / "poly_harness.cpp"
+    src.write_text(
+        "// Host-compile harness for draw_poly(), extracted verbatim from\n"
+        "// firmware/display_list.h. ArduinoJson and ESPHome are stubbed.\n"
+        "#include <algorithm>\n#include <cctype>\n#include <cstdint>\n"
+        "#include <cstdio>\n#include <cstdlib>\n#include <cstring>\n#include <functional>\n"
+        "#include <map>\n#include <memory>\n#include <set>\n#include <string>\n"
+        "#include <tuple>\n#include <utility>\n#include <vector>\n\n"
+        + _STUB_ESPHOME_AND_JSON
+        + "\n" + matrix + "\n" + mix_on_fn
+        + "\n" + ink_struct + "\n" + mixdisplay_cls
+        + "\n" + thick_max_const + "\n" + thick_line_fn
+        + "\n" + _STUB_RESOLVE_INK
+        + "\n" + floor_div_fn
+        + "\n" + poly_max_coord_const + "\n" + poly_spans_fn + "\n" + draw_poly_fn
+        + "\n" + _POLY_HARNESS_MAIN
+    )
+    exe = d / "poly_harness"
+    # -fsanitize=undefined (P2, review of D12): the fill's int64_t crossing
+    # arithmetic is exactly the kind of thing UBSan catches that a plain
+    # -O1 build wouldn't -- signed overflow, an out-of-range cast -- and
+    # -fno-sanitize-recover=all makes any such finding a hard failure here
+    # rather than a quiet stderr line every other harness would miss too.
+    subprocess.run(
+        [
+            "c++", "-std=c++17", "-O1", "-fsanitize=undefined", "-fno-sanitize-recover=all",
+            "-o", str(exe), str(src),
+        ],
+        check=True,
+    )
+    return _PolyHarness(exe)
+
+
+def _poly_pixels_py(op, cw, ch, font_dir):
+    doc = {"v": 1, "bg": "white", "ops": [op]}
+    img, problems = render(doc, font_dir)
+    px = img.load()
+    return [[px[x, y] for x in range(cw)] for y in range(ch)], problems
+
+
+def _poly_diff(poly_harness, font_dir, op, cw, ch):
+    """Run the same op through both renderers and return every
+    (x, y, cpp_rgb, py_rgb) where they disagree, plus render()'s own
+    problems -- empty diffs is the whole point of the test."""
+    _drew, cpp_px, _logs = poly_harness.run(op, cw, ch)
+    py_px, problems = _poly_pixels_py(op, cw, ch, font_dir)
+    diffs = [
+        (x, y, cpp_px[y][x], py_px[y][x])
+        for y in range(ch)
+        for x in range(cw)
+        if cpp_px[y][x] != py_px[y][x]
+    ]
+    return diffs, problems
+
+
+def test_poly_triangle_matches_the_firmware(poly_harness, font_dir):
+    op = {"op": "poly", "pts": [[5, 5], [55, 5], [30, 45]], "c": "black"}
+    diffs, problems = _poly_diff(poly_harness, font_dir, op, 60, 50)
+    assert problems == []
+    assert not diffs, diffs[:5]
+
+
+def test_poly_concave_chevron_matches_the_firmware(poly_harness, font_dir):
+    """A concave "V"-notch chevron -- the case a naive bounding-box fill
+    would get wrong but the even-odd scanline gets right on both sides."""
+    op = {
+        "op": "poly",
+        "pts": [[0, 0], [20, 0], [35, 20], [20, 40], [0, 40], [15, 20]],
+        "c": "navy",
+    }
+    diffs, problems = _poly_diff(poly_harness, font_dir, op, 40, 45)
+    assert problems == []
+    assert not diffs, diffs[:5]
+
+
+def test_poly_bowtie_matches_the_firmware(poly_harness, font_dir):
+    """Two triangles sharing a vertex, drawn as one self-touching path --
+    the half-open crossing rule has to land the shared vertex on exactly
+    one row without leaving a gap, on both sides identically."""
+    op = {"op": "poly", "pts": [[0, 0], [40, 40], [0, 40], [40, 0]], "c": "red"}
+    diffs, problems = _poly_diff(poly_harness, font_dir, op, 45, 45)
+    assert problems == []
+    assert not diffs, diffs[:5]
+
+
+def test_poly_horizontal_edge_matches_the_firmware(poly_harness, font_dir):
+    """A pentagon with one flat top edge -- horizontal edges contribute no
+    crossings on either side, so this pins that they're skipped the same
+    way rather than one side tripping over a zero-length edge."""
+    op = {
+        "op": "poly",
+        "pts": [[10, 0], [30, 0], [40, 20], [20, 35], [0, 20]],
+        "c": "blue",
+    }
+    diffs, problems = _poly_diff(poly_harness, font_dir, op, 45, 40)
+    assert problems == []
+    assert not diffs, diffs[:5]
+
+
+def test_poly_negative_and_offcanvas_coords_matches_the_firmware(poly_harness, font_dir):
+    """A triangle straddling the top-left corner, partly off-canvas on
+    negative coordinates -- both sides have to clip it to the same
+    pixels, not merely avoid crashing on it."""
+    op = {"op": "poly", "pts": [[-100, -100], [30, -10], [10, 30]], "c": "green"}
+    diffs, problems = _poly_diff(poly_harness, font_dir, op, 40, 40)
+    assert any("off-canvas" in p for p in problems)
+    assert not diffs, diffs[:5]
+
+
+def test_poly_mixed_fill_at_odd_origin_matches_a_rect(poly_harness, font_dir):
+    """An axis-aligned poly at an odd (x, y) with a mixed ink, diffed
+    against the C++ raster directly -- proof that poly_spans()'s fill
+    dithers with the same absolute phase a `rect` fill does, the way
+    test_sprite_3x3_mixed_block_matches_a_rect proves it for sprite.
+
+    This is also the asymmetry P5 documents: poly's x is inclusive of both
+    ends (the right edge sits at `x + w - 1`, same as a rect's own
+    `[x, x+w-1]`), but the scanline that fills a row is half-open
+    (`[min(y0,y1), max(y0,y1))`), so the bottom edge here is `y + h`, not
+    `y + h - 1` -- one *past* where a rect's `h`th row would be -- and the
+    fill still lands on exactly the same `h` rows a rect of this box would,
+    because that last scanline (`y + h`) never gets a crossing.
+    """
+    x, y, w, h = 7, 11, 20, 14
+    op = {
+        "op": "poly",
+        "pts": [[x, y], [x + w - 1, y], [x + w - 1, y + h], [x, y + h]],
+        "c": "navy",
+    }
+    drew, cpp_px, logs = poly_harness.run(op, 40, 40)
+    assert drew and not logs
+    rect_doc = {
+        "v": 1, "bg": "white",
+        "ops": [{"op": "rect", "x": x, "y": y, "w": w, "h": h, "c": "navy"}],
+    }
+    img, problems = render(rect_doc, font_dir)
+    assert problems == []
+    px = img.load()
+    diffs = [
+        (xx, yy, cpp_px[yy][xx], px[xx, yy])
+        for yy in range(40)
+        for xx in range(40)
+        if cpp_px[yy][xx] != px[xx, yy]
+    ]
+    assert not diffs, diffs[:5]
+
+
+def test_poly_outline_t3_matches_the_firmware(poly_harness, font_dir):
+    """`fill: false` with `t: 3`, including the closing edge."""
+    op = {
+        "op": "poly",
+        "pts": [[10, 10], [50, 10], [50, 40], [10, 40]],
+        "c": "black", "fill": False, "t": 3,
+    }
+    diffs, problems = _poly_diff(poly_harness, font_dir, op, 60, 50)
+    assert problems == []
+    assert not diffs, diffs[:5]
+
+
+def test_poly_two_point_pts_warns_and_skips_on_both_sides(poly_harness, font_dir):
+    op = {"op": "poly", "pts": [[1, 1], [2, 2]], "c": "black"}
+    drew, _px, logs = poly_harness.run(op, 10, 10)
+    assert not drew
+    assert any("at least three" in log for log in logs)
+    problems = check({"v": 1, "bg": "white", "ops": [op]}, font_dir)
+    assert any("nothing to draw, skipped" in p for p in problems)
+
+
+def test_poly_point_out_of_range_warns_and_skips_on_both_sides(poly_harness, font_dir):
+    """P1 (device-safety review of D12): a point past `kPolyMaxCoord` /
+    `_POLY_MAX_COORD` is malformed on both sides, not merely off-canvas --
+    the 5-million-coordinate case that used to make poly_spans() walk
+    millions of scanlines is rejected outright instead."""
+    op = {"op": "poly", "pts": [[10, -5000000], [20, 5000000], [0, 0]], "c": "black"}
+    drew, _px, logs = poly_harness.run(op, 10, 10)
+    assert not drew
+    assert any("out of range" in log for log in logs)
+    problems = check({"v": 1, "bg": "white", "ops": [op]}, font_dir)
+    assert any("out of range" in p for p in problems)
+
+
+def test_poly_canvas_spanning_pts_matches_the_firmware(poly_harness, font_dir):
+    """P1's clamp -- the scanline range to `[0, height)`, each span's x to
+    `[0, width)`, applied *before* the loop on both sides -- must land on
+    exactly the same visible pixels a naive, unclamped fill would have.
+    Points well outside the harness's own small canvas (but inside
+    `kPolyMaxCoord`) exercise the clamp on both sides identically: the
+    firmware's `it.get_width()`/`get_height()` here is the harness's own
+    small canvas, while the Python's clamp is always the real 1200x1600 --
+    but since the fill is solid well past this window in every direction,
+    the two must still agree on every sampled pixel."""
+    op = {
+        "op": "poly",
+        "pts": [[-9000, -9000], [9000, -9000], [9000, 9000], [-9000, 9000]],
+        "c": "black",
+    }
+    diffs, problems = _poly_diff(poly_harness, font_dir, op, 80, 80)
+    assert any("off-canvas" in p for p in problems)
+    assert not diffs, diffs[:5]
+
+
+def test_poly_fill_false_0_matches_the_firmware(poly_harness, font_dir):
+    """P3: `"fill": 0` is not a JSON bool, so ArduinoJson's `o["fill"] |
+    true` reads the default (fills) -- and now so does the Python, instead
+    of `0`'s truthiness reading it as `fill: false`."""
+    op = {
+        "op": "poly",
+        "pts": [[5, 5], [55, 5], [30, 45]],
+        "c": "black",
+        "fill": 0,
+    }
+    diffs, problems = _poly_diff(poly_harness, font_dir, op, 60, 50)
+    assert any("fill=0" in p and "using true" in p for p in problems)
+    assert not diffs, diffs[:5]

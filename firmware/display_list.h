@@ -20,6 +20,7 @@
 //
 #include <algorithm>
 #include <cstring>
+#include <functional>
 #include <map>
 #include <set>
 #include <string>
@@ -391,8 +392,19 @@ inline esphome::display::TextAlign align_of(const char *a) {
   return esphome::display::TextAlign::TOP_LEFT;
 }
 
+// Bound on an outline's thickness (docs/plans/dragon-feedback.md, review of
+// D12, P7): thick_line()'s and the rect outline loop's `for (int i = 0; i <
+// t; i++)` turn a document's `t` directly into that many draw calls, so a
+// `t` in the millions must never reach either loop -- the same
+// device-safety shape kSpriteMaxCell guards for `sprite`'s `cell`. Both
+// loops clamp to this silently; a bad `t` is authoring feedback and stays
+// on the Python side (D1). Mirrors `_THICK_MAX` in display_mcp.render.
+static const int kThickMax = 64;
+
 inline void thick_line(esphome::display::Display &it, int x1, int y1, int x2, int y2, int t,
                        esphome::Color c) {
+  if (t > kThickMax)
+    t = kThickMax;
   if (t <= 1) {
     it.line(x1, y1, x2, y2, c);
     return;
@@ -690,6 +702,158 @@ inline bool draw_sprite(esphome::display::Display &it, JsonObject o, JsonObject 
   return true;
 }
 
+// Sign-correct floor division: C++'s `/` truncates toward zero, but the
+// even-odd scanline fill below (docs/plans/dragon-feedback.md D12) needs a
+// genuine floor so a crossing with a negative numerator or denominator
+// lands on the integer both sides agree on. Python's `//` is already floor
+// division, so display_mcp.render's mirror (_poly_spans()) needs no helper
+// of its own to match this.
+inline int64_t floor_div(int64_t a, int64_t b) {
+  const int64_t q = a / b;
+  const int64_t r = a % b;
+  return (r != 0 && ((r < 0) != (b < 0))) ? q - 1 : q;
+}
+
+// Bound on a poly point's magnitude (device-safety review of D12, P1): a
+// document whose `pts` reach this far out is malformed, not merely
+// off-canvas -- pts [[10, -5000000], [20, 5000000], [0, 0]] used to make
+// poly_spans() walk five million scanlines, accumulating ~120MB of spans,
+// every wake, forever. draw_poly() rejects a point past this bound outright,
+// so the scanline/span clamp below never has to reconcile a crossing
+// computed from a coordinate this large. 1 << 20 is comfortably past any
+// real document (the canvas is 1200 x 1600) and comfortably inside the
+// int64_t headroom the crossing product below needs -- the same role
+// kSpriteMaxCell plays for `cell`. Mirrors `_POLY_MAX_COORD` in
+// display_mcp.render.
+static const int32_t kPolyMaxCoord = 1 << 20;
+
+/// Even-odd scanline fill (D12): for each integer scanline `y` from `ymin`
+/// to `ymax` inclusive -- already clamped by the caller to the visible
+/// range `[0, height)`, so this loop can never scale with how far outside
+/// the canvas `pts` reaches (device-safety review, P1) -- an edge
+/// `(x0,y0)-(x1,y1)` of the closed point list with `y0 != y1` contributes a
+/// crossing when `y` is in `[min(y0,y1), max(y0,y1))` -- half-open, so a
+/// vertex shared by two edges is counted on exactly one of them -- at
+/// `x = x0 + floor_div((y - y0) * (x1 - x0), y1 - y0)`. Crossings are
+/// sorted, paired up, each pair clamped to `[0, width)` (P1 again -- a span
+/// whose true extent runs off either edge of the canvas is trimmed to it
+/// before `emit` ever sees it), and `emit(y, xa, xb)` is called directly on
+/// what survives -- no vector of spans is ever materialised.
+///
+/// A free function, not folded into draw_poly(), so the parity harness
+/// (tests/test_firmware_parity.py) can extract and diff it on its own
+/// against display_mcp.render's `_poly_spans()` -- the one place the two
+/// renderers could genuinely disagree, per D12. Products go through
+/// `int64_t`: `kPolyMaxCoord` bounds each coordinate, but
+/// `(y - y0) * (x1 - x0)` can still exceed INT32_MAX at that bound.
+inline void poly_spans(const std::vector<std::pair<int, int>> &pts, int ymin, int ymax, int width,
+                       const std::function<void(int, int, int)> &emit) {
+  const int n = static_cast<int>(pts.size());
+  for (int y = ymin; y <= ymax; y++) {
+    std::vector<int64_t> xs;
+    for (int i = 0; i < n; i++) {
+      const int64_t x0 = pts[i].first, y0 = pts[i].second;
+      const int64_t x1 = pts[(i + 1) % n].first, y1 = pts[(i + 1) % n].second;
+      if (y0 == y1)
+        continue;  // horizontal edges never cross a scanline
+      const int64_t lo = std::min(y0, y1), hi = std::max(y0, y1);
+      if (y >= lo && y < hi)
+        xs.push_back(x0 + floor_div((static_cast<int64_t>(y) - y0) * (x1 - x0), y1 - y0));
+    }
+    std::sort(xs.begin(), xs.end());
+    for (size_t i = 0; i + 1 < xs.size(); i += 2) {
+      const int64_t xa = std::max<int64_t>(0, xs[i]);
+      const int64_t xb = std::min<int64_t>(width - 1, xs[i + 1]);
+      if (xa <= xb)
+        emit(y, static_cast<int>(xa), static_cast<int>(xb));
+    }
+  }
+}
+
+/// A point list, filled by the shared even-odd scanline above or outlined
+/// edge by edge (docs/plans/dragon-feedback.md D12). `c` is the op's own
+/// ink -- already resolved and registered on `it` (a MixDisplay) by the
+/// caller before dispatch, the same way rect/line/circle receive it -- so
+/// unlike draw_sprite() this needs no palette of its own: a poly has one
+/// colour for the whole shape, not one per character.
+///
+/// `pts` must be a JsonArray of at least three `[x, y]` integer pairs, each
+/// within `kPolyMaxCoord` of the origin; anything else -- too few points,
+/// an element that isn't exactly a two-number pair, a coordinate past the
+/// bound -- is malformed and the whole op is abandoned before anything is
+/// drawn, mirroring draw_sprite()'s all-or-nothing parse. `pair.size()`
+/// (real ArduinoJson has it; only this module's host-compile stub for
+/// P8 once didn't) replaces what used to be a manual begin()/end() walk to
+/// prove a JsonArray has exactly two elements.
+///
+/// Filled: every span poly_spans() finds, each one `filled_rectangle` of
+/// height 1 through `it`, so a mixed fill dithers with absolute phase
+/// exactly like a `rect` fill does -- the scanline range is clamped to
+/// `[0, height)` first (P1), so a polygon whose points sit far outside the
+/// canvas costs no more than one that doesn't. Outlined (`fill: false`):
+/// every edge, including the closing one, through the file's own
+/// thick_line() -- the same primitive and the same thickness rule the
+/// `line` op uses.
+///
+/// Returns false -- with the caller doing `skipped++` -- when `pts` is
+/// malformed; true otherwise, whether filled or outlined.
+inline bool draw_poly(esphome::display::Display &it, JsonObject o, const Ink &c) {
+  JsonArray raw_pts = o["pts"];
+  std::vector<std::pair<int, int>> pts;
+  bool ok = !raw_pts.isNull();
+  if (ok) {
+    for (JsonVariant pv : raw_pts) {
+      JsonArray pair = pv;
+      if (pair.isNull() || pair.size() != 2) {
+        ok = false;
+        break;
+      }
+      JsonVariant xv = pair[0], yv = pair[1];
+      if (!xv.template is<int>() || !yv.template is<int>()) {
+        ok = false;  // not both integers
+        break;
+      }
+      pts.emplace_back(xv.template as<int>(), yv.template as<int>());
+    }
+  }
+  if (!ok || pts.size() < 3) {
+    ESP_LOGW(TAG, "poly needs at least three [x, y] points; nothing to draw, skipped");
+    return false;
+  }
+  for (const auto &p : pts) {
+    if (std::abs(p.first) > kPolyMaxCoord || std::abs(p.second) > kPolyMaxCoord) {
+      ESP_LOGW(TAG, "poly point out of range (|x|,|y| <= %d); nothing to draw, skipped",
+               kPolyMaxCoord);
+      return false;
+    }
+  }
+
+  if (o["fill"] | true) {
+    const int width = it.get_width(), height = it.get_height();
+    int ymin = pts[0].second, ymax = pts[0].second;
+    for (const auto &p : pts) {
+      ymin = std::min(ymin, p.second);
+      ymax = std::max(ymax, p.second);
+    }
+    ymin = std::max(0, ymin);
+    ymax = std::min(height - 1, ymax);
+    if (ymin <= ymax) {
+      poly_spans(pts, ymin, ymax, width, [&](int y, int xa, int xb) {
+        it.filled_rectangle(xa, y, xb - xa + 1, 1, c.a);
+      });
+    }
+  } else {
+    const int t = o["t"] | 1;
+    const int n = static_cast<int>(pts.size());
+    for (int i = 0; i < n; i++) {
+      const auto &p0 = pts[i];
+      const auto &p1 = pts[(i + 1) % n];
+      thick_line(it, p0.first, p0.second, p1.first, p1.second, t, c.a);
+    }
+  }
+  return true;
+}
+
 inline void replace_all(std::string &s, const char *key, const std::string &val) {
   const size_t klen = strlen(key);
   size_t pos = 0;
@@ -828,7 +992,9 @@ inline bool draw_display_list(esphome::display::Display &it, const std::string &
             mix.filled_rectangle(x, y, w, h, c.a);
           }
         } else {
-          const int t = o["t"] | 1;
+          int t = o["t"] | 1;
+          if (t > kThickMax)
+            t = kThickMax;
           for (int i = 0; i < t; i++)
             mix.rectangle(x + i, y + i, w - 2 * i, h - 2 * i, c.a);
         }
@@ -917,6 +1083,12 @@ inline bool draw_display_list(esphome::display::Display &it, const std::string &
 
       } else if (!strcmp(kind, "sprite")) {
         if (!draw_sprite(it, o, palette)) {
+          skipped++;
+          continue;
+        }
+
+      } else if (!strcmp(kind, "poly")) {
+        if (!draw_poly(mix, o, c)) {
           skipped++;
           continue;
         }
