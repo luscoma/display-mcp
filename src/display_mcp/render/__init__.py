@@ -19,6 +19,7 @@ Public surface (final):
     ICONS                    {name: frozenset(size classes)} e.g. {"check": {"sm"}}
     ICON_SIZES               {size class: pixel size}
     COLORS                   the six ink names
+    OP_FIELDS                {op: {required: [...], optional: {field: default}}}
     render_hash(doc) -> str  sha256 of canonical {bg, palette, ops}, first 16 hex
     render(doc, font_dir, dithered_colors=True) -> (PIL.Image.Image, list[str])
     check(doc, font_dir) -> list[str]   problems only, no image
@@ -95,6 +96,99 @@ _NO_HASH_WARNING = (
     "no meta.hash — the panel will refresh on EVERY wake "
     "(~36 mAh/day, roughly half its battery life). Run with --stamp."
 )
+
+# Per-op field table: required fields, and optional fields with the default
+# render() uses when they're absent. One entry per op render() knows how to
+# draw; "required" is every field it reads with `op["x"]` (missing it is
+# already a KeyError today), "optional" is every field it reads with
+# `op.get("x", default)`. `op` itself is not listed — it's the dispatch key,
+# not a datum an op draws with.
+#
+# This is the table check() warns against (a field on an op that isn't
+# here, D1) and the one a later describe() tool returns verbatim, so the
+# thing that tells a caller which fields exist and the check that enforces
+# them cannot disagree. `lh`'s default of None means "computed from the
+# font size (round(size * 1.24))", not literally absent.
+OP_FIELDS: dict[str, dict[str, Any]] = {
+    "rect": {
+        "required": ("x", "y", "w", "h"),
+        "optional": {"c": "black", "fill": True, "t": 1},
+    },
+    "line": {
+        "required": ("x", "y", "x2", "y2"),
+        "optional": {"c": "black", "t": 1},
+    },
+    "circle": {
+        "required": ("x", "y", "r"),
+        "optional": {"c": "black", "fill": True, "t": 1},
+    },
+    "text": {
+        "required": ("x", "y", "s"),
+        "optional": {
+            "c": "black",
+            "f": "md",
+            "a": "left",
+            "w": None,
+            "wrap": False,
+            "lines": 2,
+            "lh": None,
+        },
+    },
+    "fmt": {
+        "required": ("x", "y"),
+        "optional": {"c": "black", "f": "xs", "a": "left", "s": ""},
+    },
+    "icon": {
+        "required": ("x", "y"),
+        # `n` has no real default — an absent one already warns "'None/sm'
+        # is not compiled in" — but render() reads it with `.get()`, not a
+        # subscript, so it lists here rather than in `required`. `bgc` is
+        # the one field listed that render() never reads: docs/SPEC.md says
+        # it is accepted and ignored (every compiled icon is chroma-keyed,
+        # so its off pixels are skipped), and a caller who writes it must
+        # not be told it is unknown.
+        "optional": {"c": "black", "n": None, "z": "sm", "bgc": None},
+    },
+}
+
+# The report's whole "mixes don't render" section, in one sentence: `c2`
+# and `mix` are fields of a *palette entry*, not of an op, and a `c` that
+# is an object instead of a name is the same mistake written inline. Both
+# get this exact message (docs/plans/dragon-feedback.md, D1).
+_MIX_HINT = (
+    'mixes are palette entries — write palette: {name: {c, c2, mix}} and '
+    'c: name (docs/SPEC.md "Mixes")'
+)
+
+
+def _op_field_problems(op: dict[str, Any], kind: str | None, where: str) -> list[str]:
+    """Warn on every key an op carries that isn't `op` and isn't in its
+    field table (D1). Unknown ops get no field noise here — the single
+    "unknown op" problem from render()'s dispatch is enough, and this
+    returns [] for any kind not in OP_FIELDS.
+
+    `c2`/`mix` are special-cased to one palette hint instead of two
+    "no such field" warnings, because that's the actual authoring mistake
+    the table exists to catch — and it is left to Ctx.ink() when `c` is
+    itself an object, so the same op never carries the hint twice.
+
+    `kind` comes straight from JSON and may not be a string; a dict there
+    used to raise out of the table lookup, which is the failure D1 exists
+    to remove.
+    """
+    spec = OP_FIELDS.get(kind) if isinstance(kind, str) else None
+    if spec is None:
+        return []
+    known = set(spec["required"]) | set(spec["optional"])
+    stray_mix = {"c2", "mix"} & op.keys()
+    problems = [
+        f"{where}: no such field {key!r}"
+        for key in op
+        if key != "op" and key not in stray_mix and key not in known
+    ]
+    if stray_mix and not isinstance(op.get("c"), dict):
+        problems.append(f"{where}: {_MIX_HINT}")
+    return problems
 
 
 def _font_path(font_dir: Path, bold: bool) -> Path:
@@ -308,11 +402,18 @@ def _grounds(img: Image.Image, box: tuple) -> list[tuple[tuple[float, ...], Coun
 
 class Ctx:
     def __init__(self, doc: dict[str, Any], font_dir: Path, warn_ink: bool = False):
-        self.palette = doc.get("palette") or {}
+        palette = doc.get("palette") or {}
+        self.problems: list[str] = []
+        if not isinstance(palette, dict):
+            # Never raise from a shape the JSON allows: a palette that is
+            # not an object is ignored, with a problem, and every name then
+            # resolves as if the document had none.
+            self.problems.append(f"palette: must be an object, not {type(palette).__name__}")
+            palette = {}
+        self.palette = palette
         self.table = INK
         self.table_rev = {v: k for k, v in self.table.items()}
         self.fonts = _load_fonts(Path(font_dir))
-        self.problems: list[str] = []
         # The three ink-mixing authoring warnings (contrast floor, chromatic
         # mix as text, sub-2px density) are check()-only, the same way
         # bezel_problems() is check()-only — render() on its own reports
@@ -349,9 +450,27 @@ class Ctx:
         are immutable and a document can shadow a built-in one by declaring
         it. Every malformed case warns and still yields something drawable;
         nothing here skips an op.
+
+        `name` is meant to be a string; a document that writes an inline
+        `{c, c2, mix}` object where a colour *name* belongs — the report's
+        actual mistake — used to raise `TypeError: unhashable type: 'dict'`
+        here instead of warning, because a dict can't be looked up in
+        `self.table`. Any non-string is now caught before that lookup: a
+        dict gets the same palette hint `c2`/`mix`-on-an-op gets (D1), and
+        anything else falls back to the ordinary "unknown colour" message.
+        Either way this returns black rather than raising.
         """
+        black = self.table["black"]
+        if isinstance(name, dict):
+            self.problems.append(f"{where}: {_MIX_HINT}")
+            return Ink(black, black, 100)
+        if not isinstance(name, str):
+            self.problems.append(f"{where}: unknown colour {name!r}")
+            return Ink(black, black, 100)
         n = name
         for _ in range(8):
+            if not isinstance(n, str):
+                break  # an alias that lands on a list/number: unknown, below
             if n in self.table:
                 return Ink(self.table[n], self.table[n], 100)
             entry = self.palette.get(n)
@@ -365,7 +484,6 @@ class Ctx:
                 return self._mix(entry, n, where)
             n = entry
         self.problems.append(f"{where}: unknown colour {n!r}")
-        black = self.table["black"]
         return Ink(black, black, 100)
 
     def _mix(self, entry: dict[str, Any], name: str, where: str) -> Ink:
@@ -389,6 +507,8 @@ class Ctx:
         a nested one warns and contributes only its own base colour."""
         n = name
         for _ in range(8):
+            if not isinstance(n, str):
+                break
             if n in self.table:
                 return self.table[n]
             entry = self.palette.get(n)
@@ -433,6 +553,8 @@ class Ctx:
         # to black with a problem instead of hanging.
         n = name
         for _ in range(8):
+            if not isinstance(n, str):
+                break
             if n in self.table:
                 return self.table[n]
             nxt = self.palette.get(n)
@@ -946,8 +1068,14 @@ def render(
     fields = system_fields(doc, now)
 
     for i, op in enumerate(doc.get("ops", [])):
+        if not isinstance(op, dict):
+            # Matches the firmware, whose `for (JsonObject o : ops)` yields
+            # a null object for a non-object element and draws nothing.
+            ctx.problems.append(f"ops[{i}]: not an object, skipped")
+            continue
         where = f"ops[{i}] {op.get('op', '?')}"
         kind = op.get("op")
+        ctx.problems.extend(_op_field_problems(op, kind, where))
         ink = ctx.ink(op.get("c", "black"), where)
 
         if kind == "rect":
@@ -1083,7 +1211,7 @@ def bezel_problems(doc: dict[str, Any]) -> list[str]:
     """
     out: list[str] = []
     for i, op in enumerate(doc.get("ops") or []):
-        kind = op.get("op")
+        kind = op.get("op") if isinstance(op, dict) else None
         if kind not in ("text", "fmt", "icon"):
             continue
         x, y = op.get("x"), op.get("y")

@@ -229,7 +229,10 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
 
         Returns the hash `set_display` would stamp, the op count, the
         minified byte size, and every renderer warning. What is actually
-        checked: unknown op/font/icon/colour name; a malformed mix entry
+        checked: unknown op/font/icon/colour name; a field an op does not
+        have (e.g. `c2`/`mix` written directly on an op — those are fields
+        of a *palette* entry, not an op: write `palette: {name: {c, c2,
+        mix}}` and `c: name` on the op instead); a malformed palette entry
         (missing `c`/`c2`, `c2` equal to `c`, a `mix` outside 25/50/75);
         an op placed off-canvas (`x`/`y`, and `x+w`/`y+h` for a rect,
         `x2`/`y2` for a line); a `text`, `fmt` or `icon` op anchored inside

@@ -497,10 +497,11 @@ def test_fmt_unknown_font_skips_before_field_expansion(font_dir):
     assert problems == ["ops[0] fmt: unknown font 'huge'"]
 
 
-def test_stale_tone_key_is_ignored_and_draws_full_ink(font_dir):
+def test_stale_tone_key_warns_and_draws_full_ink(font_dir):
     """`tone` no longer exists. An op that still carries the key draws at
-    full ink, silently — no warning, and no different from the same op
-    without the key."""
+    full ink — same pixels as the same op without the key — but under D1
+    the stray key is now an unknown-field warning rather than a silent
+    pass."""
     full = {"bg": "white", "ops": [{"op": "text", "x": 20, "y": 1550, "s": "Rendered", "f": "xs"}]}
     with_stale_tone = {
         "bg": "white",
@@ -508,13 +509,128 @@ def test_stale_tone_key_is_ignored_and_draws_full_ink(font_dir):
     }
     img_full, p1 = render(full, font_dir)
     img_stale, p2 = render(with_stale_tone, font_dir)
-    assert p1 == [] and p2 == []
+    assert p1 == []
+    assert p2 == ["ops[0] text: no such field 'tone'"]
     assert img_full.tobytes() == img_stale.tobytes()
 
 
 def test_hash_op_is_gone(font_dir):
     _, problems = render({"bg": "white", "ops": [{"op": "hash", "x": 1, "y": 1}]}, font_dir)
     assert any("unknown op 'hash'" in p for p in problems)
+
+
+def test_unknown_op_has_no_field_noise(font_dir):
+    """An unknown op gets its one "unknown op" problem and nothing else —
+    OP_FIELDS is never consulted for a kind it doesn't cover."""
+    doc = {"bg": "white", "ops": [{"op": "hash", "x": 1, "y": 1, "bogus": True}]}
+    _, problems = render(doc, font_dir)
+    assert problems == ["ops[0] hash: unknown op 'hash'"]
+
+
+# --------------------------------------------------------------------------
+# D1: op-level field validation (docs/plans/dragon-feedback.md)
+#
+# The report wrote c2/mix directly on an op and never saw a warning; the
+# renderer silently read only `c`. These pin the fix: any field an op does
+# not have is now a problem, c2/mix on an op points at the palette instead
+# of the document, and a dict where `c` belongs warns and draws black
+# rather than raising.
+# --------------------------------------------------------------------------
+
+
+def test_unknown_field_on_rect_warns(font_dir):
+    doc = {"bg": "white", "ops": [{"op": "rect", "x": 0, "y": 0, "w": 10, "h": 10, "nonsense": 1}]}
+    _, problems = render(doc, font_dir)
+    assert problems == ["ops[0] rect: no such field 'nonsense'"]
+
+
+def test_typo_field_colour_warns(font_dir):
+    doc = {
+        "bg": "white",
+        "ops": [{"op": "text", "x": 20, "y": 100, "s": "hi", "f": "sm", "colour": "red"}],
+    }
+    _, problems = render(doc, font_dir)
+    assert problems == ["ops[0] text: no such field 'colour'"]
+
+
+def test_c2_and_mix_on_an_op_point_at_the_palette_and_draw_unchanged(font_dir):
+    with_stray_mix = {
+        "bg": "white",
+        "ops": [
+            {
+                "op": "rect",
+                "x": 0,
+                "y": 0,
+                "w": 10,
+                "h": 10,
+                "c": "red",
+                "c2": "yellow",
+                "mix": 50,
+            }
+        ],
+    }
+    solid = {
+        "bg": "white",
+        "ops": [{"op": "rect", "x": 0, "y": 0, "w": 10, "h": 10, "c": "red"}],
+    }
+    img_mix, problems = render(with_stray_mix, font_dir)
+    img_solid, _ = render(solid, font_dir)
+    assert problems == [
+        'ops[0] rect: mixes are palette entries — write palette: {name: {c, c2, mix}} '
+        'and c: name (docs/SPEC.md "Mixes")'
+    ]
+    # One warning covers both stray keys, not two.
+    assert img_mix.tobytes() == img_solid.tobytes()
+
+
+def test_dict_in_c_warns_and_draws_black_instead_of_raising(font_dir):
+    """Reproduces the report's TypeError (Ctx.ink() hashing a dict) and
+    pins the fix: warn with the same palette hint, draw black."""
+    doc = {
+        "bg": "white",
+        "ops": [
+            {
+                "op": "rect",
+                "x": 0,
+                "y": 0,
+                "w": 10,
+                "h": 10,
+                "c": {"c": "red", "c2": "yellow", "mix": 50},
+            }
+        ],
+    }
+    img, problems = render(doc, font_dir)  # must not raise
+    black = {"bg": "white", "ops": [{"op": "rect", "x": 0, "y": 0, "w": 10, "h": 10, "c": "black"}]}
+    img_black, _ = render(black, font_dir)
+    assert problems == [
+        'ops[0] rect: mixes are palette entries — write palette: {name: {c, c2, mix}} '
+        'and c: name (docs/SPEC.md "Mixes")'
+    ]
+    assert img.tobytes() == img_black.tobytes()
+
+
+def test_sample_stays_clean_under_op_field_check(sample_doc, font_dir):
+    assert check(sample_doc, font_dir) == []
+
+
+def test_op_field_table_covers_every_op_the_renderer_handles():
+    """OP_FIELDS has exactly one entry per op render() dispatches on, and
+    every field named in the module docstring's audit is present."""
+    from display_mcp.render import OP_FIELDS
+
+    assert set(OP_FIELDS) == {"rect", "line", "circle", "text", "fmt", "icon"}
+    audited = {
+        "rect": {"x", "y", "w", "h", "c", "fill", "t"},
+        "line": {"x", "y", "x2", "y2", "c", "t"},
+        "circle": {"x", "y", "r", "c", "fill", "t"},
+        "text": {"x", "y", "s", "c", "f", "a", "w", "wrap", "lines", "lh"},
+        "fmt": {"x", "y", "s", "c", "f", "a"},
+        "icon": {"x", "y", "n", "z", "c", "bgc"},
+    }
+    for kind, expected in audited.items():
+        spec = OP_FIELDS[kind]
+        fields = set(spec["required"]) | set(spec["optional"])
+        assert fields == expected, kind
 
 
 # --------------------------------------------------------------------------
@@ -1527,3 +1643,64 @@ def test_render_no_longer_exposes_the_ideal_table(font_dir):
     import display_mcp.render as mod
 
     assert not hasattr(mod, "IDEAL")
+
+
+# ---- the D1 rule, "warn and draw, never raise", at every JSON shape --------
+#
+# The first cut of D1 caught a dict in `c` and then raised one field to the
+# left of it: a dict in `op` crashed the table lookup. These pin every
+# non-string shape a document can put where the renderer expects a name or
+# an object, so validate/preview report a problem instead of failing.
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [{"c": "red", "c2": "yellow", "mix": 50}, ["rect"], 7, None],
+    ids=["dict", "list", "int", "null"],
+)
+def test_non_string_op_kind_warns_and_does_not_raise(font_dir, kind):
+    doc = {"v": 1, "bg": "white", "ops": [{"op": kind, "x": 0, "y": 0, "w": 10, "h": 10}]}
+    problems = check(doc, font_dir)
+    assert len(problems) == 1 and "unknown op" in problems[0]
+
+
+def test_list_valued_palette_entry_warns_and_draws_black(font_dir):
+    doc = {
+        "v": 1,
+        "bg": "white",
+        "palette": {"f": ["red"], "g": "h", "h": [1]},
+        "ops": [
+            {"op": "rect", "x": 0, "y": 0, "w": 10, "h": 10, "c": "f"},
+            {"op": "rect", "x": 20, "y": 0, "w": 10, "h": 10, "c": "g"},
+        ],
+    }
+    img, problems = render(doc, font_dir)
+    assert [p for p in problems if "unknown colour" in p] == [
+        "ops[0] rect: unknown colour ['red']",
+        "ops[1] rect: unknown colour [1]",
+    ]
+    assert img.getpixel((5, 5)) == INK["black"]
+
+
+def test_palette_that_is_not_an_object_is_ignored_with_a_problem(font_dir):
+    doc = {"v": 1, "bg": "white", "palette": ["red"], "ops": [
+        {"op": "rect", "x": 0, "y": 0, "w": 10, "h": 10, "c": "navy"}]}
+    img, problems = render(doc, font_dir)
+    assert problems == ["palette: must be an object, not list"]
+    assert img.getpixel((0, 0)) in (INK["black"], INK["blue"])  # navy still resolves
+
+
+def test_op_that_is_not_an_object_is_skipped_with_a_problem(font_dir):
+    doc = {"v": 1, "bg": "white", "ops": ["rect", None, {"op": "text", "x": 5, "y": 5, "s": "hi"}]}
+    problems = check(doc, font_dir)
+    assert problems[:2] == ["ops[0]: not an object, skipped", "ops[1]: not an object, skipped"]
+    assert all("ops[2]" not in p or "bezel" in p for p in problems[2:])
+
+
+def test_mix_hint_appears_once_when_c_is_an_object_and_c2_mix_are_also_present(font_dir):
+    """The dragon's own shape, both mistakes at once: one hint, not two."""
+    doc = {"v": 1, "bg": "white", "ops": [{
+        "op": "rect", "x": 0, "y": 0, "w": 10, "h": 10,
+        "c": {"c": "red", "c2": "yellow", "mix": 50}, "c2": "yellow", "mix": 50}]}
+    problems = check(doc, font_dir)
+    assert sum("mixes are palette entries" in p for p in problems) == 1
