@@ -132,9 +132,9 @@ preview beats publishing three times).
 
 | Tool | Args | Returns |
 |---|---|---|
-| `set_display` | `document`, `name="default"` | `{name, hash, etag, ops, bytes, warnings}` |
-| `preview` | `document?`, `name="default"`, `dithered_colors=False` | PNG **and** a text block: a note on how colour was rendered, then `check()`'s warnings. No document → what is published; with one → render the draft, publish nothing |
-| `validate` | `document` | `{hash, ops, bytes, warnings}` |
+| `set_display` | `document` (dict or JSON string), `name="default"` | `{name, hash, etag, ops, bytes, warnings}` |
+| `preview` | `document?` (dict or JSON string), `name="default"`, `dithered_colors=False` | PNG **and** a text block: a note on how colour was rendered, then `check()`'s warnings. No document → what is published; with one → render the draft, publish nothing |
+| `validate` | `document` (dict or JSON string) | `{hash, ops, bytes, warnings}` |
 | `get_display` | `name="default"` | the published document, or an error if none |
 | `status` | `name?` | one display, or all: `{published, hash, ops, bytes, published_at, first_fetch_at, recent_fetch_at, recent_fetch_status, recent_fetch_ip}`; timestamps are ISO 8601 plus a matching `*_ago` string |
 | `clear_display` | `name="default"` | `{name, cleared}` |

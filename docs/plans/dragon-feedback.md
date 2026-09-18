@@ -95,6 +95,18 @@ was a string and where parsing stopped. The report's Pydantic error is the
 SDK's, not ours, and it reads as a schema bug; this turns it into the
 sentence the caller needed.
 
+Found in review (2026-09-18): the SDK does part of this itself. Any string
+argument whose annotation is not plain `str` is JSON-decoded before the
+tool runs, and an object is handed over as a dict — so the common case
+never reaches our helper. What does reach it is a string that is not JSON,
+or one that decodes to a scalar, and those get the message above. A string
+that decodes to an array or `null` is still refused by the SDK's schema
+check with *"Input should be a valid dictionary"*. The fix for that would
+be to widen the parameter's type to include `list` and `None`, which would
+make every client's view of the schema say a document may be a list. That
+is a worse lie than the message it replaces, so it stays as it is; the
+Pydantic sentence names the problem well enough.
+
 ### D3. `describe()` and `guide()` tools
 
 `describe()` returns one static JSON object, built from the renderer's own
@@ -367,6 +379,15 @@ others — the kind of half-rule this project has been removing. Mirror is on
 `sprite` (D9), where it is a string reverse. An offset-only `group` is a
 small, honest feature and can be added if hand-placed clusters turn out to
 hurt; nothing here depends on it.
+
+### Noted in passing: circle `t` is honoured by the preview and ignored by the panel
+
+Review of A1 found that `render()` draws an unfilled `circle` with its
+`t`, while `display_list.h` calls `mix.circle(x, y, r, c.a)` and drops it,
+so a thick circle outline previews thick and draws 1 px on the wall.
+SPEC.md lists `t` on `circle`, so the firmware is the one out of line. It
+is a two-line loop in the header (concentric circles, as the rect outline
+does) and rides Phase B's flash; recorded here so it is not lost.
 
 ### D14. The document version stays at 1
 

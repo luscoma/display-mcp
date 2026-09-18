@@ -265,6 +265,104 @@ async def test_clear_display_already_absent(mcp):
     assert result.structured_content == {"name": "ghost", "cleared": False}
 
 
+# ---- document may arrive as a JSON string ----------------------------
+#
+# Some MCP clients serialize an object-typed argument to a string before
+# sending it rather than nesting it as JSON. Two layers handle that. The
+# SDK itself pre-parses any string argument whose annotation is not plain
+# `str` and, when it decodes to an object, hands the tool a dict — so the
+# three round-trip tests below pin that an object-as-string reaches the
+# tool at all and produces the same result, not that our helper parsed it.
+# A string the SDK leaves alone (one that decodes to a scalar, or does not
+# decode) is what reaches `_coerce_document`; those paths are pinned by
+# the error tests and the direct unit test further down. A string that
+# decodes to an array or null is rejected by the SDK's own validation
+# before the tool runs ("Input should be a valid dictionary") — see
+# docs/plans/dragon-feedback.md D2 for why that is left as it is.
+
+
+async def test_tool_schema_still_accepts_a_plain_dict(mcp):
+    """The `document` parameter's declared type widened to dict | str; a
+    plain object is still valid input, not narrowed to string-only."""
+    async with Client(mcp) as c:
+        tools = (await c.list_tools()).tools
+    schema = {t.name: t.input_schema for t in tools}["set_display"]
+    variants = schema["properties"]["document"]["anyOf"]
+    assert {"object", "string"} == {v["type"] for v in variants}
+
+
+async def test_set_display_json_string_round_trips_to_the_same_hash(mcp, store, sample_doc):
+    as_string = json.dumps(sample_doc)
+    async with Client(mcp) as c:
+        from_dict = await c.call_tool("set_display", {"document": sample_doc, "name": "a"})
+        from_string = await c.call_tool("set_display", {"document": as_string, "name": "b"})
+    assert from_dict.is_error is not True
+    assert from_string.is_error is not True
+    assert from_dict.structured_content["hash"] == from_string.structured_content["hash"]
+
+
+async def test_validate_json_string_round_trips_to_the_same_hash(mcp, sample_doc):
+    as_string = json.dumps(sample_doc)
+    async with Client(mcp) as c:
+        from_dict = await c.call_tool("validate", {"document": sample_doc})
+        from_string = await c.call_tool("validate", {"document": as_string})
+    assert from_dict.is_error is not True
+    assert from_string.is_error is not True
+    assert from_dict.structured_content == from_string.structured_content
+
+
+async def test_preview_json_string_round_trips(mcp, sample_doc):
+    as_string = json.dumps(sample_doc)
+    async with Client(mcp) as c:
+        from_dict = await c.call_tool("preview", {"document": sample_doc})
+        from_string = await c.call_tool("preview", {"document": as_string})
+    assert from_dict.is_error is not True
+    assert from_string.is_error is not True
+    assert from_dict.content[1].text == from_string.content[1].text
+
+
+async def test_bad_json_string_document_is_a_tool_error_naming_the_position(mcp):
+    async with Client(mcp) as c:
+        result = await c.call_tool("set_display", {"document": '{"bg": "white", "ops": [}'})
+    assert result.is_error is True
+    text = _text_of(result) or ""
+    assert "document arrived as a string" in text
+    assert "line 1 column 25" in text
+
+
+async def test_non_object_json_string_document_is_a_tool_error(mcp):
+    """A JSON string that parses to a bare scalar (not an object). A JSON
+    array is covered directly against `_coerce_document` below instead: the
+    SDK's own argument pre-parsing (func_metadata.pre_parse_json) turns a
+    string that decodes to a list or dict into that value *before* the tool
+    body runs, so it never reaches `_coerce_document` as a string over this
+    path — a scalar is the one shape that pre-parsing deliberately leaves
+    as a string (its own docstring: `"hello"` should stay `"hello"`, not
+    become `hello`)."""
+    async with Client(mcp) as c:
+        result = await c.call_tool("validate", {"document": "42"})
+    assert result.is_error is True
+    text = _text_of(result) or ""
+    assert "document arrived as a string" in text
+    assert "parsed to int" in text
+
+
+def test_coerce_document_handles_every_shape():
+    """Direct unit coverage of `_coerce_document`, independent of the MCP
+    SDK's own argument pre-parsing — including the JSON-array case that
+    pre-parsing intercepts before it ever reaches this function when called
+    through a real tool invocation."""
+    doc = {"bg": "white", "ops": []}
+    assert mcp_server._coerce_document(doc) is doc
+    assert mcp_server._coerce_document(json.dumps(doc)) == doc
+
+    with pytest.raises(mcp_server.ToolError, match="document arrived as a string"):
+        mcp_server._coerce_document('{"bg": "white", "ops": [}')
+
+    with pytest.raises(mcp_server.ToolError, match="parsed to list"):
+        mcp_server._coerce_document("[1, 2, 3]")
+
+
 # ---- errors -----------------------------------------------------------
 
 

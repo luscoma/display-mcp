@@ -86,6 +86,34 @@ def _sample_text() -> str:
     return _read_repo_or_bundled(repo_sample, _PROMPTS_DIR / "sample.json")
 
 
+def _coerce_document(document: dict[str, Any] | str) -> dict[str, Any]:
+    """Accept a document as a plain object or as a JSON string.
+
+    Some MCP clients serialize an object-typed tool argument to a string
+    before sending it rather than nesting it as JSON (the dragon session's
+    report, "5a"); the SDK's own reaction to that is a schema-validation
+    error that reads as a bug in the tool rather than a hint about what to
+    fix. A dict passes through untouched. A string is parsed with
+    `json.loads`; a parse failure names where parsing stopped, and a value
+    that parses but isn't a JSON object is named as what it actually is.
+    """
+    if isinstance(document, dict):
+        return document
+    try:
+        parsed = json.loads(document)
+    except json.JSONDecodeError as exc:
+        raise ToolError(
+            f"document arrived as a string and failed to parse as JSON at "
+            f"line {exc.lineno} column {exc.colno} (char {exc.pos}): {exc.msg}"
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise ToolError(
+            "document arrived as a string and parsed to "
+            f"{type(parsed).__name__}, not a JSON object"
+        )
+    return parsed
+
+
 def _ago(ts: float | None) -> str | None:
     """Port of epaper_server.py's `ago()`: "3m ago" / "2h ago" / None."""
     if not ts:
@@ -129,8 +157,11 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
             open_world_hint=False,
         )
     )
-    def set_display(document: dict[str, Any], name: str = "default") -> dict[str, Any]:
+    def set_display(document: dict[str, Any] | str, name: str = "default") -> dict[str, Any]:
         """Publish a display-list document so the panel serves it on its next fetch.
+
+        `document` is the document object, or a JSON string that parses to
+        one — some clients send object arguments that way.
 
         `name` must match `^[a-z0-9-]{1,32}$` — lowercase letters, digits
         and hyphens, 1 to 32 characters. The panel wakes roughly once an
@@ -148,7 +179,7 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
         """
         try:
             validate_name(name)
-            result = store.publish(document, name=name)
+            result = store.publish(_coerce_document(document), name=name)
         except DisplayError as exc:
             raise ToolError(str(exc)) from exc
         return {
@@ -169,7 +200,7 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
         )
     )
     def preview(
-        document: dict[str, Any] | None = None,
+        document: dict[str, Any] | str | None = None,
         name: str = "default",
         dithered_colors: bool = False,
     ) -> list[ContentBlock]:
@@ -177,12 +208,13 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
         Publishes nothing.
 
         Omit `document` to see what is currently published under `name`; pass
-        a draft to check it before spending a `set_display` call on it — a
-        wasted publish either changes nothing (same hash) or forces the panel
-        into a ~1.5 mAh redraw versus the ~0.15 mAh a 304 would have cost, so
-        drafting here first is the cheap step. Colours are ink-approximated:
-        this is roughly what the Spectra 6 glass shows, not the pure RGB the
-        driver writes.
+        a draft (an object, or a JSON string that parses to one) to check it
+        before spending a `set_display` call on it — a wasted publish either
+        changes nothing (same hash) or forces the panel into a ~1.5 mAh
+        redraw versus the ~0.15 mAh a 304 would have cost, so drafting here
+        first is the cheap step. Colours are ink-approximated: this is
+        roughly what the Spectra 6 glass shows, not the pure RGB the driver
+        writes.
 
         Each mix is drawn as the single colour it averages to — the hex in
         the named-palette table — rather than as the 1 px checkerboard of two
@@ -194,7 +226,7 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
         """
         try:
             validate_name(name)
-            doc = store.get(name).doc if document is None else document
+            doc = store.get(name).doc if document is None else _coerce_document(document)
         except DisplayError as exc:
             raise ToolError(str(exc)) from exc
         image, _problems = render.render(doc, settings.font_dir, dithered_colors=dithered_colors)
@@ -224,8 +256,11 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
             open_world_hint=False,
         )
     )
-    def validate(document: dict[str, Any]) -> dict[str, Any]:
+    def validate(document: dict[str, Any] | str) -> dict[str, Any]:
         """Check a draft document. Nothing is rendered to an image, published, or stored.
+
+        `document` is the document object, or a JSON string that parses to
+        one — some clients send object arguments that way.
 
         Returns the hash `set_display` would stamp, the op count, the
         minified byte size, and every renderer warning. What is actually
@@ -253,11 +288,12 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
         fixing — run this (or `preview`) before every `set_display` rather
         than finding out from the panel a fetch later.
         """
-        problems = render.check(document, settings.font_dir)
-        op_count = len(document.get("ops") or [])
-        body = json.dumps(document, separators=(",", ":")).encode("utf-8")
+        doc = _coerce_document(document)
+        problems = render.check(doc, settings.font_dir)
+        op_count = len(doc.get("ops") or [])
+        body = json.dumps(doc, separators=(",", ":")).encode("utf-8")
         return {
-            "hash": render.render_hash(document),
+            "hash": render.render_hash(doc),
             "ops": op_count,
             "bytes": len(body),
             "warnings": problems,
