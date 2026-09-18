@@ -389,7 +389,7 @@ def test_rect_corner_pixel_is_ground_for_r_at_least_2(font_dir):
 
 def test_rect_r_larger_than_half_warns_and_clamps(font_dir):
     x, y, w, h = 50, 60, 40, 100
-    max_r = max(0, (min(w, h) - 1) // 2)  # 19, not 20 -- see R1 below
+    max_r = max(0, (min(w, h) - 1) // 2)  # 19, not 20 -- see the sweep test below
     img, problems = render(_rounded_rect_doc(r=100, x=x, y=y, w=w, h=h), font_dir)
     clamped, _ = render(_rounded_rect_doc(r=max_r, x=x, y=y, w=w, h=h), font_dir)
     assert any(f"clamped to {max_r}" in p for p in problems), problems
@@ -397,9 +397,9 @@ def test_rect_r_larger_than_half_warns_and_clamps(font_dir):
 
 
 def test_rect_radius_sweep_stays_within_the_box(font_dir):
-    """R1 (blocker): a corner disc is `2r + 1` px across, so the old
-    `min(w, h) // 2` bound let `r` at its own max ink one row/column past
-    the nominal box on *both* sides, on an even `w` or `h` -- e.g. `w == 40`:
+    """A corner disc is `2r + 1` px across, so `min(w, h) // 2` would let
+    `r` at its own max ink one row/column past the nominal box on *both*
+    sides, on an even `w` or `h` -- e.g. `w == 40`:
     a corner circle of `r == 20` is centred at `x + 20` and spans
     `[x, x + 40]`, one column wider than the box's own `[x, x + 39]`.
     `(min(w, h) - 1) // 2` is the actual safe bound (odd dimensions are
@@ -464,7 +464,7 @@ def test_rect_negative_r_warns_and_is_treated_as_zero(font_dir):
 
 
 def test_rect_mixed_rounded_fill_dithers_with_absolute_phase(font_dir):
-    """R4: what this actually pins is the rounded rect's *middle band* —
+    """What this pins is the rounded rect's *middle band* —
     the columns outside both corners' own radii, where the seven-shape
     construction draws a plain rectangle rather than a circle — against a
     plain, unrounded rect's fill of the same box and colour, pixel for
@@ -581,11 +581,11 @@ def test_unknown_font_is_one_problem_no_raise(font_dir):
 
 
 def test_unknown_font_skips_the_op_nothing_drawn(font_dir):
-    """Finding 1: the firmware's `text`/`fmt` branches `skipped++; continue`
-    on an unknown font — nothing is drawn on the panel. The renderer used to
-    warn and still draw with the `md` fallback, which meant the preview
-    showed text the wall never would. It must now abandon the op cleanly:
-    the warning stays, but the canvas is untouched."""
+    """The firmware's `text`/`fmt` branches `skipped++; continue` on an
+    unknown font — nothing is drawn on the panel. The renderer must abandon
+    the op the same way, not warn and still draw with the `md` fallback,
+    which would show text on the preview the wall never draws: the warning
+    stays, but the canvas is untouched."""
     doc = {
         "bg": "white",
         "ops": [{"op": "text", "x": 100, "y": 100, "s": "hi", "f": "huge"}],
@@ -713,7 +713,7 @@ def test_fonts_available_requires_mono_too(tmp_path):
 
 
 def test_mono_ink_height_matches_a_measured_block_glyph(font_dir):
-    """F1: `ink_height` is measured, not derived from `cell_height` — render
+    """`ink_height` is measured, not derived from `cell_height` — render
     a full-height glyph (`█`) bilevel, the same target FreeType's mono
     rasterising uses on the panel, and count the rows with any ink at all.
     31, not `cell_height`'s 33 (ascent + descent, which is headroom no
@@ -793,7 +793,7 @@ def _ink_runs(ys: list[int]) -> list[tuple[int, int]]:
 
 
 def test_mono_stacked_bars_leave_a_hairline_seam_at_cell_height(font_dir):
-    """F1: `cell_height` (33) is ascent + descent, not a glyph's own ink
+    """`cell_height` (33) is ascent + descent, not a glyph's own ink
     extent, so it is *not* the pitch that makes block art meet — two `│`
     ops stacked that far apart tile as two distinct runs of ink with a 2px
     hairline gap between them, not one merged run and not a true meeting
@@ -827,7 +827,7 @@ def test_mono_stacked_bars_leave_a_hairline_seam_at_cell_height(font_dir):
 
 
 def test_mono_stacked_bars_meet_seamlessly_at_ink_height(font_dir):
-    """F1's fix, and the contrast to the hairline-seam test above: stacking
+    """The contrast to the hairline-seam test above: stacking
     by `ink_height` (31), not `cell_height` (33), is the pitch that makes
     consecutive block-art rows meet exactly — the two bars' ink merges into
     a single contiguous run, touching with no gap and no overlap."""
@@ -954,11 +954,9 @@ def test_fmt_unknown_field_is_a_warning(font_dir):
 
 
 def test_fmt_unknown_font_skips_before_field_expansion(font_dir):
-    """Finding 1: firmware checks the font first and never reaches
-    expand_fmt() when it's bad, so a `fmt` op with both an unknown font and
-    an unknown field warns about the font only — the same op-abandonment as
-    `text`. (Previously this warned about both, because the renderer kept
-    going past the bad font with the `md` fallback; that was the bug.)"""
+    """The firmware checks the font first and never reaches expand_fmt()
+    when it's bad, so a `fmt` op with both an unknown font and an unknown
+    field warns about the font only — the same op-abandonment as `text`."""
     doc = {"bg": "white", "ops": [{"op": "fmt", "x": 20, "y": 1550, "s": "{nope}", "f": "huge"}]}
     _, problems = render(doc, font_dir)
     assert problems == ["ops[0] fmt: unknown font 'huge'"]
@@ -1273,13 +1271,13 @@ def test_document_colors_includes_sprite_palette_values():
     assert set(colors) == {"white", "black", "flame"}
 
 
-# ---- F1-F9: review fixes on top of B1 (docs/plans/dragon-feedback.md) ----
+# ---- sprite: further per-character and per-op edge cases ----
 
 
 def test_sprite_non_ascii_row_draws_one_cell_per_character(font_dir):
-    """F1: Python strings already walk by codepoint, so `"█▄█"` is three
-    cells, not the nine bytes UTF-8 encodes them as — the same rule F1
-    made the firmware's C++ follow too (tests/test_firmware_parity.py)."""
+    """Python strings already walk by codepoint, so `"█▄█"` is three
+    cells, not the nine bytes UTF-8 encodes them as — the same rule the
+    firmware's C++ follows too (tests/test_firmware_parity.py)."""
     doc = _sprite_doc(cell=10, palette={"█": "black", "▄": "red"}, rows=["█▄█"])
     img, problems = render(doc, font_dir)
     assert problems == []
@@ -1293,7 +1291,7 @@ def test_sprite_non_ascii_row_draws_one_cell_per_character(font_dir):
 
 
 def test_sprite_two_character_palette_key_warns_and_is_ignored(font_dir):
-    """F2: a palette key that isn't exactly one character can't identify a
+    """A palette key that isn't exactly one character can't identify a
     cell, so it's dropped with a warning; a row that uses it then hits the
     ordinary unknown-character path."""
     doc = _sprite_doc(palette={"KK": "red"}, rows=["K"])
@@ -1306,7 +1304,7 @@ def test_sprite_two_character_palette_key_warns_and_is_ignored(font_dir):
 
 
 def test_sprite_mixed_rows_type_skips_whole_op(font_dir):
-    """F3: any non-string element in `rows` skips the whole op, same as
+    """Any non-string element in `rows` skips the whole op, same as
     `rows` not being a list of strings at all."""
     doc = _sprite_doc(rows=["KK", 5])
     img, problems = render(doc, font_dir)
@@ -1317,7 +1315,7 @@ def test_sprite_mixed_rows_type_skips_whole_op(font_dir):
 
 
 def test_sprite_mirror_other_than_x_warns_and_is_not_mirrored(font_dir):
-    """F4: `"x"` is the only legal `mirror` value; anything else warns and
+    """`"x"` is the only legal `mirror` value; anything else warns and
     draws exactly as if `mirror` had been omitted."""
     plain, _ = render(_sprite_doc(), font_dir)
     warned, problems = render(_sprite_doc(mirror="y"), font_dir)
@@ -1328,7 +1326,7 @@ def test_sprite_mirror_other_than_x_warns_and_is_not_mirrored(font_dir):
 
 
 def test_sprite_oversized_cell_warns_with_the_bound_and_draws_nothing(font_dir):
-    """F7: both renderers have to agree on what's too big to be sane, not
+    """Both renderers have to agree on what's too big to be sane, not
     just what overflows int arithmetic — the message states the bound so
     the two tables (here and in draw_sprite()) can't silently drift."""
     doc = _sprite_doc(cell=WIDTH + HEIGHT)
@@ -1341,7 +1339,7 @@ def test_sprite_oversized_cell_warns_with_the_bound_and_draws_nothing(font_dir):
 
 
 def test_sprite_drew_nothing_warns_when_the_grid_matches_its_ground(font_dir):
-    """F8: like text/fmt/icon, a sprite that paints nothing visibly
+    """Like text/fmt/icon, a sprite that paints nothing visibly
     different from what's already there is a warning, not silence —
     white-on-white here rather than a fully transparent grid, so the
     check has a box to snapshot at all."""
@@ -1355,7 +1353,7 @@ def test_sprite_drew_nothing_warns_when_the_grid_matches_its_ground(font_dir):
 
 
 def test_sprite_thin_mix_check_only_fires_for_characters_a_row_actually_uses(font_dir):
-    """F9: an unused palette entry has no cell on the grid to be thin, so
+    """An unused palette entry has no cell on the grid to be thin, so
     it must not earn the sub-2px density warning that a used one would."""
     doc = {
         "bg": "white",
@@ -1459,8 +1457,8 @@ def test_weather_night_is_a_crescent_not_a_disc():
 def test_render_emits_only_the_six_inks(sample_doc, font_dir):
     """The panel's fonts are 1 bpp, so nothing it draws is ever a blend.
 
-    Pillow anti-aliases text on an RGB image by default, which used to put
-    hundreds of impossible colours into the preview.
+    Pillow anti-aliases text on an RGB image by default, which would put
+    hundreds of impossible colours into the preview if left unguarded.
     """
     img, _ = render(sample_doc, font_dir)
     six = set(INK.values())
@@ -1554,7 +1552,8 @@ def test_mixed_bg(font_dir):
 
 
 def test_solid_colours_are_untouched_by_mixing(sample_doc, font_dir):
-    """Every document that predates mixes must render exactly as it did."""
+    """A document whose palette has no mix entries renders as flat ink,
+    untouched by the mixing machinery."""
     img, problems = render(sample_doc, font_dir)
     assert problems == []
     px = img.load()
@@ -2181,8 +2180,8 @@ def test_drew_nothing_is_check_only(font_dir):
 
 
 def test_all_ink_mixing_warnings_clean_on_the_sample(sample_doc, font_dir):
-    """samples/display.json predates ink mixing entirely (no mix in its
-    palette) — check() must stay at zero problems."""
+    """samples/display.json's palette has no mix entries — check() must
+    stay at zero problems regardless."""
     assert check(sample_doc, font_dir) == []
 
 
@@ -2368,10 +2367,10 @@ def test_ink_avg_agrees_with_the_ground_fusing_in_grounds(font_dir):
 
 
 def test_warn_ink_is_rejected_on_a_flat_canvas(font_dir):
-    """The combination has no valid caller and used to produce garbled
-    warnings — a fused blend has no ink name, so the message came out as
-    "white on ink is 3.0:1". Rejecting it is what keeps Ctx.name_of's
-    invariant true rather than merely documented."""
+    """The combination has no valid caller: a fused blend has no ink
+    name, so allowing it would produce a garbled message like
+    "white on ink is 3.0:1". Rejecting it keeps Ctx.name_of's invariant
+    true rather than merely documented."""
     with pytest.raises(ValueError, match="dithered"):
         render(_one_rect({}, "teal"), font_dir, warn_ink=True, dithered_colors=False)
 
@@ -2490,8 +2489,8 @@ def test_mix_hint_appears_once_when_c_is_an_object_and_c2_mix_are_also_present(f
 
 
 def test_ctx_with_no_font_dir_defaults_to_no_fonts_loaded():
-    """`Ctx(doc)` used to die with `TypeError` from `Path(None)`; it is now
-    a valid colour-only context."""
+    """`Ctx(doc)` with no `font_dir` is a valid colour-only context, not
+    a `TypeError` out of `Path(None)`."""
     ctx = Ctx({"bg": "white"})
     assert ctx.fonts == {}
 
@@ -2759,7 +2758,7 @@ def test_swatch_document_a_shadowed_builtin_name_still_shows_canonically(font_di
 
 
 def test_swatch_document_six_palette_entries_fit_with_no_more_line(font_dir):
-    """F1: a group small enough to fit in one row (the built-in groups'
+    """A group small enough to fit in one row (the built-in groups'
     own size) needs no truncation."""
     palette = {f"c{i}": {"c": "red", "c2": "yellow", "mix": 50} for i in range(6)}
     doc = swatch_document(palette=palette)
@@ -2771,10 +2770,10 @@ def test_swatch_document_six_palette_entries_fit_with_no_more_line(font_dir):
 
 @pytest.mark.parametrize("n", [12, 30])
 def test_swatch_document_document_palette_overflow_fits_the_page(font_dir, n):
-    """F1: the appended "document palette" group is the one group whose
+    """The appended "document palette" group is the one group whose
     size isn't fixed — 12 or 30 entries must still lay out only what fits
     `HEIGHT - BEZEL_MARGIN` and summarise the rest, rather than trip a
-    bezel warning per row the way it used to."""
+    bezel warning per row."""
     palette = {f"c{i}": {"c": "red", "c2": "yellow", "mix": 50} for i in range(n)}
     doc = swatch_document(palette=palette)
     assert check(doc, font_dir) == []
@@ -2799,12 +2798,12 @@ def test_swatch_document_document_palette_overflow_fits_the_page(font_dir, n):
         if op["op"] == "rect":
             assert op["y"] + op["h"] <= HEIGHT
         else:
-            size = FONTS[op.get("f", "xs")][0]
+            size = FONTS[op.get("f", "xs")].size
             assert op["y"] + size <= HEIGHT
 
 
 def test_swatch_chip_has_a_black_outline_and_still_validates_clean(font_dir):
-    """F3: every chip — including `white`, otherwise invisible on the white
+    """Every chip — including `white`, otherwise invisible on the white
     page — gets a 1px black rule drawn just outside it, and that outline
     never trips check()'s contrast or bezel checks."""
     doc = swatch_document()
@@ -2834,7 +2833,7 @@ def test_swatch_chip_has_a_black_outline_and_still_validates_clean(font_dir):
 
 
 def test_swatch_document_reserved_sw_key_collision_favours_the_canonical_chip(font_dir):
-    """F4: a document palette entry literally named `sw:navy` must not
+    """A document palette entry literally named `sw:navy` must not
     shadow the reserved key `swatch_document()` uses for navy's own chip —
     the reserved key always wins."""
     palette = {"sw:navy": {"c": "red", "c2": "yellow", "mix": 50}}
@@ -3114,18 +3113,18 @@ def test_bezel_problems_ignores_poly():
 
 
 # --------------------------------------------------------------------------
-# poly review fixes (docs/plans/dragon-feedback.md, review of D12): a
-# coordinate bound and a clamped scanline (P1/P2), non-bool `fill` (P3),
-# the thin-mix check for poly's fill (P4), and a shared `t` helper (P7).
+# poly: coordinate and scanline bounds, non-bool `fill`, the thin-mix check
+# for poly's fill, and thickness validation shared with line/rect/circle
+# (docs/plans/dragon-feedback.md D12).
 # --------------------------------------------------------------------------
 
 
 def test_poly_extreme_coordinate_is_rejected_and_fast(font_dir):
-    """P1: `pts [[10, -5000000], [20, 5000000], [0, 0]]` used to make the
-    scanline fill walk five million rows -- ~14s in check() and ~120MB of
-    accumulated spans on the firmware, every wake. A point past
-    `_POLY_MAX_COORD` is malformed instead, and the whole op is skipped —
-    checked in well under a second."""
+    """A point past `_POLY_MAX_COORD` is malformed and the whole op is
+    skipped, rather than the scanline fill walking every row between two
+    far-apart y coordinates — e.g. `[[10, -5000000], [20, 5000000], [0, 0]]`
+    would otherwise walk five million rows, checked in well under a
+    second here."""
     doc = {
         "bg": "white",
         "ops": [{"op": "poly", "pts": [[10, -5000000], [20, 5000000], [0, 0]], "c": "black"}],
@@ -3150,7 +3149,7 @@ def test_poly_extreme_coordinate_is_rejected_and_fast(font_dir):
     ],
 )
 def test_poly_point_at_the_coordinate_bound(font_dir, coord, should_warn):
-    """P1: a point at exactly +/-`_POLY_MAX_COORD` is accepted; one past it
+    """A point at exactly +/-`_POLY_MAX_COORD` is accepted; one past it
     is skipped."""
     doc = {
         "bg": "white",
@@ -3161,8 +3160,8 @@ def test_poly_point_at_the_coordinate_bound(font_dir, coord, should_warn):
 
 
 def test_poly_canvas_spanning_pts_still_draws_correctly(font_dir):
-    """P1's clamp (the scanline range to `[0, HEIGHT)`, each span's x to
-    `[0, WIDTH)`) must still fill the same pixels a naive, unclamped
+    """The scanline-range and span-x clamp (`[0, HEIGHT)` / `[0, WIDTH)`)
+    must still fill the same pixels a naive, unclamped
     computation would have — proven on the firmware side by the
     canvas-spanning parity case in test_firmware_parity.py; this pins the
     Python behaviour the clamp must not disturb: a polygon that covers the
@@ -3185,11 +3184,11 @@ def test_poly_canvas_spanning_pts_still_draws_correctly(font_dir):
 
 
 def test_fill_non_bool_warns_and_uses_true(font_dir):
-    """P3: ArduinoJson's `o["fill"] | true` yields the default for anything
-    that isn't a JSON bool, while Python's old `op.get("fill", True)` read
-    `0`/`null` as falsy — so `"fill": 0` used to outline on the panel and
-    fill in the preview. Now both sides fill, and the mismatch is a
-    warning, for rect, circle and poly alike."""
+    """ArduinoJson's `o["fill"] | true` yields the default for anything
+    that isn't a JSON bool, while Python's own truthiness would read
+    `0`/`null` as falsy — so a non-bool `fill` warns and uses the default
+    (`true`) on both sides, for rect, circle and poly alike, instead of
+    `"fill": 0` outlining on the panel and filling in the preview."""
     box = (30, 30)
     ops = [
         {"op": "rect", "x": 10, "y": 10, "w": 40, "h": 40, "c": "black", "fill": 0},
@@ -3206,7 +3205,7 @@ def test_fill_non_bool_warns_and_uses_true(font_dir):
 
 
 def test_thin_mix_warns_a_poly_fill_sliver(font_dir):
-    """P4: a degenerate zero-width poly (three collinear points) fills a
+    """A degenerate zero-width poly (three collinear points) fills a
     single-pixel-wide vertical run for 40 scanlines — the same 2px-minimum
     rule a thin rect fill gets (docs/plans/ink-mixing.md decision 2),
     applied to poly's widest span and its scanline count."""
@@ -3240,10 +3239,10 @@ def test_thin_mix_does_not_warn_a_wide_poly_fill(font_dir):
     ids=["line", "rect", "circle", "poly"],
 )
 class TestThicknessIsBoundedAndValidated:
-    """P7: before this helper, a non-numeric `t` raised `TypeError` out of
-    `render()`, and `t: 2000000` took over 100s — pre-existing for
-    `line`/`rect`/`circle`, and the same rule as every other bad value:
-    warn and draw something (A1)."""
+    """A non-numeric `t` warns and uses 1, and a `t` above `_THICK_MAX`
+    warns and clamps — one helper shared by line, rect, circle and poly,
+    so a bad `t` never raises out of `render()` and never turns one op
+    into a multi-second loop."""
 
     def test_string_t_warns_and_uses_1(self, font_dir, op):
         doc = {"bg": "white", "ops": [dict(op, t="thick")]}

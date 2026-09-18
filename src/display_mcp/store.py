@@ -1,7 +1,7 @@
 """Per-display state: the published document, its identity, and what the panel did.
 
-CONTRACT (stub). The core package implements this; the mcp package codes
-against it. Field names are final; see docs/PLAN.md "Store" and "Status".
+Field names here are final; the mcp package codes against them. See
+docs/PLAN.md "Store" and "Status".
 
 Files under `state_dir`:
     <name>.json        the published document, written atomically

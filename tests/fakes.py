@@ -1,6 +1,7 @@
 """Test doubles for the mcp package: a Store implemented in memory, and a
-fake renderer, so tests here don't depend on the (stubbed, NotImplementedError)
-`store.py` / `render` implementations the core and renderer packages own.
+fake renderer, so tests here exercise the mcp package's own logic without
+depending on the real `store.py` / `render` implementations — a font-load
+failure or a filesystem quirk in those should never fail an mcp test.
 """
 
 from __future__ import annotations
@@ -32,11 +33,11 @@ class FakeStore:
 
     Implements the same public surface (`names`, `get`, `publish`, `clear`,
     `note_fetch`) so `mcp_server.py` can be exercised without the real
-    Store, which is a stub (`raise NotImplementedError`) on this branch.
+    Store's filesystem — no `state_dir` to create or clean up per test.
     `publish()` stamps `meta.hash`/`meta.generated` the same way the real
-    Store's docstring promises, using the renderer's own (implemented)
-    `render_hash` so a test asserting `hash == render_hash(doc)` is
-    checking something meaningful.
+    Store's docstring promises, using the renderer's own `render_hash` so a
+    test asserting `hash == render_hash(doc)` is checking something
+    meaningful.
     """
 
     def __init__(self) -> None:

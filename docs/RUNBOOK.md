@@ -304,11 +304,11 @@ Ask for `status` an hour after publishing. This is the healthy shape:
   "ops": 54,
   "bytes": 3137,
   "published_at": "2026-09-08T06:31:00-07:00",
-  "published_at_ago": "58m ago",
+  "published_ago": "58m ago",
   "first_fetch_at": "2026-09-08T06:32:10-07:00",
-  "first_fetch_at_ago": "57m ago",
+  "first_fetch_ago": "57m ago",
   "recent_fetch_at": "2026-09-08T07:26:00-07:00",
-  "recent_fetch_at_ago": "3m ago",
+  "recent_fetch_ago": "3m ago",
   "recent_fetch_status": 304,
   "recent_fetch_ip": "192.168.1.42"
 }
@@ -332,13 +332,44 @@ document — `set_display` does this for you; nothing else should touch
 |---|---|
 | `503 no display list yet` | Expected before the first publish. After one, check `/var/lib/display-mcp/default.json` exists and parses. |
 | Service won't start | `journalctl -u display-mcp -n 50`. Usually the venv path or a missing font file. |
-| `preview` raises about fonts | `DISPLAY_MCP_FONT_DIR` and that both `.ttf` names exist. |
+| `preview` raises about fonts | `DISPLAY_MCP_FONT_DIR` and that all three `.ttf` names exist. |
 | `/healthz` says `fonts_loaded: false` | Same as above — fonts missing or unreadable by the `display-mcp` user. |
 | Panel: `select() timeout` | The panel cannot reach the host on 8080: a firewall between segments, if they differ. Not the server. |
 | Panel: `BUG: document has no meta.hash` | Something wrote the file directly, bypassing `set_display`. It stamps; nothing else does. |
 | Panel refreshes every hour regardless | Your ETag or hash is timestamp-derived. Compare `status.hash` across two publishes of identical content. |
 | Claude can't reach the connector | The tunnel first (`journalctl -u cloudflared`, and **Healthy** in the dashboard), then whether the Access application still sits on that hostname. |
 | MCP calls succeed with no login prompt | Access isn't configured — `setup.sh status` will say `mcp auth: not configured`. Fine for local testing, not for the internet-facing endpoint. |
+
+## Upgrading after a vocabulary change
+
+A commit that adds an op, a field or a compiled face (a Phase B change in
+`docs/plans/dragon-feedback.md`) needs both sides of the deploy touched, in
+this order:
+
+1. `git pull` on the host.
+2. `sudo ./deploy/setup.sh sync` — the code-only redeploy, restarts the
+   service.
+3. `sudo ./deploy/setup.sh fonts` — **once**, only when the change adds a
+   compiled face (as B3 did for `mono`); `sync` deliberately never touches
+   fonts, so a routine redeploy is never also a font decision.
+4. `cd firmware && esphome run epaper-schedule.yaml` — flashes the new
+   vocabulary onto the panel. Nothing before this step can be judged on the
+   wall; the preview only shows what the *next* firmware will draw.
+5. `display-mcp-cli publish samples/vocabulary.json` — every primitive the
+   flash just added, on the glass at once (README describes the three
+   sample documents and what each is for).
+6. Judge on the wall — check the new ops against `docs/SPEC.md`'s
+   description of each, not just against the preview, which is deliberately
+   the thing being verified.
+7. Publish the real document.
+
+Optional: to learn the real byte ceiling (`docs/plans/dragon-feedback.md`
+D4 — the store's 256 KB limit is a ceiling, not a measured parse time),
+publish the swatch sheet — the largest document this project ships,
+`swatches(include_document=true)` from Claude or `display-mcp-cli swatches
+--json swatches.json` from the shell — and watch the panel's own serial/log output for
+how long it takes to parse and draw. That is the number "how large a
+document is actually safe" has to be measured against, not guessed.
 
 ## Still to come
 

@@ -47,7 +47,7 @@ static const char *const TAG = "display_list";
 static const int DOCUMENT_VERSION = 1;
 
 struct DisplayListAssets {
-  // Type scale, keyed by the name the JSON uses: xl, lg, md, sm, xs.
+  // Type scale, keyed by the name the JSON uses: xl, lg, md, sm, xs, mono.
   std::map<std::string, esphome::display::BaseFont *> fonts;
   // Icons keyed "<name>/<size-class>", e.g. "weather-sunny/lg".
   std::map<std::string, esphome::image::Image *> icons;
@@ -305,9 +305,9 @@ inline size_t utf8_prev(const std::string &s, size_t i) {
 // The forward twin of utf8_prev: advance one codepoint from a UTF-8 byte
 // index -- skip the lead byte, then any `10xxxxxx` continuation bytes. The
 // sprite op walks a row this way, one grid cell per *character*, not per
-// byte (docs/plans/dragon-feedback.md F1) -- otherwise a multibyte cell
-// character (a box-drawing glyph, say) draws as several narrow cells here
-// while the Python, whose strings are already codepoints, draws one.
+// byte -- otherwise a multibyte cell character (a box-drawing glyph, say)
+// draws as several narrow cells here while the Python, whose strings are
+// already codepoints, draws one.
 inline size_t utf8_next(const std::string &s, size_t i) {
   if (i >= s.size())
     return s.size();
@@ -392,8 +392,8 @@ inline esphome::display::TextAlign align_of(const char *a) {
   return esphome::display::TextAlign::TOP_LEFT;
 }
 
-// Bound on an outline's thickness (docs/plans/dragon-feedback.md, review of
-// D12, P7): thick_line()'s and the rect outline loop's `for (int i = 0; i <
+// Bound on an outline's thickness (docs/plans/dragon-feedback.md D12):
+// thick_line()'s and the rect outline loop's `for (int i = 0; i <
 // t; i++)` turn a document's `t` directly into that many draw calls, so a
 // `t` in the millions must never reach either loop -- the same
 // device-safety shape kSpriteMaxCell guards for `sprite`'s `cell`. Both
@@ -426,8 +426,7 @@ inline void thick_line(esphome::display::Display &it, int x1, int y1, int x2, in
 /// filled_circle()'s own midpoint loop draws, recorded here instead of
 /// drawn, so a ring built from this table shares filled_circle()'s outer
 /// boundary pixel for pixel rather than a hand-derived circle equation that
-/// could disagree with it here and there (docs/plans/dragon-feedback.md
-/// R2). `radius` must be >= 0.
+/// could disagree with it here and there. `radius` must be >= 0.
 ///
 /// `-1` means "this row is never drawn at this radius" -- not the same as
 /// a width of 0 (a single centre pixel). At `radius == 1` the midpoint loop
@@ -460,7 +459,7 @@ inline void circle_half_widths(int radius, std::vector<int> &half) {
 /// spans with) rather than `t` concentric circle() outlines, which leave
 /// single-pixel background holes near the 45-degree diagonals from `t == 2`
 /// up: consecutive midpoint circles' octant boundaries don't land on the
-/// same pixels (docs/plans/dragon-feedback.md R2). `t <= 1` is the caller's
+/// same pixels. `t <= 1` is the caller's
 /// job, not this function's -- see the `circle` branch below, which keeps
 /// calling circle() directly for `t == 1` rather than routing a one-row
 /// annulus through here. `r < 0` draws nothing.
@@ -564,9 +563,8 @@ class MixDisplay : public esphome::display::Display {
   int n_ = 0;
 };
 
-/// Pixel art as rows of characters (docs/plans/dragon-feedback.md D9;
-/// F1-F4, F7 fixed the walk to be per-codepoint and its edge cases to
-/// match the Python exactly). Each row string is one grid row, one
+/// Pixel art as rows of characters (docs/plans/dragon-feedback.md D9).
+/// Each row string is one grid row, one
 /// `cell`x`cell` square per *character* -- walked with utf8_next, not
 /// strlen, so a multibyte character is one cell -- coloured by `palette`,
 /// keyed on the full UTF-8 sequence rather than a single byte. `.` and
@@ -574,8 +572,8 @@ class MixDisplay : public esphome::display::Display {
 /// filled_rectangle through its own MixDisplay, the same proxy `rect`
 /// draws through, so a mixed cell dithers identically.
 ///
-/// Factored out of the op loop (F5) so a host build can extract, compile
-/// and differentially test this one function against the Python without
+/// Factored out of the op loop so a host build can extract, compile and
+/// differentially test this one function against the Python without
 /// bringing in the whole op loop or a real ArduinoJson.
 ///
 /// Returns false when the op can't be drawn at all -- `cell` isn't a
@@ -593,7 +591,7 @@ inline bool draw_sprite(esphome::display::Display &it, JsonObject o, JsonObject 
   // overflows int arithmetic -- this is display_mcp.render's
   // max(WIDTH, HEIGHT) (1200 x 1600), so a `cell` this small can never let
   // c0*cell / row*cell approach INT32_MAX even for a document as large as
-  // MAX_DOC_BYTES allows (F7).
+  // MAX_DOC_BYTES allows.
   static const int kSpriteMaxCell = 1600;
 
   bool rows_ok = !sprite_rows.isNull();
@@ -601,7 +599,7 @@ inline bool draw_sprite(esphome::display::Display &it, JsonObject o, JsonObject 
     for (JsonVariant rv : sprite_rows) {
       const char *s = rv;
       if (s == nullptr) {
-        rows_ok = false;  // a non-string element -- bail before drawing anything (F3)
+        rows_ok = false;  // a non-string element -- bail before drawing anything
         break;
       }
     }
@@ -614,7 +612,7 @@ inline bool draw_sprite(esphome::display::Display &it, JsonObject o, JsonObject 
     return false;
   }
 
-  // Walk each row into its codepoints (F1): the widest row, in
+  // Walk each row into its codepoints: the widest row, in
   // codepoints, decides the grid's column count, and a short row reads as
   // transparent past its own length -- the drawing half of the Python's
   // "ragged rows are padded"; the warning about it is authoring feedback
@@ -643,13 +641,13 @@ inline bool draw_sprite(esphome::display::Display &it, JsonObject o, JsonObject 
     for (auto &r : rows_cp)
       std::reverse(r.begin(), r.end());
   // Any other non-null mirror value is a Python-side ("x" is the only
-  // legal one, docs/plans/dragon-feedback.md F4) authoring warning; the
-  // firmware just doesn't mirror, as it always has.
+  // legal one) authoring warning; the firmware just doesn't mirror, as it
+  // always has.
 
   // Resolve each character once, not per cell, keyed on its full UTF-8
-  // sequence (F1) rather than a single byte. A palette key that isn't
-  // exactly one codepoint can't identify a cell at all and is skipped
-  // with a warning (F2); a row that uses it then falls into the "no
+  // sequence rather than a single byte. A palette key that isn't exactly
+  // one codepoint can't identify a cell at all and is skipped with a
+  // warning; a row that uses it then falls into the "no
   // palette entry" path below, same as any other unknown character. A
   // palette value that isn't a plain colour name (missing, or an inline
   // mix object) reads as "black" the same way `o["c"] | "black"`
@@ -688,7 +686,7 @@ inline bool draw_sprite(esphome::display::Display &it, JsonObject o, JsonObject 
           cell_ink = entry->second;
         } else if (warned.insert(ch).second) {
           // The UTF-8 sequence, printed with %s -- %c would only show its
-          // first byte (F1).
+          // first byte.
           ESP_LOGW(TAG, "sprite: no palette entry for '%s'; drawing black", ch.c_str());
         }
         MixDisplay smix(it);
@@ -714,11 +712,12 @@ inline int64_t floor_div(int64_t a, int64_t b) {
   return (r != 0 && ((r < 0) != (b < 0))) ? q - 1 : q;
 }
 
-// Bound on a poly point's magnitude (device-safety review of D12, P1): a
+// Bound on a poly point's magnitude (docs/plans/dragon-feedback.md D12): a
 // document whose `pts` reach this far out is malformed, not merely
-// off-canvas -- pts [[10, -5000000], [20, 5000000], [0, 0]] used to make
-// poly_spans() walk five million scanlines, accumulating ~120MB of spans,
-// every wake, forever. draw_poly() rejects a point past this bound outright,
+// off-canvas -- without this bound, a point like [20, 5000000] would make
+// poly_spans() walk millions of scanlines, accumulating tens of megabytes
+// of spans, every wake, forever. draw_poly() rejects a point past this
+// bound outright,
 // so the scanline/span clamp below never has to reconcile a crossing
 // computed from a coordinate this large. 1 << 20 is comfortably past any
 // real document (the canvas is 1200 x 1600) and comfortably inside the
@@ -730,14 +729,14 @@ static const int32_t kPolyMaxCoord = 1 << 20;
 /// Even-odd scanline fill (D12): for each integer scanline `y` from `ymin`
 /// to `ymax` inclusive -- already clamped by the caller to the visible
 /// range `[0, height)`, so this loop can never scale with how far outside
-/// the canvas `pts` reaches (device-safety review, P1) -- an edge
+/// the canvas `pts` reaches -- an edge
 /// `(x0,y0)-(x1,y1)` of the closed point list with `y0 != y1` contributes a
 /// crossing when `y` is in `[min(y0,y1), max(y0,y1))` -- half-open, so a
 /// vertex shared by two edges is counted on exactly one of them -- at
 /// `x = x0 + floor_div((y - y0) * (x1 - x0), y1 - y0)`. Crossings are
-/// sorted, paired up, each pair clamped to `[0, width)` (P1 again -- a span
-/// whose true extent runs off either edge of the canvas is trimmed to it
-/// before `emit` ever sees it), and `emit(y, xa, xb)` is called directly on
+/// sorted, paired up, each pair clamped to `[0, width)` -- a span whose
+/// true extent runs off either edge of the canvas is trimmed to it before
+/// `emit` ever sees it -- and `emit(y, xa, xb)` is called directly on
 /// what survives -- no vector of spans is ever materialised.
 ///
 /// A free function, not folded into draw_poly(), so the parity harness
@@ -782,14 +781,12 @@ inline void poly_spans(const std::vector<std::pair<int, int>> &pts, int ymin, in
 /// an element that isn't exactly a two-number pair, a coordinate past the
 /// bound -- is malformed and the whole op is abandoned before anything is
 /// drawn, mirroring draw_sprite()'s all-or-nothing parse. `pair.size()`
-/// (real ArduinoJson has it; only this module's host-compile stub for
-/// P8 once didn't) replaces what used to be a manual begin()/end() walk to
-/// prove a JsonArray has exactly two elements.
+/// proves a JsonArray has exactly two elements.
 ///
 /// Filled: every span poly_spans() finds, each one `filled_rectangle` of
 /// height 1 through `it`, so a mixed fill dithers with absolute phase
 /// exactly like a `rect` fill does -- the scanline range is clamped to
-/// `[0, height)` first (P1), so a polygon whose points sit far outside the
+/// `[0, height)` first, so a polygon whose points sit far outside the
 /// canvas costs no more than one that doesn't. Outlined (`fill: false`):
 /// every edge, including the closing one, through the file's own
 /// thick_line() -- the same primitive and the same thickness rule the
@@ -965,7 +962,7 @@ inline bool draw_display_list(esphome::display::Display &it, const std::string &
           // here, with a warning there, since a document is authored on
           // that side. The bound is min(w, h) - 1, not min(w, h): a corner
           // disc is 2r+1 px across, so r == min(w, h) / 2 on an even
-          // dimension would ink one row/column past the box (R1).
+          // dimension would ink one row/column past the box.
           // std::max(0, ...) guards a zero-size box.
           int r = o["r"] | 0;
           const int max_r = std::max(0, (std::min(w, h) - 1) / 2);
@@ -1007,14 +1004,12 @@ inline bool draw_display_list(esphome::display::Display &it, const std::string &
         if (o["fill"] | true) {
           mix.filled_circle(x, y, r, c.a);
         } else {
-          // `t` used to be dropped here entirely (mix.circle() draws one
-          // 1px ring regardless), while SPEC.md and the Python both
-          // honour it -- landed 2026-09-18 (docs/plans/dragon-feedback.md,
-          // "Noted in passing"). `t == 1`, the common case, is still the
-          // plain circle() outline below, unchanged. `t >= 2` used to
-          // stack `t` concentric circle() rings, which leaves
-          // single-pixel holes near the diagonals (R2); draw_circle_ring()
-          // fills the annulus by rows instead, matching
+          // An unfilled circle honours `t` (SPEC.md), matching the
+          // Python. `t == 1`, the common case, is the plain circle()
+          // outline below. `t >= 2` goes through draw_circle_ring()
+          // instead of stacking `t` concentric circle() rings, which
+          // would leave single-pixel holes near the diagonals;
+          // draw_circle_ring() fills the annulus by rows instead, matching
           // filled_circle(r) - filled_circle(r - t) exactly.
           const int t = o["t"] | 1;
           if (t <= 1)

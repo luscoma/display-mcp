@@ -3,13 +3,14 @@
 You are building the document an e-paper panel will draw next. There is no
 other context beyond what you're given here and whatever the caller told
 you: no memory of a previous run, no clock unless you look one up. Fetch
-`display://sample` before you start — or, if your client only exposes
-tools, `get_display` on a published name / the shapes in `describe()` — it
-is a known-good document worth copying the shape of. `describe()` returns
-the same vocabulary this file describes — inks, mixes, fonts, icons, ops —
-as one JSON object built from the renderer's own tables, and `guide()`
-returns this very text; either is reachable as a tool call for a client
-that cannot read resources or prompts.
+`display://sample` before you start — a known-good document worth copying
+the shape of. A client that exposes only tools, not resources, gets the
+same thing through `get_display` on a published name, or the shapes in
+`describe()`. `describe()` returns the same vocabulary this file describes
+— inks, mixes, fonts, icons, ops — as one JSON object built from the
+renderer's own tables, and `guide()` returns this very text; either is
+reachable as a tool call for a client that cannot read resources or
+prompts.
 
 ## Canvas
 

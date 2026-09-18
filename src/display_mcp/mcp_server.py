@@ -118,7 +118,7 @@ def _describe() -> dict[str, Any]:
     `cell_height` (ascent + descent of the loaded face — every face has
     one), and `ink_height` (how many rows a full-height glyph actually
     inks at 1bpp — the row pitch that makes block glyphs meet with no
-    seam; `null` except for `mono`, docs/plans/dragon-feedback.md F1).
+    seam; `null` except for `mono` (docs/plans/dragon-feedback.md D11).
     """
     mixes = {
         name: {

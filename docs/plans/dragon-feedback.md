@@ -1,6 +1,9 @@
 # The dragon session's feedback: what it got right, and the work it implies
 
-Status: planned 2026-09-18, nothing implemented yet. The source is the doc
+Status: implemented 2026-09-18 on branch `claude/display-mcp-artifact-plan-dkw4zc`,
+server side verified end-to-end twice, firmware host-compiled but **not yet
+flashed** — the flash and the wall judgement are the open items. The source
+is the doc
 *Display MCP — feedback and proposed primitives*, written by an agent after
 it drew a 28×28 pixel-art dragon on the panel through the MCP tools with no
 access to this repo. It is a good report from a bad seat: nearly every point
@@ -123,6 +126,7 @@ fonts       {name: {px, bold, line_height,        from FONTS: line_height is rou
                                                     pitch a full-height glyph needs to meet with
                                                     no seam, `null` except for `mono` (D11/F1)
 icons       {name: [size classes]}, icon_sizes {class: px}
+anchors     [left, center, right]                 the values text.a/fmt.a accept
 ops         {name: {required: [...], optional: {field: default}}}   the D1 table
 fmt_fields  [hash, hash16, time, time24, battery, battv]
 limits      {max_bytes: 262144}
@@ -165,6 +169,9 @@ fills coupon from `ink-mixing-coupon.py`, 169 ops and 15.6 KB. A soft
 threshold above that would be invented, so there is none until it is
 measured — the swatch sheet (D6) is a natural test document for that, and
 "publish it, watch the panel log" goes in RUNBOOK.md as an optional step.
+
+That step now exists: RUNBOOK.md's "Upgrading after a vocabulary change"
+section ends with it, added alongside the docs pass below.
 
 ### D5. `preview(grid=True)` draws a coordinate grid
 
@@ -381,7 +388,7 @@ Implementation:
   installed here"* and skips the op, the same abandonment an unknown font
   gets, instead of failing every render at `Ctx.__init__`.
 - `guide()`'s type-scale table gains the row: `mono` 24 regular, line
-  height 33, 82 columns across the canvas.
+  height (default `lh`) 30, cell height 33, ink height 31.
 
 ### D12. A `poly` op, filled, with the scanline shared
 
@@ -497,16 +504,16 @@ vocabulary entry is a red test, not a partial feature.
 
 ### Phase A — server only, `setup.sh sync`
 
-| # | commit | touches | tests | closes |
-|---|---|---|---|---|
-| A1 | `render: warn on fields an op does not have` | `render/__init__.py` (the field table, the warnings, the inline-object case); `mcp_server.py` (`validate` docstring says where a mix lives) | unknown field warns; `c2`/`mix` on an op gets the palette message; object in `c` warns and draws black instead of raising; sample and both samples-to-be stay clean; no existing warning text changes | §2, the bug |
-| A2 | `mcp: a document may arrive as a JSON string` | `mcp_server.py` (`_coerce_document`) | string round-trips; bad string is a `ToolError` naming the parse position; a dict is untouched | §5a |
-| A3 | `mcp: describe() and guide()` | `mcp_server.py`; `render/__init__.py` (`TIERS`); `tests/test_mcp.py` tool set; `docs/PLAN.md` tool table; README / RUNBOOK / SPEC "six tools" | every name in `describe().mixes` is in SPEC.md with the same hex and tier; `ops` equals the A1 table; `guide()` equals `compose.md`; `describe()` under 4 KB | §1, §3b |
-| A4 | `validate: the effective colour of every name, and the byte ceiling` | `mcp_server.py`; `docs/PLAN.md` tool table | `colors` covers bg, every op colour and every palette key; a mix reports its `Ink.avg` hex; an unknown name is in `warnings` and not in `colors`; `max_bytes == MAX_DOC_BYTES` | §4c, §4e |
-| A5 | `preview: an optional 100 px grid` | `render/__init__.py` (`grid_overlay`); `mcp_server.py` | grid pixels appear only with `grid=True`; `render()` output is unchanged; the note names the overlay; six-ink test still passes | §4a |
-| A6 | `swatches: every named colour as a chip, and the sheet is a document` | `render/__init__.py` (`swatch_document`); `mcp_server.py`; `cli.py` (`swatches`); `ink-mixing.md` "Still open" | the sheet validates clean; every ink and built-in appears once; a document's palette entries are appended; flat pixel at each chip equals the SPEC hex | §4b, §4d, ink-mixing.md's closing coupon |
-| A7 | `store, mcp: say who has been fetching` | `store.py` (`fetched_names`); `mcp_server.py` (`status` `requested`, `set_display` `recent_fetch_*`, docstrings); `prompts/compose.md`; `tests/fakes.py`; `docs/PLAN.md` | an unpublished fetched name shows in `status()`; publishing a never-fetched name returns `recent_fetch_at: null`; publishing a fetched name returns its last fetch; `names()` is unchanged | §5b, §5c |
-| A8 | `mcp: copy_display` | `mcp_server.py`; `tests/test_mcp.py`; `docs/PLAN.md` | copy has the same hash and a newer `generated`; unknown source is a `ToolError` | §5d |
+| # | commit | touches | tests | closes | landed |
+|---|---|---|---|---|---|
+| A1 | `render: warn on fields an op does not have` | `render/__init__.py` (the field table, the warnings, the inline-object case); `mcp_server.py` (`validate` docstring says where a mix lives) | unknown field warns; `c2`/`mix` on an op gets the palette message; object in `c` warns and draws black instead of raising; sample and both samples-to-be stay clean; no existing warning text changes | §2, the bug | `render: warn on fields an op does not have`, on the branch |
+| A2 | `mcp: a document may arrive as a JSON string` | `mcp_server.py` (`_coerce_document`) | string round-trips; bad string is a `ToolError` naming the parse position; a dict is untouched | §5a | `mcp: a document may arrive as a JSON string`, on the branch |
+| A3 | `mcp: describe() and guide()` | `mcp_server.py`; `render/__init__.py` (`TIERS`); `tests/test_mcp.py` tool set; `docs/PLAN.md` tool table; README / RUNBOOK / SPEC "six tools" | every name in `describe().mixes` is in SPEC.md with the same hex and tier; `ops` equals the A1 table; `guide()` equals `compose.md`; `describe()` under 4 KB | §1, §3b | `mcp: describe() and guide()`, on the branch |
+| A4 | `validate: the effective colour of every name, and the byte ceiling` | `mcp_server.py`; `docs/PLAN.md` tool table | `colors` covers bg, every op colour and every palette key; a mix reports its `Ink.avg` hex; an unknown name is in `warnings` and not in `colors`; `max_bytes == MAX_DOC_BYTES` | §4c, §4e | `validate: the effective colour of every name, and the byte ceiling`, on the branch |
+| A5 | `preview: an optional 100 px grid` | `render/__init__.py` (`grid_overlay`); `mcp_server.py` | grid pixels appear only with `grid=True`; `render()` output is unchanged; the note names the overlay; six-ink test still passes | §4a | `preview: an optional 100 px grid`, on the branch |
+| A6 | `swatches: every named colour as a chip, and the sheet is a document` | `render/__init__.py` (`swatch_document`); `mcp_server.py`; `cli.py` (`swatches`); `ink-mixing.md` "Still open" | the sheet validates clean; every ink and built-in appears once; a document's palette entries are appended; flat pixel at each chip equals the SPEC hex | §4b, §4d, ink-mixing.md's closing coupon | `swatches: every named colour as a chip, and the sheet is a document`, on the branch |
+| A7 | `store, mcp: say who has been fetching` | `store.py` (`fetched_names`); `mcp_server.py` (`status` `requested`, `set_display` `recent_fetch_*`, docstrings); `prompts/compose.md`; `tests/fakes.py`; `docs/PLAN.md` | an unpublished fetched name shows in `status()`; publishing a never-fetched name returns `recent_fetch_at: null`; publishing a fetched name returns its last fetch; `names()` is unchanged | §5b, §5c | `store, mcp: say who has been fetching`, on the branch |
+| A8 | `mcp: copy_display` | `mcp_server.py`; `tests/test_mcp.py`; `docs/PLAN.md` | copy has the same hash and a newer `generated`; unknown source is a `ToolError` | §5d | `mcp: copy_display`, on the branch |
 
 A1 goes first because it is the bug and nothing depends on it. A3 before
 A4–A6 because its field table and `TIERS` are reused. A2, A7 and A8 are
@@ -515,12 +522,19 @@ sync` on the host.
 
 ### Phase B — vocabulary, one flash
 
-| # | commit | touches | tests | closes |
-|---|---|---|---|---|
-| B1 | `sprite: pixel art as rows of characters` | `firmware/display_list.h`; `render/__init__.py`; `docs/SPEC.md`; `prompts/compose.md`; `describe()` table; `samples/sprite.json`; README | run structure: a row of `KKOO` draws two rects; `mirror`; transparent cells leave the ground; unknown character warns and is black; ragged rows warn; off-canvas on the far edge; mixed cells dither with absolute phase; the new sample validates clean and its hash is pinned | §3a |
-| B2 | `rect: corner radius on a filled rect` | header (also `circle_half_widths()`/`draw_circle_ring()`, R2); renderer; SPEC; compose; `describe()` | seven-shape construction fills the same box as `r: 0`, clamped to `(min(w,h)-1)//2` (R1); `r` on an outline warns and draws square; corner pixel at `r` is bg; circle `t≥2` is an annulus matching `filled_circle(r)-filled_circle(r-t)` exactly, compiled and diffed, with no diagonal holes | §3f |
-| B3 | `fonts: JetBrains Mono as \`mono\`` | `epaper-schedule.yaml` (font entry with the box and block ranges); header untouched; `render/__init__.py` (`FONTS` as `Face(size, bold, file, cell_height, ink_height)`, basic layout, `None`-able mono face); `deploy/fetch-fonts.sh`; `deploy/setup.sh fonts`; RUNBOOK step 2; `tests/test_deploy.py`; SPEC; compose; `describe()` | glyph advance is a constant integer; `<>` stays two glyphs; `┌─┐` renders with no gap; `mono`'s `cell_height` (33) and measured `ink_height` (31, F1) are published beside its `line_height` (30, `round(24×1.24)`, unchanged from every other face — amended above); a missing face skips the op with a problem instead of raising; `fonts_available` requires all three files; fetch script is still idempotent | §3e |
-| B4 | `poly: a point list, filled by a shared scanline` | header; renderer; `tests/test_firmware_parity.py` (extract + compile `poly_spans`); SPEC; compose; `describe()`; `samples/sprite.json` gains one | C++ and Python spans agree over convex, concave and self-touching shapes; `fill: false` closes the edge; a two-point `pts` warns and skips | §3d |
+| # | commit | touches | tests | closes | landed |
+|---|---|---|---|---|---|
+| B1 | `sprite: pixel art as rows of characters` | `firmware/display_list.h`; `render/__init__.py`; `docs/SPEC.md`; `prompts/compose.md`; `describe()` table; `samples/sprite.json`; README | run structure: a row of `KKOO` draws two rects; `mirror`; transparent cells leave the ground; unknown character warns and is black; ragged rows warn; off-canvas on the far edge; mixed cells dither with absolute phase; the new sample validates clean and its hash is pinned | §3a | `sprite: pixel art as rows of characters`, on the branch |
+| B2 | `rect: corner radius on a filled rect` | header (also `circle_half_widths()`/`draw_circle_ring()`); renderer; SPEC; compose; `describe()` | seven-shape construction fills the same box as `r: 0`, clamped to `(min(w,h)-1)//2`; `r` on an outline warns and draws square; corner pixel at `r` is bg; circle `t≥2` is an annulus matching `filled_circle(r)-filled_circle(r-t)` exactly, compiled and diffed, with no diagonal holes | §3f | `rect: corner radius on a filled rect`, on the branch |
+| B3 | `fonts: JetBrains Mono as \`mono\`` | `epaper-schedule.yaml` (font entry with the box and block ranges); header untouched; `render/__init__.py` (`FONTS` as `Face(size, bold, file, cell_height, ink_height)`, basic layout, `None`-able mono face); `deploy/fetch-fonts.sh`; `deploy/setup.sh fonts`; RUNBOOK step 2; `tests/test_deploy.py`; SPEC; compose; `describe()` | glyph advance is a constant integer; `<>` stays two glyphs; `┌─┐` renders with no gap; `mono`'s `cell_height` (33) and measured `ink_height` (31) are published beside its `line_height` (30, `round(24×1.24)`, unchanged from every other face — amended above); a missing face skips the op with a problem instead of raising; `fonts_available` requires all three files; fetch script is still idempotent | §3e | `fonts: JetBrains Mono as \`mono\``, on the branch |
+| B4 | `poly: a point list, filled by a shared scanline` | header; renderer; `tests/test_firmware_parity.py` (extract + compile `poly_spans`); SPEC; compose; `describe()`; `samples/sprite.json` gains one | C++ and Python spans agree over convex, concave and self-touching shapes; `fill: false` closes the edge; a two-point `pts` warns and skips | §3d | `poly: a point list, filled by a shared scanline`, on the branch |
+
+A follow-up commit, `phase A: what the end-to-end run turned up`, landed between
+B1's predecessors and B1 itself: a live run of the eight Phase A tools found
+six seams between the tools' words and their behaviour (`validate`'s
+`bytes` vs. `set_display`'s stamped body, the no-such-field warning naming
+the fix, `guide()`/`describe()`'s docstrings catching up, `grid_overlay`
+taking a real font), all fixed in that one commit, on the branch.
 
 Then, once: `cd firmware && esphome run epaper-schedule.yaml`, publish
 `samples/sprite.json`, judge on the wall, and record the verdict at the top

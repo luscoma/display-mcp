@@ -139,10 +139,9 @@ def test_render_output_is_unchanged_whether_or_not_a_caller_later_grids_it(font_
 
 
 def test_grid_overlay_closes_the_far_edges_with_a_real_border_line(font_dir, sample_doc):
-    """F6: a coordinate line at WIDTH/HEIGHT themselves lands one pixel past
-    the last real column/row and PIL draws nothing there at all — not "drawn
-    but not labelled" as the docstring used to claim. The far edges are
-    closed with an explicit border at w-1/h-1 instead."""
+    """A coordinate line at WIDTH/HEIGHT themselves lands one pixel past
+    the last real column/row and PIL draws nothing there at all. The far
+    edges are closed with an explicit border at w-1/h-1 instead."""
     img, _ = render.render(sample_doc, font_dir)
     overlaid = render.grid_overlay(img)
     w, h = overlaid.size
@@ -152,7 +151,7 @@ def test_grid_overlay_closes_the_far_edges_with_a_real_border_line(font_dir, sam
 
 
 def test_grid_overlay_runs_with_a_real_font_and_draws_the_grid_colour(font_dir, sample_doc):
-    """M6: `grid_overlay` takes an optional real face (what `preview` loads
+    """`grid_overlay` takes an optional real face (what `preview` loads
     from `font_dir` via `load_font`) instead of only PIL's bitmap default;
     the overlay colour still appears wherever the face comes from."""
     img, _ = render.render(sample_doc, font_dir)
@@ -203,7 +202,7 @@ async def test_preview_grid_survives_a_missing_grid_font(
 
 
 # --------------------------------------------------------------------------
-# M1: `validate`'s `bytes` must be the number `set_display` actually gates.
+# `validate`'s `bytes` must be the number `set_display` actually gates.
 #
 # FakeStore stamps independently of `display_mcp.store.stamped_body`, so it
 # can't catch the two drifting apart -- these use the real Store.

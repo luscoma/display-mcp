@@ -1,6 +1,7 @@
-"""mcp_server.py: tools, resources and the compose prompt, against FakeStore
-and a fake renderer (both display_mcp.store.Store and display_mcp.render
-are stubs on this branch)."""
+"""mcp_server.py: tools, resources and the compose prompt, against
+FakeStore and a fake renderer — test doubles so these tests exercise the
+mcp package's own logic without the real store/renderer's filesystem and
+font-loading concerns (see tests/fakes.py)."""
 
 from __future__ import annotations
 
@@ -467,11 +468,11 @@ async def test_describe_fonts_matches_fonts_table(mcp):
 
 
 async def test_describe_mono_cell_height_differs_from_its_line_height(mcp):
-    """The amendment to D11 (docs/plans/dragon-feedback.md, 2026-09-18):
-    `mono`'s wrap-default `line_height` stays `round(size * 1.24)` like
-    every other face (30), not its cell height (33). Neither is the pitch
-    that makes block glyphs meet with no seam — `ink_height` (31, F1) is —
-    published beside both for a composer stacking block art by hand."""
+    """`mono`'s wrap-default `line_height` stays `round(size * 1.24)` like
+    every other face (30), not its cell height (33) — D11
+    (docs/plans/dragon-feedback.md). Neither is the pitch that makes block
+    glyphs meet with no seam — `ink_height` (31) is — published beside both
+    for a composer stacking block art by hand."""
     async with Client(mcp) as c:
         result = await c.call_tool("describe", {})
     mono = result.structured_content["fonts"]["mono"]

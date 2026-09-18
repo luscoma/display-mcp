@@ -61,10 +61,9 @@ COLORS = ("black", "white", "yellow", "red", "blue", "green")
 
 
 class Face(NamedTuple):
-    """One compiled type-scale entry. `size`/`bold` are read positionally
-    (`FONTS[name][0]`/`[1]`) by every consumer that predates `file` and
-    `cell_height`, so this stays a 5-tuple in that exact field order rather
-    than growing a differently-shaped record.
+    """One compiled type-scale entry. This is a plain `NamedTuple`; reading
+    `size`/`bold` positionally (`FONTS[name][0]`/`[1]`) instead of by name
+    still works but is legacy and should not be added to.
 
     `cell_height` is `size`'s ascent + descent as PIL's `font.getmetrics()`
     reports it for the *loaded* face (the selected weight instance, for
@@ -79,7 +78,7 @@ class Face(NamedTuple):
 
     `ink_height` is `None` for every Instrument Sans entry and the one
     number that actually matters for stacking `mono` block art
-    (docs/plans/dragon-feedback.md D11/F1): the row count a full-height
+    (docs/plans/dragon-feedback.md D11): the row count a full-height
     glyph (`│`, `█`) inks at 1bpp, measured by rendering one bilevel and
     counting rows with any ink. It is *not* `cell_height` — that's 2px more
     (33 vs 31), which is ascent+descent, not glyph extent, and leaves a 2px
@@ -105,7 +104,7 @@ FONTS: dict[str, Face] = {
     # one monospace face, for block art, aligned columns and code. Loaded
     # with BASIC layout and no ligatures — see load_font(). ink_height=31
     # is measured (test_render.py), not derived: a full-height glyph at
-    # 1bpp inks 31 rows inside the 33px cell (F1).
+    # 1bpp inks 31 rows inside the 33px cell.
     "mono": Face(24, False, "JetBrainsMono-Regular.ttf", 33, 31),
 }
 
@@ -150,7 +149,7 @@ ANCHOR = {"left": "la", "center": "ma", "right": "ra"}
 
 _NO_HASH_WARNING = (
     "no meta.hash — the panel will refresh on EVERY wake "
-    "(~36 mAh/day, roughly half its battery life). Run with --stamp."
+    "(~36 mAh/day, roughly half its battery life). Run display-mcp-cli stamp."
 )
 
 # Per-op field table: required fields, and optional fields with the default
@@ -252,9 +251,9 @@ def _op_field_problems(op: dict[str, Any], kind: str | None, where: str) -> list
     the table exists to catch — and it is left to Ctx.ink() when `c` is
     itself an object, so the same op never carries the hint twice.
 
-    `kind` comes straight from JSON and may not be a string; a dict there
-    used to raise out of the table lookup, which is the failure D1 exists
-    to remove.
+    `kind` comes straight from JSON and may not be a string, so the table
+    lookup only happens for a `str`; any other type returns `[]` rather
+    than raising out of `OP_FIELDS.get`.
     """
     spec = OP_FIELDS.get(kind) if isinstance(kind, str) else None
     if spec is None:
@@ -634,13 +633,12 @@ class Ctx:
         nothing here skips an op.
 
         `name` is meant to be a string; a document that writes an inline
-        `{c, c2, mix}` object where a colour *name* belongs — the report's
-        actual mistake — used to raise `TypeError: unhashable type: 'dict'`
-        here instead of warning, because a dict can't be looked up in
-        `self.table`. Any non-string is now caught before that lookup: a
-        dict gets the same palette hint `c2`/`mix`-on-an-op gets (D1), and
-        anything else falls back to the ordinary "unknown colour" message.
-        Either way this returns black rather than raising.
+        `{c, c2, mix}` object where a colour *name* belongs is caught before
+        the table lookup, since a dict can't be looked up in `self.table`: a
+        dict gets the same palette hint `c2`/`mix`-on-an-op gets
+        (docs/plans/dragon-feedback.md D1), and anything else non-string
+        falls back to the ordinary "unknown colour" message. Either way this
+        returns black rather than raising.
         """
         black = self.table["black"]
         if isinstance(name, dict):
@@ -891,9 +889,9 @@ def swatch_groups(
     lists as text — one source for both, so the picture and its caption
     cannot disagree.
 
-    Returns `[(group_title, [(label, colour_field, recipe, hex), ...]), ...]`
+    Returns `[(group_title, [(label, c_field, recipe, hex), ...]), ...]`
     in the order docs/SPEC.md's "The named palette" groups them: `"inks"`,
-    then the `dark`/`light`/`mid` tiers (`TIERS`). `colour_field` is what an
+    then the `dark`/`light`/`mid` tiers (`TIERS`). `c_field` is what an
     op's `c` must say to draw that chip's colour in `swatch_document()`'s
     own palette — a plain ink or built-in name for the first four groups,
     always the reserved `"sw:<name>"` form for a built-in mix so a
@@ -903,7 +901,7 @@ def swatch_groups(
     With `palette` (a document's own `palette` field), a final
     `"document palette"` group is appended: each entry's recipe and hex are
     resolved exactly the way `document_colors()` resolves them (`_recipe_of`,
-    the same `Ctx.ink()` walk), `colour_field` is the entry's own name, and
+    the same `Ctx.ink()` walk), `c_field` is the entry's own name, and
     an entry that doesn't resolve to anything drawable is left off rather
     than guessed at. Omitted (or empty), there is no fifth group. A palette
     key that is itself one of the reserved `"sw:<name>"` forms is also left
@@ -989,7 +987,7 @@ def swatch_document(palette: dict[str, Any] | None = None) -> dict[str, Any]:
     heading_lh, heading_gap = round(FONTS["xs"][0] * 1.24), 6
     # Roughly doubles the gap before a heading (row_gap, already left after
     # the previous group's last row) so it reads as belonging to the chips
-    # below it rather than the group above (F9).
+    # below it rather than the group above.
     heading_extra_gap = row_gap
     row_height = chip_h + chip_gap + name_lh + line_gap + xs_lh + line_gap + xs_lh + row_gap
     col_x = [margin + i * (chip_w + gap_x) for i in range(_SWATCH_COLS)]
@@ -1042,7 +1040,7 @@ def swatch_document(palette: dict[str, Any] | None = None) -> dict[str, Any]:
         y += heading_lh + heading_gap
 
         if title == "document palette":
-            # The only group whose size isn't fixed (F1): lay out only the
+            # The only group whose size isn't fixed: lay out only the
             # rows that fit, reserving room for the "+N more" line itself
             # so it's never the thing that ends up off-canvas.
             avail = HEIGHT - BEZEL_MARGIN - y
@@ -1516,7 +1514,7 @@ def _optional_number(value: Any) -> int | float | None:
 
 def _resolved_rect_radius(r_raw: Any, w: int, h: int, where: str, ctx: Ctx) -> int:
     """`r` for a filled rect: a non-negative integer, clamped to
-    `(min(w, h) - 1) // 2` (docs/plans/dragon-feedback.md D10, R1). Anything
+    `(min(w, h) - 1) // 2` (docs/plans/dragon-feedback.md D10). Anything
     else — not an int, a bool (JSON's `true`/`false` are not the number they
     subclass), or negative — warns once and is treated as 0, which is
     `rect`'s existing square-cornered draw, so a malformed `r` degrades to
@@ -1547,24 +1545,19 @@ def _resolved_rect_radius(r_raw: Any, w: int, h: int, where: str, ctx: Ctx) -> i
 # `kThickMax` in display_list.h, where thick_line() and the rect outline
 # loop's `for (int i = 0; i < t; i++)` clamp to the same constant silently
 # -- a document-supplied `t` in the millions must never turn one op into a
-# multi-second loop on either side (review of D12, P7). 64 is generous for
-# anything actually drawn on a 1200x1600 canvas.
+# multi-second loop on either side. 64 is generous for anything actually
+# drawn on a 1200x1600 canvas.
 _THICK_MAX = 64
 
 
 def _resolved_thickness(t_raw: Any, where: str, ctx: Ctx) -> int:
     """`t` for an outline: an integer >= 1, clamped to `_THICK_MAX`. A `t`
     that isn't an int (`bool` excluded, same as every other malformed-field
-    check here), or is < 1, warns and uses 1 -- the same "warn and draw
-    something" rule every other bad value gets (A1). A `t` larger than
+    check here), or is < 1, warns and uses 1 -- the "warn and draw
+    something" rule every malformed field gets. A `t` larger than
     `_THICK_MAX` warns and clamps rather than silently, unlike the
     firmware's own clamp: a bad value is authoring feedback and stays on
-    this side (D1).
-
-    Before this helper, a non-numeric `t` raised `TypeError` out of
-    `render()` and `t: 2000000` took over 100s (PIL's `width=` scales with
-    it) -- pre-existing for `line`/`rect`/`circle`, and the bug this closes
-    (P7).
+    this side (docs/plans/dragon-feedback.md D1).
     """
     if isinstance(t_raw, bool) or not isinstance(t_raw, int) or t_raw < 1:
         ctx.problems.append(f"{where}: t={t_raw!r} is not a positive integer; using 1")
@@ -1582,11 +1575,11 @@ def _resolved_fill(op: dict[str, Any], where: str, ctx: Ctx) -> bool:
 
     ArduinoJson's `o["fill"] | true` yields the default for anything that
     isn't a JSON bool, while Python's `op.get("fill", True)` is truthy on
-    `0`/`null`/anything else that isn't literally `False` — so `"fill": 0`
-    used to outline on the panel and fill in the preview (review of D12,
-    P3). A `fill` that is present but not a `bool` warns and uses the
-    default, matching the firmware's behaviour instead of Python's own
-    truthiness.
+    `0`/`null`/anything else that isn't literally `False`. A `fill` that is
+    present but not a `bool` therefore warns and uses the default here too,
+    matching the firmware's behaviour instead of Python's own truthiness —
+    otherwise `"fill": 0` would outline on the panel and fill in the
+    preview.
     """
     v = op.get("fill", True)
     if not isinstance(v, bool):
@@ -1615,8 +1608,8 @@ def _draw_rounded_rect(
     of this file's shapes are held to.
     """
     # r == 0 has no rounding to draw -- the side-band rectangles below would
-    # come out as [x, y+0, x-1, y+h-1] (x1 < x0) and PIL raises on that
-    # (R3); the caller already only takes this branch for r > 0.
+    # come out as [x, y+0, x-1, y+h-1] (x1 < x0) and PIL raises on that;
+    # the caller already only takes this branch for r > 0.
     assert r > 0, "_draw_rounded_rect() is for r > 0; draw a plain rect for r == 0"
     if w - 2 * r > 0:
         dr.rectangle([x + r, y, x + w - r - 1, y + h - 1], fill=col)
@@ -1643,15 +1636,15 @@ def _anchor_of(op: dict[str, Any], ctx: Ctx, where: str) -> str:
     return ANCHOR.get(a_value, "la")
 
 
-# Bound on a poly point's magnitude (device-safety review of D12, P1): a
+# Bound on a poly point's magnitude (docs/plans/dragon-feedback.md D12): a
 # document whose `pts` reach this far out is malformed, not merely
-# off-canvas -- pts [[10, -5000000], [20, 5000000], [0, 0]] used to make
-# poly_spans() walk five million scanlines, ~14s in check() and ~120MB of
-# accumulated spans on the firmware, every wake, forever. Rejecting a point
-# past this bound outright means the scanline/span clamp in _poly_spans()
-# below never has to reconcile a crossing computed from a coordinate this
-# large. 1 << 20 is comfortably past any real document (the canvas is
-# 1200 x 1600) and comfortably inside the headroom the firmware's
+# off-canvas. Without this bound, a point like [20, 5000000] would make
+# poly_spans() walk millions of scanlines, seconds in check() and tens of
+# megabytes of accumulated spans on the firmware, every wake, forever.
+# Rejecting a point past this bound outright means the scanline/span clamp
+# in _poly_spans() below never has to reconcile a crossing computed from a
+# coordinate this large. 1 << 20 is comfortably past any real document (the
+# canvas is 1200 x 1600) and comfortably inside the headroom the firmware's
 # int64_t crossing arithmetic needs (HEIGHT scanlines * 2*bound, nowhere
 # near overflowing) -- the same role kSpriteMaxCell plays for `cell`.
 # Mirrors `kPolyMaxCoord` in display_list.h.
@@ -1709,10 +1702,11 @@ def _poly_spans(pts: list[tuple[int, int]]) -> list[tuple[int, int, int]]:
     downstream depends on that beyond making a diff readable.
 
     The scanline range is clamped to `[0, HEIGHT)` and each span's x to
-    `[0, WIDTH)` **before** anything is appended (device-safety review of
-    D12, P1): a polygon whose points sit far outside the canvas — but
-    inside `_POLY_MAX_COORD` — must not make this loop, or its output,
-    scale with how far outside it they are. A span that clamps to nothing
+    `[0, WIDTH)` **before** anything is appended
+    (docs/plans/dragon-feedback.md D12): a polygon whose points sit far
+    outside the canvas — but inside `_POLY_MAX_COORD` — must not make this
+    loop, or its output, scale with how far outside it they are. A span
+    that clamps to nothing
     (`xa > xb` after clamping) is dropped rather than appended empty or
     inverted.
     """
@@ -2006,9 +2000,9 @@ def render(
             raw_rows = op.get("rows")
             raw_palette = op.get("palette")
             # Both sides have to agree on what's too big to be sane, not
-            # just what overflows int arithmetic (F7): a `cell` bigger
-            # than the canvas itself is malformed the same way a zero or
-            # fractional one is.
+            # just what overflows int arithmetic: a `cell` bigger than the
+            # canvas itself is malformed the same way a zero or fractional
+            # one is.
             max_cell = max(WIDTH, HEIGHT)
             if (
                 isinstance(cell, bool)
@@ -2050,9 +2044,9 @@ def render(
             # does, and anything else that doesn't resolve is "unknown
             # colour", both already handled there. A key that isn't
             # exactly one character can't identify a cell at all, so it's
-            # skipped up front (F2) — a row that uses it then falls into
-            # the "no palette entry" path below, same as any other
-            # unknown character.
+            # skipped up front — a row that uses it then falls into the
+            # "no palette entry" path below, same as any other unknown
+            # character.
             used_chars = {ch for row in raw_rows for ch in row} - {".", " "}
             char_ink: dict[str, Ink] = {}
             checked_inks: set[Ink] = set()
@@ -2071,7 +2065,7 @@ def render(
                 resolved = ctx.ink(value, where)
                 char_ink[ch] = resolved
                 # Only a character some row actually draws can be too thin
-                # to carry a density (F9) — an unused palette entry has no
+                # to carry a density — an unused palette entry has no
                 # cell to be thin.
                 if ch in used_chars and resolved not in checked_inks:
                     checked_inks.add(resolved)
@@ -2128,7 +2122,7 @@ def render(
                 continue
 
             # A coordinate this far out is malformed, not merely
-            # off-canvas (P1): reject it before the bounding box or the
+            # off-canvas: reject it before the bounding box or the
             # scanline fill below ever has to reconcile a magnitude this
             # large. See _POLY_MAX_COORD's own comment for why.
             if any(
@@ -2162,7 +2156,7 @@ def render(
             snap = _snapshot(img, box)
             if _resolved_fill(op, where, ctx):
                 spans = _poly_spans(pts)
-                # `w`/`h` for the thin-mix check (P4) — a poly has no
+                # `w`/`h` for the thin-mix check — a poly has no
                 # single fill box like a rect's `w x h`, so this stands in
                 # for it: the widest span (the narrowest a row of the fill
                 # ever gets, in the sense that matters — the maximum,
@@ -2264,7 +2258,7 @@ def check(doc: dict[str, Any], font_dir: Path) -> list[str]:
     if stamped:
         h = render_hash(doc)
         if stamped != h:
-            problems = [f"meta.hash is stale ({stamped}) — re-run with --stamp"] + problems
+            problems = [f"meta.hash is stale ({stamped}) — re-run display-mcp-cli stamp"] + problems
     return problems
 
 
@@ -2291,8 +2285,8 @@ def grid_overlay(
     `WIDTH`/`HEIGHT` themselves are one past the last real pixel column/row,
     so the far edge is closed with an explicit, unlabelled border line at
     `w-1`/`h-1` instead — a coordinate line drawn at `w`/`h` would land
-    entirely off-canvas and disappear, which is what this did before: a
-    bordered canvas reads better than one whose last edge is invisible.
+    entirely off-canvas and disappear: a bordered canvas reads better than
+    one whose last edge is invisible.
 
     `font` is normally a real face loaded through `load_font` at a size a
     caller has actually chosen to be legible once the 1200×1600 PNG is

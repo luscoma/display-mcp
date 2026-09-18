@@ -193,8 +193,8 @@ def test_op_loop_has_a_sprite_branch():
 
 
 # --------------------------------------------------------------------------
-# sprite, differentially (docs/plans/dragon-feedback.md F5). draw_sprite()
-# was factored out of the op loop precisely so it -- and utf8_prev/
+# sprite, differentially. draw_sprite() is factored out of the op loop
+# precisely so it -- and utf8_prev/
 # utf8_next/mix_on/struct Ink/MixDisplay, which it's built on -- can be
 # extracted verbatim, compiled against a stub Display/ArduinoJson, and
 # rasterised, then diffed pixel-for-pixel against
@@ -351,10 +351,10 @@ class JsonArray {
   JsonArray() = default;
   explicit JsonArray(NodePtr p) : n(p) {}
   bool isNull() const { return !n || n->t != Node::ARR; }
-  // Real ArduinoJson's JsonArray has both of these; this stub didn't, which
-  // is the whole reason draw_poly() used to prove a two-element array via a
-  // manual begin()/end() walk instead (P8, docs/plans/dragon-feedback.md
-  // review of D12).
+  // Real ArduinoJson's JsonArray has both of these; this stub needs them
+  // too, so draw_poly() can prove a two-element array with plain indexing
+  // and .size() instead of a manual begin()/end() walk
+  // (docs/plans/dragon-feedback.md D12).
   size_t size() const { return n ? n->arr.size() : 0; }
   JsonVariant operator[](size_t i) const {
     return (n && i < n->arr.size()) ? JsonVariant(n->arr[i]) : JsonVariant();
@@ -712,7 +712,7 @@ def _sprite_diff(sprite_harness, font_dir, op, cw, ch, palette=None):
 
 def test_sprite_multibyte_row_matches_the_firmware(sprite_harness, font_dir):
     """`{"palette": {"█": "black", "▄": "red"}, "rows": ["█▄█"]}` draws
-    three cells, not nine (F1) -- the whole point of walking by codepoint,
+    three cells, not nine -- the whole point of walking by codepoint,
     on both sides."""
     diffs, problems = _sprite_diff(
         sprite_harness,
@@ -800,7 +800,7 @@ def test_sprite_sample_matches_the_firmware(sprite_harness, font_dir, sprite_sam
 
 
 def test_sprite_oversized_cell_is_malformed_on_both_sides(sprite_harness, font_dir):
-    """F7: the two sides have to agree on the bound, not just each avoid
+    """The two sides have to agree on the bound, not just each avoid
     overflowing on their own terms."""
     op = {
         "op": "sprite", "x": 0, "y": 0, "cell": 99999,
@@ -834,10 +834,10 @@ def test_rect_branch_reads_the_corner_radius():
 
 
 def test_circle_branch_reads_t_and_dispatches_to_the_ring_helper():
-    """R2: `t <= 1` stays the plain circle() outline; `t >= 2` goes through
-    draw_circle_ring() rather than looping concentric circle() calls inline
-    (that loop used to leave diagonal holes from t == 2 up -- see the
-    compiled parity tests below)."""
+    """`t <= 1` stays the plain circle() outline; `t >= 2` goes through
+    draw_circle_ring() instead of looping concentric circle() calls inline,
+    which would leave diagonal holes from t == 2 up -- see the compiled
+    parity tests below."""
     src = HEADER.read_text()
     block = _branch(src, 'strcmp(kind, "circle")', 'strcmp(kind, "text")')
     assert 'o["t"]' in block
@@ -845,11 +845,11 @@ def test_circle_branch_reads_t_and_dispatches_to_the_ring_helper():
 
 
 # --------------------------------------------------------------------------
-# circle t, differentially (docs/plans/dragon-feedback.md R2). Stacking
-# concentric filled circles of radius r, r-1, ... left single-pixel holes
-# near the diagonals from t == 2 up; circle_half_widths()/draw_circle_ring()
-# -- extracted verbatim from the header -- replace that with an annulus
-# scanline. The oracle here is the *compiled* filled_circle()/circle(), not
+# circle t, differentially. Stacking concentric filled circles of radius
+# r, r-1, ... would leave single-pixel holes near the diagonals from t == 2
+# up; circle_half_widths()/draw_circle_ring() -- extracted verbatim from
+# the header -- draw an annulus scanline instead. The oracle here is the
+# *compiled* filled_circle()/circle(), not
 # a Python reimplementation of the midpoint algorithm (which could itself
 # disagree with ESPHome's by a pixel): the harness computes
 # filled_circle(r) and filled_circle(r - t) itself and hands both rasters
@@ -991,7 +991,7 @@ def _ring_vs_filled_circles(circle_ring_harness, r: int, t: int, pad: int = 4):
 def test_circle_ring_matches_filled_circle_difference(circle_ring_harness, r, t_offset):
     """The annulus equals filled_circle(r) minus filled_circle(r - t),
     pixel for pixel, for every t from 2 up to well past r (where there is
-    no inner circle at all) -- the equality R2 asks the fix to prove."""
+    no inner circle at all)."""
     t = t_offset
     ring, outer, inner, n = _ring_vs_filled_circles(circle_ring_harness, r, t)
     diffs = [
@@ -1170,7 +1170,7 @@ def poly_harness(tmp_path_factory) -> _PolyHarness:
         + "\n" + _POLY_HARNESS_MAIN
     )
     exe = d / "poly_harness"
-    # -fsanitize=undefined (P2, review of D12): the fill's int64_t crossing
+    # -fsanitize=undefined: the fill's int64_t crossing
     # arithmetic is exactly the kind of thing UBSan catches that a plain
     # -O1 build wouldn't -- signed overflow, an out-of-range cast -- and
     # -fno-sanitize-recover=all makes any such finding a hard failure here
@@ -1267,7 +1267,7 @@ def test_poly_mixed_fill_at_odd_origin_matches_a_rect(poly_harness, font_dir):
     dithers with the same absolute phase a `rect` fill does, the way
     test_sprite_3x3_mixed_block_matches_a_rect proves it for sprite.
 
-    This is also the asymmetry P5 documents: poly's x is inclusive of both
+    This is also the asymmetry docs/SPEC.md "poly" states: x is inclusive of both
     ends (the right edge sits at `x + w - 1`, same as a rect's own
     `[x, x+w-1]`), but the scanline that fills a row is half-open
     (`[min(y0,y1), max(y0,y1))`), so the bottom edge here is `y + h`, not
@@ -1321,10 +1321,10 @@ def test_poly_two_point_pts_warns_and_skips_on_both_sides(poly_harness, font_dir
 
 
 def test_poly_point_out_of_range_warns_and_skips_on_both_sides(poly_harness, font_dir):
-    """P1 (device-safety review of D12): a point past `kPolyMaxCoord` /
-    `_POLY_MAX_COORD` is malformed on both sides, not merely off-canvas --
-    the 5-million-coordinate case that used to make poly_spans() walk
-    millions of scanlines is rejected outright instead."""
+    """A point past `kPolyMaxCoord` / `_POLY_MAX_COORD`
+    (docs/plans/dragon-feedback.md D12) is malformed on both sides, not
+    merely off-canvas, so a point millions of units away is rejected
+    outright rather than making poly_spans() walk millions of scanlines."""
     op = {"op": "poly", "pts": [[10, -5000000], [20, 5000000], [0, 0]], "c": "black"}
     drew, _px, logs = poly_harness.run(op, 10, 10)
     assert not drew
@@ -1334,7 +1334,7 @@ def test_poly_point_out_of_range_warns_and_skips_on_both_sides(poly_harness, fon
 
 
 def test_poly_canvas_spanning_pts_matches_the_firmware(poly_harness, font_dir):
-    """P1's clamp -- the scanline range to `[0, height)`, each span's x to
+    """The scanline-range and span-x clamp -- to `[0, height)` and
     `[0, width)`, applied *before* the loop on both sides -- must land on
     exactly the same visible pixels a naive, unclamped fill would have.
     Points well outside the harness's own small canvas (but inside
@@ -1354,9 +1354,9 @@ def test_poly_canvas_spanning_pts_matches_the_firmware(poly_harness, font_dir):
 
 
 def test_poly_fill_false_0_matches_the_firmware(poly_harness, font_dir):
-    """P3: `"fill": 0` is not a JSON bool, so ArduinoJson's `o["fill"] |
-    true` reads the default (fills) -- and now so does the Python, instead
-    of `0`'s truthiness reading it as `fill: false`."""
+    """`"fill": 0` is not a JSON bool, so ArduinoJson's `o["fill"] |
+    true` reads the default (fills), and the Python side does the same,
+    instead of `0`'s truthiness reading it as `fill: false`."""
     op = {
         "op": "poly",
         "pts": [[5, 5], [55, 5], [30, 45]],

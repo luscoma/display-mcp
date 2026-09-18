@@ -3,9 +3,9 @@
 The MCP server serves docs/SPEC.md and samples/display.json as the
 display://spec and display://sample resources. A non-editable install — what
 deploy/setup.sh does on the host — has no docs/ or samples/ next to it, so it
-reads the copies inside the package instead. Those copies used to be checked
-in and drifted for months without anyone noticing; pyproject now force-includes
-the originals at build time, and the tests below hold that shut.
+reads the copies inside the package instead. pyproject force-includes the
+originals at build time so the packaged copies cannot drift from them, and
+the tests below hold that shut.
 """
 
 from __future__ import annotations
@@ -18,8 +18,12 @@ import zipfile
 from pathlib import Path
 
 import pytest
+from mcp import Client
 
-from display_mcp.render import check, render_hash
+from display_mcp import mcp_server
+from display_mcp.config import Settings
+from display_mcp.render import BUILTIN_MIXES, FONTS, OP_FIELDS, check, render_hash
+from fakes import FakeStore
 
 ROOT = Path(__file__).resolve().parents[1]
 PROMPTS = ROOT / "src" / "display_mcp" / "prompts"
@@ -63,10 +67,9 @@ def _fenced_json_sprite_op(text: str) -> dict:
 
 
 def test_spec_sprite_example_checks_clean(font_dir):
-    """F10 (docs/plans/dragon-feedback.md): docs/SPEC.md's ### sprite
-    example has to be something an agent can paste straight into a
-    document — check() on it must come back clean, the same rule
-    compose.md's example is held to below."""
+    """docs/SPEC.md's ### sprite example has to be something an agent can
+    paste straight into a document — check() on it must come back clean,
+    the same rule compose.md's example is held to below."""
     op = _fenced_json_sprite_op((ROOT / "docs" / "SPEC.md").read_text())
     assert check({"v": 1, "bg": "white", "ops": [op]}, font_dir) == []
 
@@ -142,3 +145,57 @@ def test_wheel_bundles_the_real_file(wheel, source):
     assert wheel.read(name) == source.read_bytes(), (
         f"{name} in the wheel differs from {source.relative_to(ROOT)}"
     )
+
+
+# --------------------------------------------------------------------------
+# Prose counts vs. the tables they describe: README.md, docs/SPEC.md and
+# docs/RUNBOOK.md each state, in words, how many tools/ops/font sizes/
+# built-in mixes this project has. If the vocabulary grows and a doc is not
+# updated, this fails instead of the doc quietly going stale.
+# --------------------------------------------------------------------------
+
+_WORDNUM = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+    "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11,
+    "twelve": 12, "twenty-one": 21,
+}
+# Word forms only: the vocabulary counts below are always spelled out in
+# prose ("eight ops"), while a bare digit ("56 ops") names a specific
+# document's op count elsewhere in the same files (e.g. README's sample
+# byte-size callout) — matching digits too would pick those up as false
+# positives.
+_NUM_RE = "|".join(sorted(_WORDNUM, key=len, reverse=True))
+
+
+def _int_of(word: str) -> int:
+    return int(word) if word.isdigit() else _WORDNUM[word.lower()]
+
+
+async def _tool_count() -> int:
+    mcp = mcp_server.build_mcp(FakeStore(), Settings(state_dir=ROOT, font_dir=ROOT))
+    async with Client(mcp) as c:
+        return len((await c.list_tools()).tools)
+
+
+def _found(pattern: str, *texts: str) -> set[int]:
+    found = set()
+    for text in texts:
+        for m in re.finditer(pattern, text, re.IGNORECASE):
+            found.add(_int_of(m.group(1) if m.groups() else m.group(0)))
+    return found
+
+
+async def test_prose_tool_ops_font_and_mix_counts_match_the_code():
+    readme = (ROOT / "README.md").read_text()
+    spec = (ROOT / "docs" / "SPEC.md").read_text()
+    runbook = (ROOT / "docs" / "RUNBOOK.md").read_text()
+
+    tools_found = _found(rf"\b({_NUM_RE})\s+(?:MCP\s+)?tools\b", readme, spec, runbook)
+    ops_found = _found(rf"\b({_NUM_RE})\s+ops\b", readme, spec)
+    fonts_found = _found(rf"\b({_NUM_RE})\s+font sizes\b", readme, spec)
+    mixes_found = _found(r"\b(twenty-one)\b", readme, spec)
+
+    assert tools_found == {await _tool_count()}, tools_found
+    assert ops_found == {len(OP_FIELDS)}, ops_found
+    assert fonts_found == {len(FONTS)}, fonts_found
+    assert mixes_found == {len(BUILTIN_MIXES)}, mixes_found

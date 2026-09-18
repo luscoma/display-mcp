@@ -17,7 +17,9 @@ from display_mcp.store import (
 
 @pytest.fixture(autouse=True)
 def fake_render_check(monkeypatch):
-    """render.check is a stub (raises NotImplementedError); fake it for these tests."""
+    """These tests exercise Store in isolation from the renderer's own
+    font-loading and drawing concerns, so check() is faked to return no
+    problems rather than actually rendering."""
     monkeypatch.setattr(store_mod.render, "check", lambda doc, font_dir: [])
 
 

@@ -74,6 +74,12 @@ def test_install_dry_run_mentions_the_plan():
     assert "default.json" in out
 
 
+@pytest.mark.skipif(
+    bool(shutil.which("apt-get") or shutil.which("systemctl")),
+    reason="this test's premise is a host with neither tool; on a Debian "
+    "deploy target --dry-run's no-exec behaviour is covered by the other "
+    "dry-run tests instead",
+)
 def test_install_dry_run_is_pragmatic_without_apt_or_systemctl():
     # apt-get and systemctl don't exist on macOS; --dry-run must still print
     # the plan rather than fail, because `run()` never execs them under DRY=1.
@@ -200,7 +206,7 @@ def test_fetch_fonts_early_return_requires_mono_too():
     fetching. Pinned against main()'s own guard (this suite has no network
     to drive the fetch itself with), not retyped, so a future edit that
     drops `is_font "$mono"` from it fails this test rather than silently
-    reintroducing F4's bug."""
+    letting a mono-less install look complete."""
     text = FETCH_FONTS.read_text()
     m = re.search(r'if is_font "\$reg" && is_font "\$bold" && is_font "\$mono"', text)
     assert m, "main()'s early-return guard must check all three files, not just the pair"
@@ -222,9 +228,9 @@ def test_fetch_fonts_italic_filter_covers_both_families():
 
 
 def test_fetch_fonts_temp_file_is_cleaned_up_by_a_trap(tmp_path):
-    """F6: two explicit `rm -f "$tmp"` calls (one per return path) leak the
-    temp file when `install` fails partway under `set -e` -- a RETURN trap
-    covers every exit from the function, not just the ones someone
+    """Two explicit `rm -f "$tmp"` calls (one per return path) would leak
+    the temp file when `install` fails partway under `set -e` -- a RETURN
+    trap covers every exit from the function, not just the ones someone
     remembered to clean up after by hand."""
     text = FETCH_FONTS.read_text()
     fn_start = text.index("fetch_family() {")
