@@ -614,7 +614,9 @@ def test_stale_tone_key_warns_and_draws_full_ink(font_dir):
     img_full, p1 = render(full, font_dir)
     img_stale, p2 = render(with_stale_tone, font_dir)
     assert p1 == []
-    assert p2 == ["ops[0] text: no such field 'tone'"]
+    assert p2 == [
+        "ops[0] text: no such field 'tone' (text takes x, y, s, c, f, a, w, wrap, lines, lh)"
+    ]
     assert img_full.tobytes() == img_stale.tobytes()
 
 
@@ -645,7 +647,7 @@ def test_unknown_op_has_no_field_noise(font_dir):
 def test_unknown_field_on_rect_warns(font_dir):
     doc = {"bg": "white", "ops": [{"op": "rect", "x": 0, "y": 0, "w": 10, "h": 10, "nonsense": 1}]}
     _, problems = render(doc, font_dir)
-    assert problems == ["ops[0] rect: no such field 'nonsense'"]
+    assert problems == ["ops[0] rect: no such field 'nonsense' (rect takes x, y, w, h, c, fill, t)"]
 
 
 def test_typo_field_colour_warns(font_dir):
@@ -654,7 +656,9 @@ def test_typo_field_colour_warns(font_dir):
         "ops": [{"op": "text", "x": 20, "y": 100, "s": "hi", "f": "sm", "colour": "red"}],
     }
     _, problems = render(doc, font_dir)
-    assert problems == ["ops[0] text: no such field 'colour'"]
+    assert problems == [
+        "ops[0] text: no such field 'colour' (text takes x, y, s, c, f, a, w, wrap, lines, lh)"
+    ]
 
 
 def test_c2_and_mix_on_an_op_point_at_the_palette_and_draw_unchanged(font_dir):

@@ -7,7 +7,10 @@ Files under `state_dir`:
     <name>.json        the published document, written atomically
     <name>.meta.json   FetchRecord fields, so status survives a restart
 
-`publish()` is the ONLY code path that stamps meta.hash and meta.generated.
+`publish()` is the ONLY code path that stamps meta.hash and meta.generated
+onto a document that actually gets published; it shares its stamping logic
+with `stamped_body()`, a preview helper that builds the identical bytes
+without writing or publishing anything.
 
 Loading: at construction every `<name>.json` and `<name>.meta.json` found in
 `state_dir` is loaded. A file that fails to parse (bad JSON, wrong type, an
@@ -90,6 +93,35 @@ def validate_name(name: str) -> str:
     if not NAME_RE.match(name or ""):
         raise DisplayError(f"bad display name {name!r}: must match {NAME_RE.pattern}")
     return name
+
+
+# What publish() writes into meta.generated. Exported so validate can stand
+# in a placeholder of exactly this length and report the byte count the
+# panel will actually be served.
+GENERATED_FMT = "%Y-%m-%dT%H:%M:%S%z"
+
+
+def stamped_body(doc: dict[str, Any], generated: str) -> tuple[dict[str, Any], bytes]:
+    """Build the stamped copy of `doc` — `v` defaulted, `meta.hash` set from
+    `render.render_hash`, `meta.generated` set to `generated` — and its
+    minified JSON encoding, byte for byte what `publish()` writes to disk.
+
+    This never writes anything and it is not itself a publish: nothing here
+    touches a `Store`, and `Store.publish()` remains the only code path that
+    stamps a document that actually gets published (module docstring,
+    CLAUDE.md). It exists so `publish()` and a caller that only wants to
+    preview the stamped byte size — `validate`, which has no document to
+    publish and no real `generated` timestamp yet — build the identical
+    bytes from one place instead of two copies that could drift apart.
+    """
+    new_doc = dict(doc)
+    new_doc.setdefault("v", 1)
+    meta = dict(new_doc.get("meta") or {})
+    meta["hash"] = render.render_hash(new_doc)
+    meta["generated"] = generated
+    new_doc["meta"] = meta
+    body = json.dumps(new_doc, separators=(",", ":")).encode()
+    return new_doc, body
 
 
 _FETCH_RECORD_FIELDS = {f.name for f in dataclasses.fields(FetchRecord)}
@@ -277,14 +309,8 @@ class Store:
             logger.warning("validation unavailable for display %r: %s", name, exc)
             warnings = [f"validation unavailable: {exc}"]
 
-        new_doc = dict(doc)
-        new_doc.setdefault("v", 1)
-        meta = dict(new_doc.get("meta") or {})
-        meta["hash"] = render.render_hash(new_doc)
-        meta["generated"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
-        new_doc["meta"] = meta
-
-        body = json.dumps(new_doc, separators=(",", ":")).encode()
+        new_doc, body = stamped_body(doc, time.strftime(GENERATED_FMT))
+        doc_hash = new_doc["meta"]["hash"]
         if len(body) > MAX_DOC_BYTES:
             raise DisplayError(f"document too large: {len(body)} bytes > {MAX_DOC_BYTES} max")
 
@@ -294,7 +320,7 @@ class Store:
             self._write_doc(name, body)
             entry.doc = new_doc
             entry.body = body
-            entry.hash = meta["hash"]
+            entry.hash = doc_hash
             entry.fetch.published_at = now
             entry.fetch.first_fetch_at = None
             self._write_meta(name, entry.fetch)
@@ -302,8 +328,8 @@ class Store:
 
         return PublishResult(
             name=name,
-            hash=meta["hash"],
-            etag=f'"{meta["hash"]}"',
+            hash=doc_hash,
+            etag=f'"{doc_hash}"',
             ops=len(new_doc.get("ops", [])),
             bytes=len(body),
             warnings=warnings,

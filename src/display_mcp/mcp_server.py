@@ -31,11 +31,13 @@ from . import render
 from .auth import wrap_with_access_auth
 from .config import Settings
 from .store import (
+    GENERATED_FMT,
     MAX_DOC_BYTES,
     DisplayError,
     FetchRecord,
     Store,
     UnknownDisplay,
+    stamped_body,
     validate_name,
 )
 
@@ -71,6 +73,13 @@ _GRID_NOTE = (
 )
 
 COMPOSE_PROMPT = (_PROMPTS_DIR / "compose.md").read_text()
+
+# `validate` has no `generated` timestamp yet -- nothing is being published
+# -- but needs `stamped_body()`'s byte count to match `publish()`'s exactly,
+# so it stands in a placeholder of the length the real stamp has (measured
+# from the format itself, so the two cannot drift). Its content never
+# reaches a caller: the stamped copy is used for its size and hash only.
+_GENERATED_PLACEHOLDER = "0" * len(time.strftime(GENERATED_FMT))
 
 
 def _merge_color_problems(problems: list[str], color_problems: list[str]) -> list[str]:
@@ -375,7 +384,17 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
             raise ToolError(str(exc)) from exc
         image, _problems = render.render(doc, settings.font_dir, dithered_colors=dithered_colors)
         if grid:
-            image = render.grid_overlay(image)
+            # A real face at a size actually chosen to survive a client
+            # downscaling the 1200x1600 PNG; PIL's bitmap default is a
+            # handful of pixels tall and unreadable once scaled. Falls back
+            # to that default (grid_overlay's own behaviour) if the face
+            # isn't installed, so a missing font directory never fails a
+            # grid preview -- it just looks the way it always did.
+            try:
+                grid_font = render.load_font(settings.font_dir, 22, False)
+            except Exception:  # noqa: BLE001 - the grid must never break a preview
+                grid_font = None
+            image = render.grid_overlay(image, font=grid_font)
         buf = io.BytesIO()
         image.save(buf, format="PNG")
         # Warnings come from check() rather than from the render above. On a
@@ -411,12 +430,16 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
         one — some clients send object arguments that way.
 
         Returns the hash `set_display` would stamp, the op count, the
-        minified byte size, and every renderer warning, plus two more:
-        `colors` is the effective `{recipe, hex}` of every colour name the
-        document references (`bg`, each op's `c`/`bgc`, every `palette`
-        key) — a name that doesn't resolve is absent here and shows up in
-        `warnings` instead. `max_bytes` is the ceiling `set_display` enforces
-        (`bytes` above it is a `ToolError`, not a warning).
+        minified byte size *of the stamped document* — `bytes` is measured
+        the same way `set_display` measures it (`v` defaulted, `meta.hash`
+        and `meta.generated` added), not of the draft as given, so a
+        document this reports as within `max_bytes` also publishes — and
+        every renderer warning, plus two more: `colors` is the effective
+        `{recipe, hex}` of every colour name the document references (`bg`,
+        each op's `c`/`bgc`, every `palette` key) — a name that doesn't
+        resolve is absent here and shows up in `warnings` instead.
+        `max_bytes` is the ceiling `set_display` enforces (`bytes` above it
+        is a `ToolError`, not a warning).
 
         What is actually checked: unknown op/font/icon/colour name; a field an op does not
         have (e.g. `c2`/`mix` written directly on an op — those are fields
@@ -445,13 +468,21 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
         doc = _coerce_document(document)
         problems = render.check(doc, settings.font_dir)
         op_count = len(doc.get("ops") or [])
-        body = json.dumps(doc, separators=(",", ":")).encode("utf-8")
+        stamped, body = stamped_body(doc, _GENERATED_PLACEHOLDER)
         colors, color_problems = render.document_colors(doc)
+        warnings = _merge_color_problems(problems, color_problems)
+        if len(body) > MAX_DOC_BYTES:
+            # The hard ceiling, not a soft budget (D4 declined one): the
+            # same refusal set_display would give, said here first.
+            warnings.append(
+                f"document too large: {len(body)} bytes > {MAX_DOC_BYTES} max "
+                "— set_display will refuse it"
+            )
         return {
-            "hash": render.render_hash(doc),
+            "hash": stamped["meta"]["hash"],
             "ops": op_count,
             "bytes": len(body),
-            "warnings": _merge_color_problems(problems, color_problems),
+            "warnings": warnings,
             "colors": colors,
             "max_bytes": MAX_DOC_BYTES,
         }
@@ -595,8 +626,9 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
     def describe() -> dict[str, Any]:
         """The renderer's whole vocabulary as one JSON object: canvas size,
         the inks and built-in mixes with their hexes and tiers, the fonts,
-        the icons and their size classes, the per-op field table, the
-        `fmt` template fields, and the document byte ceiling.
+        the anchor values `text.a`/`fmt.a` accept, the icons and their size
+        classes, the per-op field table, the `fmt` template fields, and the
+        document byte ceiling.
 
         Built from the same tables `render()` draws with, so it cannot say
         something `render()` doesn't accept. A session calls this once

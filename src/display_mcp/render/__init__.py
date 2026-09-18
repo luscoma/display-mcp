@@ -29,8 +29,10 @@ Public surface (final):
     hex_of(rgb) -> str   "#RRGGBB"
     fit_line(font, s, max_w) / wrap_lines(font, s, max_w, max_lines)
     fonts_available(font_dir) -> bool
-    grid_overlay(img, step=100) -> PIL.Image.Image   a coordinate grid drawn
-        on a copy of `img`; never touches render()'s own output
+    grid_overlay(img, step=100, font=None) -> PIL.Image.Image   a coordinate
+        grid drawn on a copy of `img`; never touches render()'s own output.
+        `font` defaults to PIL's bitmap face; pass a real one (`load_font`)
+        for labels that survive a client downscaling the PNG
     swatch_document(palette=None) -> dict   every ink and built-in mix as a
         labelled chip, an ordinary display-list document
     swatch_groups(palette=None) -> [(title, [(label, c, recipe, hex), ...])]
@@ -178,6 +180,11 @@ def _op_field_problems(op: dict[str, Any], kind: str | None, where: str) -> list
     "unknown op" problem from render()'s dispatch is enough, and this
     returns [] for any kind not in OP_FIELDS.
 
+    Each warning names the op's actual fields — required first, then
+    optional, in the table's own order — e.g. "ops[0] text: no such field
+    'colour' (text takes x, y, s, c, f, a, w, wrap, lines, lh)", so the
+    fix is in the warning itself rather than a second trip to `describe()`.
+
     `c2`/`mix` are special-cased to one palette hint instead of two
     "no such field" warnings, because that's the actual authoring mistake
     the table exists to catch — and it is left to Ctx.ink() when `c` is
@@ -190,13 +197,19 @@ def _op_field_problems(op: dict[str, Any], kind: str | None, where: str) -> list
     spec = OP_FIELDS.get(kind) if isinstance(kind, str) else None
     if spec is None:
         return []
-    known = set(spec["required"]) | set(spec["optional"])
+    required = list(spec["required"])
+    optional = list(spec["optional"])
+    known = set(required) | set(optional)
+    fields = ", ".join(required + optional)
     stray_mix = {"c2", "mix"} & op.keys()
-    problems = [
-        f"{where}: no such field {key!r}"
-        for key in op
-        if key != "op" and key not in stray_mix and key not in known
-    ]
+    stray = [k for k in op if k != "op" and k not in stray_mix and k not in known]
+    problems = []
+    if stray:
+        # One line per op, however many typos it carries, so the field
+        # list is said once rather than once per stray key.
+        noun = "field" if len(stray) == 1 else "fields"
+        names = ", ".join(repr(k) for k in stray)
+        problems.append(f"{where}: no such {noun} {names} ({kind} takes {fields})")
     if stray_mix and not isinstance(op.get("c"), dict):
         problems.append(f"{where}: {_MIX_HINT}")
     return problems
@@ -1654,24 +1667,33 @@ def check(doc: dict[str, Any], font_dir: Path) -> list[str]:
 GRID_COLOR = (255, 0, 255)
 
 
-def grid_overlay(img: Image.Image, step: int = 100) -> Image.Image:
+def grid_overlay(
+    img: Image.Image,
+    step: int = 100,
+    font: ImageFont.ImageFont | ImageFont.FreeTypeFont | None = None,
+) -> Image.Image:
     """A coordinate grid drawn on a *copy* of `img`; `img` itself is untouched.
 
     Lines run every `step` px, heavier (2px vs 1px) every 5th line, in
     `GRID_COLOR` — a magenta that is none of the six inks and reads on both
     light and dark grounds. Each line is labelled with its coordinate along
     the canvas's top edge (x) and left edge (y); the label text sits on a
-    small solid-black chip so it stays legible over any fill underneath,
-    the same problem `check()`'s contrast floor exists for. `WIDTH`/`HEIGHT`
-    themselves are one past the last real pixel column/row, so the far edge
-    is closed with an explicit, unlabelled border line at `w-1`/`h-1`
-    instead — a coordinate line drawn at `w`/`h` would land entirely
-    off-canvas and disappear, which is what this did before: a bordered
-    canvas reads better than one whose last edge is invisible.
+    small solid-black chip, sized to the label, so it stays legible over any
+    fill underneath, the same problem `check()`'s contrast floor exists for.
+    `WIDTH`/`HEIGHT` themselves are one past the last real pixel column/row,
+    so the far edge is closed with an explicit, unlabelled border line at
+    `w-1`/`h-1` instead — a coordinate line drawn at `w`/`h` would land
+    entirely off-canvas and disappear, which is what this did before: a
+    bordered canvas reads better than one whose last edge is invisible.
 
-    Labels use `PIL.ImageFont.load_default()`, a bitmap face Pillow ships
-    with the library, so this needs no `font_dir` and works even where the
-    Instrument Sans faces are not installed.
+    `font` is normally a real face loaded through `load_font` at a size a
+    caller has actually chosen to be legible once the 1200×1600 PNG is
+    downscaled — PIL's `load_default()` bitmap face is a handful of pixels
+    tall and disappears under any real-world scaling. Omit it (or pass
+    `None`, the default) to fall back to `load_default()` anyway, so this
+    function alone never needs a `font_dir` and never fails a preview when
+    one isn't installed; `preview` is what supplies the real face and
+    catches the load failing.
 
     This is meant to be called on `render()`'s *return value*, never from
     inside it: `render()`'s own output — what `test_render_emits_only_the_six_inks`
@@ -1679,7 +1701,7 @@ def grid_overlay(img: Image.Image, step: int = 100) -> Image.Image:
     """
     out = img.convert("RGB").copy()
     d = ImageDraw.Draw(out)
-    font = ImageFont.load_default()
+    font = font or ImageFont.load_default()
     w, h = out.size
 
     for x in range(0, w, step):

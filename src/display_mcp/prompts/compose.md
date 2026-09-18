@@ -49,7 +49,11 @@ a built-in mix name, or your own palette entry directly in `c`.
 Every op takes `c` (a base ink, a built-in mix name, or your own `palette`
 entry, default `black`). An unknown op, font or icon name logs a warning and
 skips that op; an unknown colour is different — it falls back to black with
-a warning and the op still draws. Check `warnings` either way.
+a warning and the op still draws. A field an op does not have — a typo
+like `colour`, or `font` for `f` — is a `validate`/`preview` warning naming
+the fields that op actually takes, so a typo can't pass silently; `c2`/`mix`
+written on an op instead of in a `palette` entry gets its own warning
+saying where they belong. Check `warnings` either way.
 
 - **`rect`** — `x y w h`, `fill` (default true), `t` (outline thickness when
   `fill: false`).
@@ -66,7 +70,8 @@ a warning and the op still draws. Check `warnings` either way.
   - Always set `w` on anything sourced from a calendar or a list — you
     don't control how long those strings get.
 - **`icon`** — `x y n z`. `x,y` is the top-left of the icon's box. `n` is the
-  MDI name below; only these eleven exist, anything else is skipped.
+  MDI name below; only these eleven exist, anything else is skipped. `bgc`
+  is accepted and ignored (every compiled icon is transparent).
 - **`fmt`** — `x y s`, `f` (default `xs`), `a`, `c`. Like
   `text` but `s` is a template of system fields: `{hash}` (last 5 of the
   document's hash), `{hash16}`, `{time}` (`1:43 PM`, when the panel drew
@@ -120,8 +125,11 @@ of taste.
 Six inks — `black white yellow red blue green` — plus any two-ink mix.
 Write `"c": "navy"` with no palette entry needed: twenty-one tested
 pairings are built in (full table with hexes: the `display://spec`
-resource → "The named palette", or `describe()`). Redefine one, or invent
-your own, as a `palette` entry:
+resource → "The named palette", or `describe()`, or `swatches()`, which
+renders every named colour as a labelled chip — pass
+`swatches(document, include_document=true)` to also get that sheet back as
+a publishable document, every name on the wall under its own chip).
+Redefine one, or invent your own, as a `palette` entry:
 `{"c": ..., "c2": ..., "mix": 25|50|75}`. `mix` is the share of **`c2`**, so
 with `c: black, c2: white` a *higher* number is *lighter* — backwards from
 print habit, and it has fooled everyone who's met it.
@@ -179,13 +187,17 @@ angle, temperature and unit variance. Trust the wall over the number.
 
 1. `validate(document)` — cheap, no rendering artifacts to look at, but
    catches structural problems and gives you the hash/op count/byte size
-   up front.
+   up front. `validate().max_bytes` (same as `describe().limits.max_bytes`)
+   is the ceiling `set_display` enforces — `bytes` above it is refused,
+   not just a warning.
 2. `preview(document=...)` — renders the actual PNG, ink-approximated the
    way the panel will look on the wall, and returns `validate`'s warnings
    with it. Look at it before publishing; the panel wakes roughly once an
    hour, and a wasted `set_display` either changes nothing (same hash) or
    costs the panel a ~1.5 mAh full redraw next time it wakes versus
-   ~0.15 mAh for a 304 it would otherwise get.
+   ~0.15 mAh for a 304 it would otherwise get. `preview(document, grid=true)`
+   overlays a labelled 100 px coordinate grid, for placing an op's `x`/`y`
+   by coordinate instead of a guess-preview-adjust round each time.
 
    Each mix is drawn as the single colour it averages to — the hex in the
    table above — rather than the 1 px checkerboard the panel dithers, so

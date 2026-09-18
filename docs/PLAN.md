@@ -139,7 +139,7 @@ preview beats publishing three times).
 | `get_display` | `name="default"` | the published document, or an error if none |
 | `status` | `name?` | one display, or all: `{published, hash, ops, bytes, published_at, first_fetch_at, recent_fetch_at, recent_fetch_status, recent_fetch_ip}`; timestamps are ISO 8601 plus a matching `*_ago` string. With no `name`, also `{displays: {name: ...above...}, requested: {name: {recent_fetch_at, recent_fetch_ago, recent_fetch_status, recent_fetch_ip}}, auth}` — `requested` covers every name in `Store.fetched_names()`, published or not, which is the answer to "which name is the panel on" |
 | `clear_display` | `name="default"` | `{name, cleared}` |
-| `describe` | none | the renderer's vocabulary as one JSON object: `{canvas, inks, mixes, densities, fonts, icons, icon_sizes, ops, fmt_fields, limits}`, built from the renderer's own tables at call time |
+| `describe` | none | the renderer's vocabulary as one JSON object: `{canvas, inks, mixes, densities, fonts, anchors, icons, icon_sizes, ops, fmt_fields, limits}`, built from the renderer's own tables at call time — `anchors` is the list of values `text.a`/`fmt.a` accept (`left`, `center`, `right`) |
 | `guide` | none | the text of `prompts/compose.md` — the composing guide, as a tool call for a client that cannot read prompts |
 | `swatches` | `document?` (dict or JSON string), `include_document=False` | PNG **and** a text list: every ink and built-in mix as a labelled chip, flat (`dithered_colors=False`); `document`'s own `palette` is appended as a final group, capped to what fits the page (`+N more not shown` past that). The sheet is itself a valid document; `include_document=True` adds it as a third block (JSON), to `set_display` |
 

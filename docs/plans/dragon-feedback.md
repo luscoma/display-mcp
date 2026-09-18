@@ -168,7 +168,10 @@ Lines every 100 px, heavier every 500, labelled at the top and left edges,
 drawn in a colour outside the ink table onto a copy of the rendered image
 *after* `render()` returns — never inside it, so
 `test_render_emits_only_the_six_inks` stays true and the CLI is unaffected.
-Labels use PIL's built-in bitmap font so the grid needs no font directory.
+Labels are drawn in Instrument Sans at 22 px when the font directory has
+it (the bitmap default is unreadable once a client scales the PNG down —
+found by the Phase A end-to-end run), falling back to PIL's bitmap font so
+the grid never fails a preview.
 The text block gains one line: *grid lines are an overlay and are not in the
 document.* Off by default.
 
