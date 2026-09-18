@@ -392,6 +392,20 @@ SPEC.md lists `t` on `circle`, so the firmware is the one out of line. It
 is a two-line loop in the header (concentric circles, as the rect outline
 does) and rides Phase B's flash; recorded here so it is not lost.
 
+Landed 2026-09-18, in B2, alongside the rounded rect it shares a loop shape
+with.
+
+Amended 2026-09-18 (R2): that concentric-circles loop left single-pixel
+background holes near the 45° diagonals from `t == 2` up — consecutive
+midpoint circles' octant boundaries don't land on the same pixels.
+`display_list.h` fills the annulus by rows instead now
+(`circle_half_widths()`/`draw_circle_ring()`), derived from the same
+midpoint algorithm `filled_circle()` itself uses so the outer boundary
+matches it exactly; a compiled parity test diffs the annulus against
+`filled_circle(r) - filled_circle(r - t)` pixel for pixel. `t == 1` is
+unchanged — still the plain `circle()` call this note originally
+described, not routed through the annulus at all.
+
 ### D14. The document version stays at 1
 
 Everything above is additive: an old firmware meets `sprite` or `poly` and
@@ -434,8 +448,8 @@ sync` on the host.
 | # | commit | touches | tests | closes |
 |---|---|---|---|---|
 | B1 | `sprite: pixel art as rows of characters` | `firmware/display_list.h`; `render/__init__.py`; `docs/SPEC.md`; `prompts/compose.md`; `describe()` table; `samples/sprite.json`; README | run structure: a row of `KKOO` draws two rects; `mirror`; transparent cells leave the ground; unknown character warns and is black; ragged rows warn; off-canvas on the far edge; mixed cells dither with absolute phase; the new sample validates clean and its hash is pinned | §3a |
-| B2 | `rect: corner radius on a filled rect` | header; renderer; SPEC; compose; `describe()` | seven-shape construction fills the same box as `r: 0`; `r` on an outline warns and draws square; corner pixel at `r` is bg | §3f |
-| B3 | `fonts: JetBrains Mono as \`mono\`` | `epaper-schedule.yaml` (font entry with the box and block ranges); header untouched; `render/__init__.py` (`FONTS` file names and line heights, basic layout, lazy face); `deploy/fetch-fonts.sh`; `deploy/setup.sh fonts`; RUNBOOK step 2; `tests/test_deploy.py`; SPEC; compose; `describe()` | glyph advance is a constant integer; `<>` stays two glyphs; `┌─┐` renders with no gap; `mono`'s default `lh` is its cell height; a missing face skips the op with a problem instead of raising; `fonts_available` requires both families; fetch script is still idempotent | §3e |
+| B2 | `rect: corner radius on a filled rect` | header (also `circle_half_widths()`/`draw_circle_ring()`, R2); renderer; SPEC; compose; `describe()` | seven-shape construction fills the same box as `r: 0`, clamped to `(min(w,h)-1)//2` (R1); `r` on an outline warns and draws square; corner pixel at `r` is bg; circle `t≥2` is an annulus matching `filled_circle(r)-filled_circle(r-t)` exactly, compiled and diffed, with no diagonal holes | §3f |
+| B3 | `fonts: JetBrains Mono as \`mono\`` | `epaper-schedule.yaml` (font entry with the box and block ranges); header untouched; `render/__init__.py` (`FONTS` as `Face(size, bold, file, cell_height)`, basic layout, `None`-able mono face); `deploy/fetch-fonts.sh`; `deploy/setup.sh fonts`; RUNBOOK step 2; `tests/test_deploy.py`; SPEC; compose; `describe()` | glyph advance is a constant integer; `<>` stays two glyphs; `┌─┐` renders with no gap; `mono`'s default `lh` is its cell height; a missing face skips the op with a problem instead of raising; `fonts_available` requires both families; fetch script is still idempotent | §3e |
 | B4 | `poly: a point list, filled by a shared scanline` | header; renderer; `tests/test_firmware_parity.py` (extract + compile `poly_spans`); SPEC; compose; `describe()`; `samples/sprite.json` gains one | C++ and Python spans agree over convex, concave and self-touching shapes; `fill: false` closes the edge; a two-point `pts` warns and skips | §3d |
 
 Then, once: `cd firmware && esphome run epaper-schedule.yaml`, publish

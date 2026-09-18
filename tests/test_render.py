@@ -354,6 +354,134 @@ def test_rect_exactly_at_tolerance_is_fine(sample_doc, font_dir):
     assert not any("off-canvas" in p for p in problems)
 
 
+# --------------------------------------------------------------------------
+# rect corner radius (docs/plans/dragon-feedback.md D10, B2)
+# --------------------------------------------------------------------------
+
+
+def _rounded_rect_doc(r=None, fill=True, t=1, x=50, y=60, w=120, h=80, c="black", palette=None):
+    op = {"op": "rect", "x": x, "y": y, "w": w, "h": h, "c": c, "fill": fill, "t": t}
+    if r is not None:
+        op["r"] = r
+    return {"v": 1, "meta": {}, "bg": "white", "palette": palette or {}, "ops": [op]}
+
+
+def test_rect_r_zero_is_pixel_identical_to_no_r(font_dir):
+    no_r, problems_a = render(_rounded_rect_doc(r=None), font_dir)
+    with_r0, problems_b = render(_rounded_rect_doc(r=0), font_dir)
+    assert problems_a == problems_b == []
+    assert no_r.tobytes() == with_r0.tobytes()
+
+
+def test_rect_corner_pixel_is_ground_for_r_at_least_2(font_dir):
+    x, y, w, h = 50, 60, 120, 80
+    img, problems = render(_rounded_rect_doc(r=20, x=x, y=y, w=w, h=h), font_dir)
+    assert problems == []
+    px = img.load()
+    for cx, cy in ((x, y), (x + w - 1, y), (x, y + h - 1), (x + w - 1, y + h - 1)):
+        assert px[cx, cy] == INK["white"], (cx, cy)
+
+
+def test_rect_r_larger_than_half_warns_and_clamps(font_dir):
+    x, y, w, h = 50, 60, 40, 100
+    max_r = max(0, (min(w, h) - 1) // 2)  # 19, not 20 -- see R1 below
+    img, problems = render(_rounded_rect_doc(r=100, x=x, y=y, w=w, h=h), font_dir)
+    clamped, _ = render(_rounded_rect_doc(r=max_r, x=x, y=y, w=w, h=h), font_dir)
+    assert any(f"clamped to {max_r}" in p for p in problems), problems
+    assert img.tobytes() == clamped.tobytes()
+
+
+def test_rect_radius_sweep_stays_within_the_box(font_dir):
+    """R1 (blocker): a corner disc is `2r + 1` px across, so the old
+    `min(w, h) // 2` bound let `r` at its own max ink one row/column past
+    the nominal box on *both* sides, on an even `w` or `h` -- e.g. `w == 40`:
+    a corner circle of `r == 20` is centred at `x + 20` and spans
+    `[x, x + 40]`, one column wider than the box's own `[x, x + 39]`.
+    `(min(w, h) - 1) // 2` is the actual safe bound (odd dimensions are
+    unaffected: `min(w,h)-1` is already even there, so the two formulas
+    agree).
+
+    Drawn directly with `_draw_rounded_rect()` (not through `render()`,
+    whose white background isn't zero so `Image.getbbox()` would just
+    report the whole canvas) onto a small padded canvas — any ink straying
+    outside `[pad, pad+w) x [pad, pad+h)` shows up in `getbbox()`. Even and
+    odd `w`/`h`, `r` at 1, 2, the new clamp's own max, and one past it
+    (which `render()`'s own clamp is responsible for catching before this
+    function is ever called with it — not tested here again). Each edge's
+    own row/column, away from the rounded corners, must stay fully inked —
+    the ground a rounded box is judged against.
+    """
+    from PIL import Image, ImageDraw
+
+    from display_mcp.render import _draw_rounded_rect
+
+    pad = 5
+    sizes = [(40, 40), (41, 41), (40, 30), (41, 31), (10, 10), (11, 11), (200, 80), (201, 81)]
+    for w, h in sizes:
+        max_r = max(0, (min(w, h) - 1) // 2)
+        for r in sorted({1, 2, max_r}):
+            if r < 1:
+                continue
+            img = Image.new("1", (w + 2 * pad, h + 2 * pad), 0)
+            dr = ImageDraw.Draw(img)
+            _draw_rounded_rect(dr, pad, pad, w, h, r, 1)
+            bbox = img.getbbox()
+            assert bbox is not None, (w, h, r)
+            bx0, by0, bx1, by1 = bbox
+            assert bx0 >= pad and by0 >= pad and bx1 <= pad + w and by1 <= pad + h, (
+                w, h, r, bbox,
+            )
+            px = img.load()
+            mid_x, mid_y = pad + w // 2, pad + h // 2
+            assert px[mid_x, pad] and px[mid_x, pad + h - 1], (w, h, r, "top/bottom edge")
+            assert px[pad, mid_y] and px[pad + w - 1, mid_y], (w, h, r, "left/right edge")
+
+
+def test_rect_r_on_outline_warns_and_draws_square(font_dir):
+    img, problems = render(_rounded_rect_doc(r=20, fill=False, t=2), font_dir)
+    square, _ = render(_rounded_rect_doc(r=None, fill=False, t=2), font_dir)
+    assert any("r is ignored on an outline; drawing square corners" in p for p in problems)
+    assert img.tobytes() == square.tobytes()
+
+
+def test_rect_non_integer_r_warns_and_is_treated_as_zero(font_dir):
+    img, problems = render(_rounded_rect_doc(r=12.5), font_dir)
+    square, _ = render(_rounded_rect_doc(r=0), font_dir)
+    assert any("r=12.5" in p and "not a non-negative integer" in p for p in problems)
+    assert img.tobytes() == square.tobytes()
+
+
+def test_rect_negative_r_warns_and_is_treated_as_zero(font_dir):
+    img, problems = render(_rounded_rect_doc(r=-5), font_dir)
+    square, _ = render(_rounded_rect_doc(r=0), font_dir)
+    assert any("r=-5" in p and "not a non-negative integer" in p for p in problems)
+    assert img.tobytes() == square.tobytes()
+
+
+def test_rect_mixed_rounded_fill_dithers_with_absolute_phase(font_dir):
+    """R4: what this actually pins is the rounded rect's *middle band* —
+    the columns outside both corners' own radii, where the seven-shape
+    construction draws a plain rectangle rather than a circle — against a
+    plain, unrounded rect's fill of the same box and colour, pixel for
+    pixel. Not a claim about the whole shape: the corners themselves are
+    excluded, since PIL's `ellipse` and the firmware's midpoint circle
+    round differently (D10's eyeball-parity note)."""
+    palette = {"grey": {"c": "black", "c2": "white", "mix": 25}}
+    x, y, w, h, r = 40, 40, 100, 100, 20
+    rounded, problems = render(
+        _rounded_rect_doc(r=r, x=x, y=y, w=w, h=h, c="grey", palette=palette), font_dir
+    )
+    plain, _ = render(
+        _rounded_rect_doc(r=None, x=x, y=y, w=w, h=h, c="grey", palette=palette), font_dir
+    )
+    assert problems == []
+    px_r, px_p = rounded.load(), plain.load()
+    x0, x1 = x + r, x + w - r
+    assert all(
+        px_r[xx, yy] == px_p[xx, yy] for yy in range(y, y + h) for xx in range(x0, x1)
+    )
+
+
 def test_line_off_canvas_x2(sample_doc, font_dir):
     doc = copy.deepcopy(sample_doc)
     doc["ops"].append({"op": "line", "x": 0, "y": 0, "x2": 1300, "y2": 10, "c": "black"})
@@ -647,7 +775,9 @@ def test_unknown_op_has_no_field_noise(font_dir):
 def test_unknown_field_on_rect_warns(font_dir):
     doc = {"bg": "white", "ops": [{"op": "rect", "x": 0, "y": 0, "w": 10, "h": 10, "nonsense": 1}]}
     _, problems = render(doc, font_dir)
-    assert problems == ["ops[0] rect: no such field 'nonsense' (rect takes x, y, w, h, c, fill, t)"]
+    assert problems == [
+        "ops[0] rect: no such field 'nonsense' (rect takes x, y, w, h, c, fill, t, r)"
+    ]
 
 
 def test_typo_field_colour_warns(font_dir):
@@ -728,7 +858,7 @@ def test_op_field_table_covers_every_op_the_renderer_handles():
 
     assert set(OP_FIELDS) == {"rect", "line", "circle", "text", "fmt", "icon", "sprite"}
     audited = {
-        "rect": {"x", "y", "w", "h", "c", "fill", "t"},
+        "rect": {"x", "y", "w", "h", "c", "fill", "t", "r"},
         "line": {"x", "y", "x2", "y2", "c", "t"},
         "circle": {"x", "y", "r", "c", "fill", "t"},
         "text": {"x", "y", "s", "c", "f", "a", "w", "wrap", "lines", "lh"},

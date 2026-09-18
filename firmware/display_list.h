@@ -409,6 +409,78 @@ inline void thick_line(esphome::display::Display &it, int x1, int y1, int x2, in
   }
 }
 
+/// Row half-widths of a `filled_circle()` of the given `radius`, indexed by
+/// `|dy|` from 0 to `radius` -- the exact rows esphome::display::Display::
+/// filled_circle()'s own midpoint loop draws, recorded here instead of
+/// drawn, so a ring built from this table shares filled_circle()'s outer
+/// boundary pixel for pixel rather than a hand-derived circle equation that
+/// could disagree with it here and there (docs/plans/dragon-feedback.md
+/// R2). `radius` must be >= 0.
+///
+/// `-1` means "this row is never drawn at this radius" -- not the same as
+/// a width of 0 (a single centre pixel). At `radius == 1` the midpoint loop
+/// only ever visits `dy == 0`: it draws one 3px row and nothing at
+/// `|dy| == 1`, a real quirk of the algorithm (verified against the actual
+/// filled_circle(), not assumed), so `half[1]` has to say "nothing here",
+/// not "one pixel here" -- the caller would otherwise ink a centre dot
+/// filled_circle() itself never draws.
+inline void circle_half_widths(int radius, std::vector<int> &half) {
+  half.assign(radius + 1, -1);
+  int dx = -radius, dy = 0, err = 2 - 2 * radius, e2;
+  do {
+    const int w = -dx;
+    if (w > half[dy])
+      half[dy] = w;
+    e2 = err;
+    if (e2 < dy) {
+      err += ++dy * 2 + 1;
+      if (-dx == dy && e2 <= dx)
+        e2 = 0;
+    }
+    if (e2 > dx)
+      err += ++dx * 2 + 1;
+  } while (dx <= 0);
+}
+
+/// The annulus `filled_circle(cx, cy, r)` minus `filled_circle(cx, cy,
+/// r - t)`, drawn through `it` as two horizontal runs per row (via
+/// filled_rectangle(), height 1 -- the same primitive draw_poly() fills its
+/// spans with) rather than `t` concentric circle() outlines, which leave
+/// single-pixel background holes near the 45-degree diagonals from `t == 2`
+/// up: consecutive midpoint circles' octant boundaries don't land on the
+/// same pixels (docs/plans/dragon-feedback.md R2). `t <= 1` is the caller's
+/// job, not this function's -- see the `circle` branch below, which keeps
+/// calling circle() directly for `t == 1` rather than routing a one-row
+/// annulus through here. `r < 0` draws nothing.
+inline void draw_circle_ring(esphome::display::Display &it, int cx, int cy, int r, int t,
+                             esphome::Color c) {
+  if (r < 0)
+    return;
+  std::vector<int> outer;
+  circle_half_widths(r, outer);
+  const int inner_r = r - t;
+  std::vector<int> inner;
+  if (inner_r >= 0)
+    circle_half_widths(inner_r, inner);
+  for (int dy = -r; dy <= r; dy++) {
+    const int ady = dy < 0 ? -dy : dy;
+    const int ow = outer[ady];
+    if (ow < 0)
+      continue;  // filled_circle(r) itself draws nothing on this row
+    const int y = cy + dy;
+    if (inner_r >= 0 && ady <= inner_r && inner[ady] >= 0) {
+      const int iw = inner[ady];
+      const int run = ow - iw;
+      if (run > 0) {
+        it.filled_rectangle(cx - ow, y, run, 1, c);
+        it.filled_rectangle(cx + iw + 1, y, run, 1, c);
+      }
+    } else {
+      it.filled_rectangle(cx - ow, y, 2 * ow + 1, 1, c);
+    }
+  }
+}
+
 /// A proxy `display::Display` that dithers by rewriting colour inside
 /// draw_pixel_at() (decision 6). `line`, `rectangle`, `filled_rectangle`,
 /// `circle`, `filled_circle` and `image` are non-virtual members of Display
@@ -724,7 +796,37 @@ inline bool draw_display_list(esphome::display::Display &it, const std::string &
       if (!strcmp(kind, "rect")) {
         const int x = o["x"] | 0, y = o["y"] | 0, w = o["w"] | 0, h = o["h"] | 0;
         if (o["fill"] | true) {
-          mix.filled_rectangle(x, y, w, h, c.a);
+          // Corner radius (docs/plans/dragon-feedback.md D10). Clamped to
+          // (min(w, h) - 1) / 2 the same way the Python is -- silently
+          // here, with a warning there, since a document is authored on
+          // that side. The bound is min(w, h) - 1, not min(w, h): a corner
+          // disc is 2r+1 px across, so r == min(w, h) / 2 on an even
+          // dimension would ink one row/column past the box (R1).
+          // std::max(0, ...) guards a zero-size box.
+          int r = o["r"] | 0;
+          const int max_r = std::max(0, (std::min(w, h) - 1) / 2);
+          if (r > max_r) r = max_r;
+          if (r > 0) {
+            // Three filled_rectangles and four filled_circles through the
+            // same MixDisplay a plain fill uses, so a mixed rounded rect
+            // still dithers at one absolute phase. filled_rectangle(x, y,
+            // w, h) covers [x, x+w) x [y, y+h); filled_circle is centred on
+            // the given pixel. Eyeball, not pixel, parity with the
+            // Python's PIL ellipse -- see render/__init__.py's
+            // _draw_rounded_rect() for which pixels may differ.
+            if (w - 2 * r > 0)
+              mix.filled_rectangle(x + r, y, w - 2 * r, h, c.a);
+            if (h - 2 * r > 0) {
+              mix.filled_rectangle(x, y + r, r, h - 2 * r, c.a);
+              mix.filled_rectangle(x + w - r, y + r, r, h - 2 * r, c.a);
+            }
+            mix.filled_circle(x + r, y + r, r, c.a);
+            mix.filled_circle(x + w - 1 - r, y + r, r, c.a);
+            mix.filled_circle(x + r, y + h - 1 - r, r, c.a);
+            mix.filled_circle(x + w - 1 - r, y + h - 1 - r, r, c.a);
+          } else {
+            mix.filled_rectangle(x, y, w, h, c.a);
+          }
         } else {
           const int t = o["t"] | 1;
           for (int i = 0; i < t; i++)
@@ -736,10 +838,24 @@ inline bool draw_display_list(esphome::display::Display &it, const std::string &
 
       } else if (!strcmp(kind, "circle")) {
         const int x = o["x"] | 0, y = o["y"] | 0, r = o["r"] | 0;
-        if (o["fill"] | true)
+        if (o["fill"] | true) {
           mix.filled_circle(x, y, r, c.a);
-        else
-          mix.circle(x, y, r, c.a);
+        } else {
+          // `t` used to be dropped here entirely (mix.circle() draws one
+          // 1px ring regardless), while SPEC.md and the Python both
+          // honour it -- landed 2026-09-18 (docs/plans/dragon-feedback.md,
+          // "Noted in passing"). `t == 1`, the common case, is still the
+          // plain circle() outline below, unchanged. `t >= 2` used to
+          // stack `t` concentric circle() rings, which leaves
+          // single-pixel holes near the diagonals (R2); draw_circle_ring()
+          // fills the annulus by rows instead, matching
+          // filled_circle(r) - filled_circle(r - t) exactly.
+          const int t = o["t"] | 1;
+          if (t <= 1)
+            mix.circle(x, y, r, c.a);
+          else
+            draw_circle_ring(mix, x, y, r, t, c.a);
+        }
 
       } else if (!strcmp(kind, "text")) {
         auto fit = assets.fonts.find(o["f"] | "md");

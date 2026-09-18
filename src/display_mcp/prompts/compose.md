@@ -56,7 +56,8 @@ written on an op instead of in a `palette` entry gets its own warning
 saying where they belong. Check `warnings` either way.
 
 - **`rect`** — `x y w h`, `fill` (default true), `t` (outline thickness when
-  `fill: false`).
+  `fill: false`), `r` (corner radius on a filled rect, default 0, clamped to
+  `(min(w, h) - 1) // 2`; ignored — with a warning — on an outline).
 - **`line`** — `x y x2 y2`, `t` (thickness; works on horizontal/vertical
   lines, diagonals only thicken vertically).
 - **`circle`** — `x y r` is the centre and radius, `fill` (default true), `t`.

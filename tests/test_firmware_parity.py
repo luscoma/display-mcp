@@ -776,3 +776,229 @@ def test_sprite_oversized_cell_is_malformed_on_both_sides(sprite_harness, font_d
     assert any("cell" in log for log in logs)
     problems = check({"v": 1, "bg": "white", "ops": [op]}, font_dir)
     assert any("nothing to draw, skipped" in p for p in problems)
+
+
+# --------------------------------------------------------------------------
+# rect r / circle t (docs/plans/dragon-feedback.md D10, B2) -- both fields
+# must actually be read where the plan says, extracted the same crude way
+# the sprite-branch test above is: the field name has to appear inside the
+# right branch of the op dispatch, not just anywhere in the file.
+# --------------------------------------------------------------------------
+
+
+def _branch(src: str, start_marker: str, end_marker: str) -> str:
+    start = src.index(start_marker)
+    end = src.index(end_marker, start)
+    return src[start:end]
+
+
+def test_rect_branch_reads_the_corner_radius():
+    src = HEADER.read_text()
+    block = _branch(src, 'strcmp(kind, "rect")', 'strcmp(kind, "line")')
+    assert 'o["r"]' in block
+
+
+def test_circle_branch_reads_t_and_dispatches_to_the_ring_helper():
+    """R2: `t <= 1` stays the plain circle() outline; `t >= 2` goes through
+    draw_circle_ring() rather than looping concentric circle() calls inline
+    (that loop used to leave diagonal holes from t == 2 up -- see the
+    compiled parity tests below)."""
+    src = HEADER.read_text()
+    block = _branch(src, 'strcmp(kind, "circle")', 'strcmp(kind, "text")')
+    assert 'o["t"]' in block
+    assert "draw_circle_ring(" in block
+
+
+# --------------------------------------------------------------------------
+# circle t, differentially (docs/plans/dragon-feedback.md R2). Stacking
+# concentric filled circles of radius r, r-1, ... left single-pixel holes
+# near the diagonals from t == 2 up; circle_half_widths()/draw_circle_ring()
+# -- extracted verbatim from the header -- replace that with an annulus
+# scanline. The oracle here is the *compiled* filled_circle()/circle(), not
+# a Python reimplementation of the midpoint algorithm (which could itself
+# disagree with ESPHome's by a pixel): the harness computes
+# filled_circle(r) and filled_circle(r - t) itself and hands both rasters
+# back alongside the ring's, so the diff in Python is pixel equality, not
+# geometry.
+#
+# Needs a host C++ compiler; skips cleanly without one, like sprite_harness.
+# --------------------------------------------------------------------------
+
+_CIRCLE_RING_STUB = r"""
+#include <algorithm>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <vector>
+namespace esphome {
+struct Color {
+  uint8_t r = 0, g = 0, b = 0;
+  Color() = default;
+  Color(int r_, int g_, int b_) : r(r_), g(g_), b(b_) {}
+};
+namespace display {
+enum class DisplayType { DISPLAY_TYPE_COLOR };
+class Display {
+ public:
+  virtual ~Display() = default;
+  virtual void draw_pixel_at(int x, int y, Color c) = 0;
+  void horizontal_line(int x, int y, int width, Color c) {
+    for (int i = x; i < x + width; i++) this->draw_pixel_at(i, y, c);
+  }
+  void filled_rectangle(int x1, int y1, int w, int h, Color c) {
+    for (int i = y1; i < y1 + h; i++) this->horizontal_line(x1, i, w, c);
+  }
+  // Transcribed from esphome::display::Display (esphome/components/display/
+  // display.cpp) -- the real midpoint routines display_list.h's own
+  // filled_circle()/circle() calls, not reinvented here, so a match
+  // against these is a match against the panel's own rasteriser.
+  void circle(int cx, int cy, int radius, Color c) {
+    int dx = -radius, dy = 0, err = 2 - 2 * radius, e2;
+    do {
+      this->draw_pixel_at(cx - dx, cy + dy, c);
+      this->draw_pixel_at(cx + dx, cy + dy, c);
+      this->draw_pixel_at(cx + dx, cy - dy, c);
+      this->draw_pixel_at(cx - dx, cy - dy, c);
+      e2 = err;
+      if (e2 < dy) { err += ++dy * 2 + 1; if (-dx == dy && e2 <= dx) e2 = 0; }
+      if (e2 > dx) { err += ++dx * 2 + 1; }
+    } while (dx <= 0);
+  }
+  void filled_circle(int cx, int cy, int radius, Color c) {
+    int dx = -radius, dy = 0, err = 2 - 2 * radius, e2;
+    do {
+      int hw = 2 * (-dx) + 1;
+      this->horizontal_line(cx + dx, cy + dy, hw, c);
+      this->horizontal_line(cx + dx, cy - dy, hw, c);
+      e2 = err;
+      if (e2 < dy) { err += ++dy * 2 + 1; if (-dx == dy && e2 <= dx) e2 = 0; }
+      if (e2 > dx) { err += ++dx * 2 + 1; }
+    } while (dx <= 0);
+  }
+};
+}  // namespace display
+}  // namespace esphome
+static const char *const TAG = "dl";
+"""
+
+_CIRCLE_RING_MAIN = r"""
+class Canvas : public esphome::display::Display {
+ public:
+  int w, h;
+  std::vector<uint8_t> px;
+  Canvas(int w_, int h_) : w(w_), h(h_), px(w_ * h_, 0) {}
+  void draw_pixel_at(int x, int y, esphome::Color c) override {
+    if (x >= 0 && y >= 0 && x < w && y < h) px[y * w + x] = 1;
+  }
+};
+// argv: r t pad -- prints three w*h rasters back to back ('#'/'.'): the
+// ring draw_circle_ring() actually draws, then the outer filled_circle(r)
+// and the inner filled_circle(r - t) (blank, all '.', when r - t < 0) --
+// so the diff against "outer minus inner" happens in Python, not here.
+int main(int argc, char **argv) {
+  int r = atoi(argv[1]), t = atoi(argv[2]), pad = atoi(argv[3]);
+  int n = 2 * r + 2 * pad + 1;
+  int cx = r + pad, cy = r + pad;
+  esphome::Color c(1, 1, 1);
+  Canvas ring(n, n), outer(n, n), inner(n, n);
+  draw_circle_ring(ring, cx, cy, r, t, c);
+  outer.filled_circle(cx, cy, r, c);
+  int inner_r = r - t;
+  if (inner_r >= 0) inner.filled_circle(cx, cy, inner_r, c);
+  for (auto &canvas : {&ring, &outer, &inner})
+    for (auto v : canvas->px) putchar(v ? '#' : '.');
+  return 0;
+}
+"""
+
+
+@pytest.fixture(scope="module")
+def circle_ring_harness(tmp_path_factory):
+    """Compile circle_half_widths()/draw_circle_ring() -- extracted
+    verbatim from the shipped header, never retyped -- against the
+    stand-in Display above, once for the module."""
+    if shutil.which("c++") is None:
+        pytest.skip("no host C++ compiler")
+    half_widths_fn = _extract_block(r"^inline void circle_half_widths\(", "circle_half_widths()")
+    ring_fn = _extract_block(r"^inline void draw_circle_ring\(", "draw_circle_ring()")
+
+    d = tmp_path_factory.mktemp("circle_ring_parity")
+    src = d / "circle_ring_harness.cpp"
+    src.write_text(
+        _CIRCLE_RING_STUB + "\n" + half_widths_fn + "\n" + ring_fn + "\n" + _CIRCLE_RING_MAIN
+    )
+    exe = d / "circle_ring_harness"
+    subprocess.run(["c++", "-std=c++17", "-O1", "-o", str(exe), str(src)], check=True)
+    return exe
+
+
+def _ring_vs_filled_circles(circle_ring_harness, r: int, t: int, pad: int = 4):
+    """(ring pixels, outer pixels, inner pixels), each an n*n bool grid, n
+    the harness's own square canvas side."""
+    n = 2 * r + 2 * pad + 1
+    out = subprocess.run(
+        [str(circle_ring_harness), str(r), str(t), str(pad)],
+        capture_output=True, check=True, text=True,
+    )
+    data = out.stdout
+    assert len(data) == 3 * n * n, "harness printed the wrong number of pixels"
+    grids = []
+    for k in range(3):
+        chunk = data[k * n * n : (k + 1) * n * n]
+        grids.append([[chunk[y * n + x] == "#" for x in range(n)] for y in range(n)])
+    ring, outer, inner = grids
+    return ring, outer, inner, n
+
+
+@pytest.mark.parametrize("r", [0, 1, 2, 3, 4, 5, 6, 8, 10, 15, 20, 25, 40, 60])
+@pytest.mark.parametrize("t_offset", [2, 3, 4, 5])  # t relative to nothing; see below
+def test_circle_ring_matches_filled_circle_difference(circle_ring_harness, r, t_offset):
+    """The annulus equals filled_circle(r) minus filled_circle(r - t),
+    pixel for pixel, for every t from 2 up to well past r (where there is
+    no inner circle at all) -- the equality R2 asks the fix to prove."""
+    t = t_offset
+    ring, outer, inner, n = _ring_vs_filled_circles(circle_ring_harness, r, t)
+    diffs = [
+        (x, y)
+        for y in range(n)
+        for x in range(n)
+        if ring[y][x] != (outer[y][x] and not inner[y][x])
+    ]
+    assert not diffs, diffs[:5]
+
+
+@pytest.mark.parametrize("r", [3, 5, 10, 20, 40])
+def test_circle_ring_past_the_radius_equals_a_plain_filled_circle(circle_ring_harness, r):
+    """t >= r + 1 leaves no inner circle at all -- the ring degenerates to
+    exactly filled_circle(r), the same identity a t == 1 circle() call is
+    kept exact to by not going through the ring at all."""
+    t = r + 5
+    ring, outer, inner, n = _ring_vs_filled_circles(circle_ring_harness, r, t)
+    assert not any(any(row) for row in inner)
+    assert ring == outer
+
+
+@pytest.mark.parametrize("r,t", [(10, 2), (10, 3), (20, 3), (20, 5), (6, 2), (15, 4)])
+def test_circle_ring_has_no_diagonal_holes(circle_ring_harness, r, t):
+    """The bug this whole fix is for: stacking concentric filled circles of
+    shrinking radius left single-pixel background holes near the 45-degree
+    diagonals from t == 2 up. Walk the annulus's own outer edge (the
+    outermost ring of the disc, taken from filled_circle(r) itself minus
+    one step in) and check every one of those pixels is actually lit --
+    a hole would show up here first, in the annulus's own boundary."""
+    ring, outer, _inner, n = _ring_vs_filled_circles(circle_ring_harness, r, t)
+    cx = cy = n // 2
+    # Sample the ring at every angle along its own outer radius: this is
+    # exactly the outer boundary of filled_circle(r), which the annulus
+    # must fully cover (its outer half is that same boundary).
+    import math
+
+    holes = []
+    for deg in range(360):
+        th = math.radians(deg)
+        x = cx + round(r * math.cos(th))
+        y = cy + round(r * math.sin(th))
+        if outer[y][x] and not ring[y][x]:
+            holes.append((deg, x, y))
+    assert not holes, holes[:8]

@@ -125,7 +125,7 @@ _NO_HASH_WARNING = (
 OP_FIELDS: dict[str, dict[str, Any]] = {
     "rect": {
         "required": ("x", "y", "w", "h"),
-        "optional": {"c": "black", "fill": True, "t": 1},
+        "optional": {"c": "black", "fill": True, "t": 1, "r": 0},
     },
     "line": {
         "required": ("x", "y", "x2", "y2"),
@@ -1401,6 +1401,72 @@ def _optional_number(value: Any) -> int | float | None:
     return value
 
 
+def _resolved_rect_radius(r_raw: Any, w: int, h: int, where: str, ctx: Ctx) -> int:
+    """`r` for a filled rect: a non-negative integer, clamped to
+    `(min(w, h) - 1) // 2` (docs/plans/dragon-feedback.md D10, R1). Anything
+    else — not an int, a bool (JSON's `true`/`false` are not the number they
+    subclass), or negative — warns once and is treated as 0, which is
+    `rect`'s existing square-cornered draw, so a malformed `r` degrades to
+    today's behaviour rather than a bad box.
+
+    The bound is `min(w, h) - 1`, not `min(w, h)`: a corner disc is
+    `2r + 1` px across, so at `r == min(w, h) // 2` on an *even* dimension
+    the disc's far edge lands one pixel past the box on that axis (e.g.
+    `w == 40`: a corner circle of `r == 20` centred at `x + 20` spans
+    `[x, x + 40]`, one column wider than the box's own `[x, x + 39]`) —
+    caught by the sweep in test_render.py. `max(0, ...)` guards a
+    zero-size box, where `min(w, h) - 1` would otherwise go negative.
+    """
+    if isinstance(r_raw, bool) or not isinstance(r_raw, int) or r_raw < 0:
+        if r_raw:
+            ctx.problems.append(f"{where}: r={r_raw!r} is not a non-negative integer; using 0")
+        return 0
+    max_r = max(0, (min(w, h) - 1) // 2)
+    if r_raw > max_r:
+        ctx.problems.append(
+            f"{where}: r={r_raw} is larger than (min(w,h)-1)//2={max_r}; clamped to {max_r}"
+        )
+        return max_r
+    return r_raw
+
+
+def _draw_rounded_rect(
+    dr: ImageDraw.ImageDraw, x: int, y: int, w: int, h: int, r: int, col
+) -> None:
+    """The seven shapes a rounded filled rect is built from (D10): the
+    middle band, the two side bands and four corner circles, all onto the
+    same `dr` so `paint()`'s single stencil pass keeps them at one absolute
+    dither phase — the firmware draws the identical seven shapes through
+    one `MixDisplay` for the same reason (`display_list.h`'s `rect` branch).
+
+    A band collapses to nothing (not a negative-width `rectangle` call) once
+    `r` reaches `min(w, h) // 2` — the caller's own clamp — since `r` this
+    large leaves no straight run between the corners on that axis.
+
+    Eyeball parity, not pixel parity, with the firmware: PIL's `ellipse` and
+    ESPHome's own midpoint circle routine round their outlines slightly
+    differently, so the handful of pixels right at each corner's own arc can
+    differ by a pixel between the two renderers, the same standard the rest
+    of this file's shapes are held to.
+    """
+    # r == 0 has no rounding to draw -- the side-band rectangles below would
+    # come out as [x, y+0, x-1, y+h-1] (x1 < x0) and PIL raises on that
+    # (R3); the caller already only takes this branch for r > 0.
+    assert r > 0, "_draw_rounded_rect() is for r > 0; draw a plain rect for r == 0"
+    if w - 2 * r > 0:
+        dr.rectangle([x + r, y, x + w - r - 1, y + h - 1], fill=col)
+    if h - 2 * r > 0:
+        dr.rectangle([x, y + r, x + r - 1, y + h - r - 1], fill=col)
+        dr.rectangle([x + w - r, y + r, x + w - 1, y + h - r - 1], fill=col)
+    for cx, cy in (
+        (x + r, y + r),
+        (x + w - 1 - r, y + r),
+        (x + r, y + h - 1 - r),
+        (x + w - 1 - r, y + h - 1 - r),
+    ):
+        dr.ellipse([cx - r, cy - r, cx + r, cy + r], fill=col)
+
+
 def _anchor_of(op: dict[str, Any], ctx: Ctx, where: str) -> str:
     """Resolve `a` to a PIL anchor code, warning (and falling back to left)
     on a value `ANCHOR` doesn't have — the firmware's `align_of()` falls
@@ -1485,9 +1551,18 @@ def render(
             x, y, w, h = op["x"], op["y"], op["w"], op["h"]
             if op.get("fill", True):
                 _check_thin_mix(ctx, ink, where, "fill", w=w, h=h)
-                paint_op(ink, lambda dr, col: dr.rectangle(
-                    [x, y, x + w - 1, y + h - 1], fill=col))
+                r = _resolved_rect_radius(op.get("r", 0), w, h, where, ctx)
+                if r > 0:
+                    paint_op(ink, lambda dr, col, x=x, y=y, w=w, h=h, r=r: _draw_rounded_rect(
+                        dr, x, y, w, h, r, col))
+                else:
+                    paint_op(ink, lambda dr, col: dr.rectangle(
+                        [x, y, x + w - 1, y + h - 1], fill=col))
             else:
+                if op.get("r", 0):
+                    ctx.problems.append(
+                        f"{where}: r is ignored on an outline; drawing square corners"
+                    )
                 t = op.get("t", 1)
                 _check_thin_mix(ctx, ink, where, "outline", t=t)
                 paint_op(ink, lambda dr, col: dr.rectangle(

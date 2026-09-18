@@ -74,13 +74,23 @@ not `c`.
 
 | op | fields | notes |
 |---|---|---|
-| `rect` | `x y w h` · `fill` (default true) · `t` | `fill: false` draws an outline `t` px thick |
+| `rect` | `x y w h` · `fill` (default true) · `t` · `r` | `fill: false` draws an outline `t` px thick; see below |
 | `line` | `x y x2 y2` · `t` | thickness works on H/V lines; diagonals thicken vertically only |
 | `circle` | `x y r` · `fill` (default true) · `t` | `x,y` is the centre |
 | `text` | `x y s f` · `a` · `w` · `wrap` · `lines` · `lh` | see below |
 | `icon` | `x y n z` · `bgc` | `n` = MDI name, `z` = size class, `x,y` = top-left |
 | `fmt` | `x y s` · `f` · `a` | `text` without wrap whose `s` is a template of system fields: `{hash}` `{hash16}` `{time}` `{time24}` `{battery}` `{battv}`; `f` defaults to `xs` |
 | `sprite` | `x y cell rows palette` · `mirror` | pixel art — a grid of characters, one `palette` entry per colour; no `c` (see below) |
+
+### rect
+
+`r` (integer ≥ 0, default 0) rounds a **filled** rect's corners, clamped to
+`(min(w, h) - 1) // 2` with a warning if it was larger — a corner disc is
+`2r + 1` px across, so `min(w, h) // 2` itself can ink one row or column
+past the box on an even `w` or `h`. A non-integer `r` warns and is treated
+as 0. `r` on an unfilled rect (`fill: false`) is a warning and draws the
+square-cornered outline unchanged — arcs on an outline aren't worth a
+second drawing routine.
 
 ### text
 
