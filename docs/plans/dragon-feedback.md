@@ -105,7 +105,7 @@ canvas      {w, h, bezel_margin}
 inks        {name: hex}                          six, from INK
 mixes       {name: {c, c2, mix, hex, tier}}      twenty-one, from BUILTIN_MIXES + Ink.avg
 densities   [25, 50, 75]
-fonts       {name: {px, bold, line_height}}      from FONTS; line_height = round(px * 1.24)
+fonts       {name: {px, bold, line_height}}      from FONTS; 1.24× the size, except `mono` (D11)
 icons       {name: [size classes]}, icon_sizes {class: px}
 ops         {name: {required: [...], optional: {field: default}}}   the D1 table
 fmt_fields  [hash, hash16, time, time24, battery, battv]
@@ -262,28 +262,73 @@ is the standard for everything but wrap and the mask. `r` on `fill: false`
 warns and draws the square outline; arcs are not worth a second drawing
 routine until someone asks.
 
-### D11. One monospace face, `mono`, 28 px regular
+### D11. One monospace face: JetBrains Mono, `mono`, 24 px regular
 
 Adds a sixth entry to the type scale, not a family switch. It serves the
 report's ASCII-art case, aligned numeric columns, and code. Cost: one more
 compiled glyph set (small on 16 MB), one more TTF for the renderer, and a
 `FONTS` table that now carries a file name per entry.
 
-- `FONTS["mono"] = (28, False, "<Family>-Regular.ttf")`; the two
-  Instrument Sans entries gain their file name the same way.
-- `deploy/fetch-fonts.sh` fetches the second family and `fonts_available()`
-  requires it. `setup.sh sync` stays code-only — it deliberately never
-  touches fonts, so that a deploy is not also a decision — and instead
-  `setup.sh` gains a `fonts` subcommand that re-runs `fetch-fonts.sh` into
-  `$PREFIX/fonts`; the runbook says to run it once after B3 lands, before
-  the sync.
+Decided 2026-09-18 after rendering the Google Fonts monospace candidates
+bilevel, the way the panel draws (the one-bit `fontmode`, ink-mixing.md
+decision 7). Google Fonts is a constraint, not a preference: the ESPHome
+`gfonts` source and `deploy/fetch-fonts.sh` both pull from there.
+
+| face | box-drawing, block, shade glyphs | strokes at 1 bpp | columns at 24 px |
+|---|---|---|---|
+| **JetBrains Mono** | 128/128, 32/32, ░▒▓ | even, solid | 82 |
+| Source Code Pro | same | slightly lighter | 82 |
+| IBM Plex Mono | same, minus ▲▼●■ | solid | 82 |
+| Fira Code | same | solid, built around ligatures | 82 |
+| Inconsolata | same | thin at this size | 96 |
+| Ubuntu Mono | 40/128, 4/32 | fine | 96 |
+| DM Mono, Courier Prime, Space Mono | none | hairlines break up | 80 |
+
+JetBrains Mono wins on the two things that matter here: it carries every
+box-drawing, block and shade character, which is what turns "ASCII art"
+into the block art people actually draw, and its strokes are uniform, so
+nothing drops out with no anti-aliasing to hide behind. It is 0.6 em wide,
+so 80-column art fits inside the 24 px bezel margin at 24 px. Source Code
+Pro is the runner-up with identical coverage and no ligatures at all. Roboto
+Mono was not evaluated; the fonts repo did not serve it.
+
+Three findings from the test that the implementation has to carry:
+
+- **The glyph set.** The firmware compiles `GF_Latin_Core`, which does not
+  include U+2500–U+257F (box drawing) or U+2580–U+259F (block elements).
+  The `mono` font entry in `epaper-schedule.yaml` adds those two ranges
+  under `glyphs:`, or the characters that justify the face silently vanish
+  on the wall while the preview shows them.
+- **Ligatures and advances.** JetBrains Mono turns `<>`, `->` and `!=` into
+  single glyphs under Pillow's default (raqm) layout, and positions glyphs
+  at fractional advances — 14.4 px at 24 px — which at 1 bpp opened a 1 px
+  gap in every box-drawing rule. The panel's bitmap font does neither: no
+  ligatures, integer advances. The renderer loads this face with
+  `ImageFont.Layout.BASIC`, which matches both, and a test pins that `<>`
+  stays two glyphs and that `┌─┐` has no gap.
+- **Line height.** Rows of `│` and `█` stack without seams only when `lh`
+  equals the face's full cell height, which is 33 px at 24 px. The
+  `round(24 × 1.24) = 30` the other sizes use would overlap rows by 3 px.
+  `mono`'s default line height is therefore its cell height, not 1.24×,
+  and `describe()` and the compose guide say so.
+
+Implementation:
+
+- `FONTS["mono"] = (24, False, "JetBrainsMono-Regular.ttf")`; the two
+  Instrument Sans entries gain their file name the same way, and the table
+  grows a per-entry default line height so `mono` can differ.
+- `deploy/fetch-fonts.sh` fetches `ofl/jetbrainsmono` from the google/fonts
+  repo alongside Instrument Sans (a variable font; the Regular instance is
+  selected the way Bold is today) and `fonts_available()` requires it.
+  `setup.sh sync` stays code-only — it deliberately never touches fonts, so
+  that a deploy is not also a decision — and instead `setup.sh` gains a
+  `fonts` subcommand that re-runs `fetch-fonts.sh` into `$PREFIX/fonts`;
+  the runbook says to run it once after B3 lands, before the sync.
 - A missing face is not fatal: `Ctx.font()` reports *"font 'mono' is not
   installed here"* and skips the op, the same abandonment an unknown font
   gets, instead of failing every render at `Ctx.__init__`.
-- `guide()`'s type-scale table gains the row; line height is
-  `round(28 × 1.24) = 35` like the rest.
-
-Family: open — see "For the user".
+- `guide()`'s type-scale table gains the row: `mono` 24 regular, line
+  height 33, 82 columns across the canvas.
 
 ### D12. A `poly` op, filled, with the scanline shared
 
@@ -358,7 +403,7 @@ sync` on the host.
 |---|---|---|---|---|
 | B1 | `sprite: pixel art as rows of characters` | `firmware/display_list.h`; `render/__init__.py`; `docs/SPEC.md`; `prompts/compose.md`; `describe()` table; `samples/sprite.json`; README | run structure: a row of `KKOO` draws two rects; `mirror`; transparent cells leave the ground; unknown character warns and is black; ragged rows warn; off-canvas on the far edge; mixed cells dither with absolute phase; the new sample validates clean and its hash is pinned | §3a |
 | B2 | `rect: corner radius on a filled rect` | header; renderer; SPEC; compose; `describe()` | seven-shape construction fills the same box as `r: 0`; `r` on an outline warns and draws square; corner pixel at `r` is bg | §3f |
-| B3 | `fonts: a monospace face` | `epaper-schedule.yaml`; header untouched; `render/__init__.py` (`FONTS` file names, lazy face); `deploy/fetch-fonts.sh`; `deploy/setup.sh fonts`; RUNBOOK step 2; `tests/test_deploy.py`; SPEC; compose; `describe()` | glyph advance is constant; a missing face skips the op with a problem instead of raising; `fonts_available` requires both families; fetch script is still idempotent | §3e |
+| B3 | `fonts: JetBrains Mono as \`mono\`` | `epaper-schedule.yaml` (font entry with the box and block ranges); header untouched; `render/__init__.py` (`FONTS` file names and line heights, basic layout, lazy face); `deploy/fetch-fonts.sh`; `deploy/setup.sh fonts`; RUNBOOK step 2; `tests/test_deploy.py`; SPEC; compose; `describe()` | glyph advance is a constant integer; `<>` stays two glyphs; `┌─┐` renders with no gap; `mono`'s default `lh` is its cell height; a missing face skips the op with a problem instead of raising; `fonts_available` requires both families; fetch script is still idempotent | §3e |
 | B4 | `poly: a point list, filled by a shared scanline` | header; renderer; `tests/test_firmware_parity.py` (extract + compile `poly_spans`); SPEC; compose; `describe()`; `samples/sprite.json` gains one | C++ and Python spans agree over convex, concave and self-touching shapes; `fill: false` closes the edge; a two-point `pts` warns and skips | §3d |
 
 Then, once: `cd firmware && esphome run epaper-schedule.yaml`, publish
@@ -374,10 +419,6 @@ so the next agent's report does not re-open them from scratch.
 
 ## For the user
 
-- **Monospace family.** The plan assumes a Google Fonts family so
-  `fetch-fonts.sh` and the ESPHome `gfonts` source both work unchanged;
-  JetBrains Mono, IBM Plex Mono and Roboto Mono all qualify. A preference
-  decides B3's file names and nothing else.
 - **Unknown sprite character: black, or transparent?** D9 picks black for
   visibility and consistency with unknown colours; transparent is the
   friendlier reading for sparse art. Either is a one-line change on each
