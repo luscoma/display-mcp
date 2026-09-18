@@ -638,6 +638,11 @@ absolute.**
   the names come from the glass rather than from an ink table. `brown`
   (red+green) is the open case — judged "a bit mustardy but I'd still
   consider it brown", so it either keeps the name or takes a better one.
+  Answered 2026-09-18: `render.swatch_document()` builds exactly that
+  coupon — every ink and every built-in mix as a labelled chip, grouped
+  dark/light/mid — as an ordinary display-list document, and the `swatches`
+  MCP tool renders it. `brown` is unchanged pending its own verdict on the
+  wall.
 - Whether the palette needs a per-op density override, or whether one entry
   per density (`grey-25`, `grey-50`, `grey-75`) is acceptable. Deferred
   2026-09-10: put a mix in the palette if you want to use it, and revisit

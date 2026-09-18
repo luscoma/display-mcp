@@ -4,7 +4,7 @@ Builds an MCPServer (mcp SDK v2) whose tools call the Store directly, and
 exposes it as a Starlette app via streamable_http_app(stateless_http=True).
 
 Tools: set_display, preview, validate, get_display, status, clear_display,
-describe, guide.
+describe, guide, swatches.
 Resources: display://spec, display://sample, display://current/{name}.
 Prompt: compose_display (text in prompts/compose.md).
 """
@@ -561,6 +561,71 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
         that for the exact names and fields, this for the why.
         """
         return COMPOSE_PROMPT
+
+    @mcp.tool(
+        annotations=ToolAnnotations(
+            title="Colour swatches",
+            read_only_hint=True,
+            idempotent_hint=True,
+            open_world_hint=False,
+        )
+    )
+    def swatches(
+        document: dict[str, Any] | str | None = None,
+        include_document: bool = False,
+    ) -> list[ContentBlock]:
+        """A PNG chip of every ink and every built-in mix, named and hexed.
+        Publishes nothing.
+
+        `document` is optional (an object, or a JSON string that parses to
+        one); when given, its own `palette` field is appended as a final
+        "document palette" group, so a draft's custom colours sit on the
+        same sheet as the built-ins they were mixed from. Nothing else
+        about `document` is read or changed.
+
+        The image is flat, the trade-off `preview`'s default uses: each mix
+        is drawn as the single colour it averages to, not the panel's 1 px
+        checkerboard — this sheet is for judging colour, not layout. The
+        sheet itself is an ordinary display-list document, but the PNG
+        alone isn't it — pass `include_document=true` to receive the
+        document JSON as a third block, then `set_display` it, and every
+        named colour here sits on the wall with its name under it
+        (docs/plans/ink-mixing.md, "Still open"'s closing-coupon bullet).
+        """
+        palette = None
+        if document is not None:
+            candidate = _coerce_document(document).get("palette")
+            if isinstance(candidate, dict):
+                palette = candidate
+        sheet = render.swatch_document(palette=palette)
+        image, _problems = render.render(sheet, settings.font_dir, dithered_colors=False)
+        buf = io.BytesIO()
+        image.save(buf, format="PNG")
+        lines = [
+            "Flat: each mix is drawn as the single colour it averages to, not the "
+            "panel's 1 px checkerboard. This sheet is itself a valid document — pass "
+            "`include_document=true` to receive it as a third block, then `set_display` "
+            "it, and every named colour below sits on the wall with its name under it.",
+            "",
+        ]
+        for title, entries in render.swatch_groups(palette):
+            lines.append(f"{title}:")
+            for label, _c_field, recipe, hexs in entries:
+                lines.append(f"  {label} — {recipe} — {hexs}")
+        # A document's own appended palette can still warn (a name that
+        # doesn't resolve, say) even though the four built-in groups never
+        # do; surfaced the same way `preview` appends check()'s problems
+        # to its note, so a sheet that somehow warns says so.
+        problems = render.check(sheet, settings.font_dir)
+        if problems:
+            lines = lines + ["", *(f"- {p}" for p in problems)]
+        blocks: list[ContentBlock] = [
+            Image(data=buf.getvalue(), format="png").to_image_content(),
+            TextContent(type="text", text="\n".join(lines)),
+        ]
+        if include_document:
+            blocks.append(TextContent(type="text", text=json.dumps(sheet, separators=(",", ":"))))
+        return blocks
 
     # ---- resources -------------------------------------------------------
 

@@ -369,7 +369,7 @@ different interfaces.
 | `127.0.0.1:8001/mcp` | Claude writes here, via a Cloudflare Tunnel |
 | `<host-lan-ip>:8080/display.json` | the panel reads here, LAN only |
 
-Eight tools: `set_display(document)` validates, stamps `meta.hash` and
+Nine tools: `set_display(document)` validates, stamps `meta.hash` and
 `meta.generated`, and writes atomically; `validate(document)` runs the same
 checks without rendering or publishing, and also returns the effective
 colour of every name the document references and the document byte
@@ -380,7 +380,12 @@ currently published; `status(name)` says whether the panel has collected it
 — `recent_fetch_status: 304` is the healthy answer; `clear_display(name)`
 unpublishes; `describe()` returns the op vocabulary — inks, mixes, fonts,
 icons, per-op fields — as one JSON object built from the renderer's own
-tables; `guide()` returns the prose composing guide as plain text.
+tables; `guide()` returns the prose composing guide as plain text;
+`swatches(document?, include_document=False)` returns a flat PNG of every
+ink and built-in mix as a labelled chip, plus `document`'s own palette
+appended — the sheet is itself a document; pass `include_document=True` to
+get it as a third block and `set_display` it, putting every one of those
+colours on the wall.
 
 The panel endpoint is read-only and unauthenticated on purpose. The worst case
 is a neighbour reading your schedule; everything that *writes* is behind

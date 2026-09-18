@@ -70,8 +70,17 @@ async def test_list_tools_and_annotations(mcp):
         "clear_display",
         "describe",
         "guide",
+        "swatches",
     }
-    for name in ("preview", "validate", "get_display", "status", "describe", "guide"):
+    for name in (
+        "preview",
+        "validate",
+        "get_display",
+        "status",
+        "describe",
+        "guide",
+        "swatches",
+    ):
         assert by_name[name].annotations.read_only_hint is True
     assert by_name["set_display"].annotations.read_only_hint is False
     assert by_name["clear_display"].annotations.read_only_hint is False
@@ -456,6 +465,79 @@ async def test_guide_returns_compose_md_verbatim(mcp):
         result = await c.call_tool("guide", {})
     assert result.is_error is not True
     assert _text_of(result) == mcp_server.COMPOSE_PROMPT
+
+
+# ---- swatches --------------------------------------------------------
+#
+# The image comes from the real `render.swatch_document`/`swatch_groups`
+# fed through the fake `render.render` (this module's autouse fixture), so
+# these pin the tool's plumbing and the text listing; the actual pixels are
+# pinned for real in tests/test_render.py, against the real renderer.
+
+
+async def test_swatches_returns_image_and_lists_every_chip(mcp):
+    async with Client(mcp) as c:
+        result = await c.call_tool("swatches", {})
+    assert result.is_error is not True
+    assert [b.type for b in result.content] == ["image", "text"]
+    text = result.content[1].text
+    # Named directly, not derived from swatch_groups() — this pins that the
+    # tool's text listing really covers the four built-in groups, rather
+    # than trivially agreeing with whatever swatch_groups() happens to say.
+    for title in ("inks", "dark", "light", "mid"):
+        assert f"{title}:" in text
+    for title, entries in render.swatch_groups():
+        assert f"{title}:" in text
+        for label, _c_field, recipe, hexs in entries:
+            assert f"{label} — {recipe} — {hexs}" in text
+
+
+async def test_swatches_with_no_document_has_no_document_palette_group(mcp):
+    async with Client(mcp) as c:
+        result = await c.call_tool("swatches", {})
+    assert "document palette:" not in result.content[1].text
+
+
+async def test_swatches_appends_a_documents_own_palette(mcp):
+    doc = {
+        "v": 1,
+        "bg": "white",
+        "palette": {"flame": {"c": "red", "c2": "yellow", "mix": 50}, "ghost": "nope"},
+        "ops": [],
+    }
+    async with Client(mcp) as c:
+        result = await c.call_tool("swatches", {"document": doc})
+    text = result.content[1].text
+    assert "document palette:" in text
+    assert "flame — red+yellow 50 — #B56D2B" in text
+    assert "ghost" not in text  # unresolvable, skipped rather than guessed at
+
+
+async def test_swatches_accepts_a_json_string_document(mcp):
+    doc = {"v": 1, "bg": "white", "palette": {"accent": "blue"}, "ops": []}
+    async with Client(mcp) as c:
+        result = await c.call_tool("swatches", {"document": json.dumps(doc)})
+    assert result.is_error is not True
+    assert "accent — ink — #2E3E80" in result.content[1].text
+
+
+async def test_swatches_without_include_document_is_two_blocks(mcp):
+    async with Client(mcp) as c:
+        result = await c.call_tool("swatches", {})
+    assert [b.type for b in result.content] == ["image", "text"]
+
+
+async def test_swatches_include_document_adds_the_sheet_as_a_third_block(mcp, store):
+    async with Client(mcp) as c:
+        result = await c.call_tool("swatches", {"include_document": True})
+        assert [b.type for b in result.content] == ["image", "text", "text"]
+        assert "include_document=true" in result.content[1].text
+        sheet = json.loads(result.content[2].text)
+        assert render.render_hash(sheet) == render.render_hash(render.swatch_document())
+
+        published = await c.call_tool("set_display", {"document": sheet})
+    assert published.structured_content["hash"] == render.render_hash(sheet)
+    assert store.get().hash == render.render_hash(sheet)
 
 
 # ---- document may arrive as a JSON string ----------------------------

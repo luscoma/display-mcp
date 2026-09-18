@@ -238,3 +238,80 @@ def test_publish_through_in_process_server(monkeypatch, capsys, sample_doc, tmp_
     # A bad name is a tool error, reported and exit 1.
     monkeypatch.setattr("sys.argv", ["display-mcp-cli", "publish", str(f), "--name", "Bad Name"])
     assert cli.main() == 1
+
+
+def test_swatches_writes_a_clean_png(font_dir, tmp_path, capsys):
+    out_png = tmp_path / "swatches.png"
+    code, out, err = _run(
+        ["swatches", "-o", str(out_png), "--font-dir", str(font_dir)], capsys
+    )
+    assert code == 0
+    assert out_png.exists()
+    img = Image.open(out_png)
+    assert img.size == (1200, 1600)
+    assert "ops," in out
+    assert "wrote" in out
+
+
+def test_swatches_json_matches_swatch_document(font_dir, tmp_path, capsys):
+    from display_mcp.render import swatch_document
+
+    out_png = tmp_path / "swatches.png"
+    out_json = tmp_path / "swatches.json"
+    code, out, err = _run(
+        [
+            "swatches",
+            "-o",
+            str(out_png),
+            "--json",
+            str(out_json),
+            "--font-dir",
+            str(font_dir),
+        ],
+        capsys,
+    )
+    assert code == 0
+    assert out_json.exists()
+    written = json.loads(out_json.read_text())
+    assert render_hash(written) == render_hash(swatch_document())
+
+
+def test_swatches_missing_fonts_exits_2(tmp_path, capsys):
+    empty_font_dir = tmp_path / "no-fonts-here"
+    empty_font_dir.mkdir()
+    code, out, err = _run(["swatches", "--font-dir", str(empty_font_dir)], capsys)
+    assert code == 2
+    assert err
+
+
+def test_swatches_defaults_to_flat_not_dithered(font_dir, tmp_path, capsys):
+    """Unlike `render`, `swatches` is flat by default: this is the one
+    document whose whole purpose is judging colour, and a scaled dithered
+    PNG aliases every 50% mix to a single ink (docs/plans/preview-flat-colour.md)."""
+    from display_mcp.render import render, swatch_document
+
+    out_png = tmp_path / "swatches.png"
+    code, _out, _err = _run(
+        ["swatches", "-o", str(out_png), "--font-dir", str(font_dir)], capsys
+    )
+    assert code == 0
+    got = Image.open(out_png).convert("RGB")
+    flat, _ = render(swatch_document(), font_dir, dithered_colors=False)
+    assert got.tobytes() == flat.convert("RGB").tobytes()
+
+
+def test_swatches_dithered_flag_renders_the_panel_faithful_checkerboard(
+    font_dir, tmp_path, capsys
+):
+    from display_mcp.render import render, swatch_document
+
+    out_png = tmp_path / "swatches.png"
+    code, _out, _err = _run(
+        ["swatches", "-o", str(out_png), "--dithered", "--font-dir", str(font_dir)], capsys
+    )
+    assert code == 0
+    got = Image.open(out_png).convert("RGB")
+    dithered, _ = render(swatch_document(), font_dir, dithered_colors=True)
+    assert got.tobytes() == dithered.convert("RGB").tobytes()
+    flat, _ = render(swatch_document(), font_dir, dithered_colors=False)
+    assert got.tobytes() != flat.convert("RGB").tobytes()

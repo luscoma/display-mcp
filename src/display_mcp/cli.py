@@ -18,6 +18,16 @@
         hash and any warnings. On the host itself no Access token is needed:
         the loopback endpoint treats an unproxied local peer as the operator.
 
+    display-mcp-cli swatches [-o out.png] [--json out.json] [--dithered]
+                              [--font-dir DIR]
+        render every ink and built-in mix as a labelled chip and optionally
+        write the document itself as JSON — the same one `swatches` (the
+        MCP tool) and `render.swatch_document()` build. Flat by default
+        (unlike every other CLI render): this is the one document whose
+        whole purpose is judging colour, and a scaled, dithered PNG aliases
+        every 50% mix to a single ink on screen. Pass `--dithered` for the
+        panel-faithful render instead.
+
 Font dir: --font-dir, else DISPLAY_MCP_FONT_DIR, else ./fonts. `check` and
 `render` exit 2 with a clear message if the fonts aren't there.
 
@@ -33,7 +43,14 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from display_mcp.render import _NO_HASH_WARNING, check, fonts_available, render, render_hash
+from display_mcp.render import (
+    _NO_HASH_WARNING,
+    check,
+    fonts_available,
+    render,
+    render_hash,
+    swatch_document,
+)
 
 
 def _default_font_dir() -> Path:
@@ -111,6 +128,25 @@ def cmd_render(args: argparse.Namespace) -> int:
     return 1 if problems else 0
 
 
+def cmd_swatches(args: argparse.Namespace) -> int:
+    font_dir = _resolve_font_dir(args)
+    if not _require_fonts(font_dir):
+        return 2
+    doc = swatch_document()
+    img, _ = render(doc, font_dir, dithered_colors=args.dithered)
+    problems = check(doc, font_dir)
+    print(_report_header(doc))
+    _print_problems(problems)
+    img.save(args.output)
+    print(f"wrote {args.output}")
+    if args.json:
+        with open(args.json, "w") as f:
+            json.dump(doc, f, indent=2)
+            f.write("\n")
+        print(f"wrote {args.json}")
+    return 1 if problems else 0
+
+
 def _default_url() -> str:
     return os.environ.get("DISPLAY_MCP_URL", "http://127.0.0.1:8001/mcp")
 
@@ -171,6 +207,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_pub.add_argument("--name", default="default")
     p_pub.add_argument("--url", default=_default_url())
     p_pub.set_defaults(func=cmd_publish)
+
+    p_sw = sub.add_parser("swatches", help="render every named colour as a labelled chip")
+    p_sw.add_argument("-o", "--output", default="swatches.png")
+    p_sw.add_argument("--json", help="also write the swatch document as JSON")
+    p_sw.add_argument(
+        "--dithered",
+        action="store_true",
+        help="panel-faithful dithered mixes, instead of the flat default "
+        "(this is the one render meant for judging colour on screen)",
+    )
+    p_sw.add_argument("--font-dir")
+    p_sw.set_defaults(func=cmd_swatches)
 
     return ap
 
