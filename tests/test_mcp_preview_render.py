@@ -158,8 +158,7 @@ def test_grid_overlay_runs_with_a_real_font_and_draws_the_grid_colour(font_dir, 
     from `font_dir` via `load_font`) instead of only PIL's bitmap default;
     the overlay colour still appears wherever the face comes from."""
     img, _ = render.render(sample_doc, font_dir)
-    grid_face = render.Face(22, False, "InstrumentSans-Regular.ttf", 0)
-    face = render.load_font(font_dir, grid_face)
+    face = render.load_font(font_dir, render.GRID_FACE)
     overlaid = render.grid_overlay(img, font=face)
     bitmap = render.grid_overlay(img)
     assert GRID_COLOR in {c for c in overlaid.get_flattened_data()}
@@ -192,7 +191,7 @@ async def test_preview_grid_survives_a_missing_grid_font(
     real_load_font = render.load_font
 
     def flaky(fd, face):
-        if face.size == 22 and not face.bold:  # exactly the grid label's request
+        if face is render.GRID_FACE:  # exactly the grid label's request
             raise OSError("simulated: grid face not installed")
         return real_load_font(fd, face)
 

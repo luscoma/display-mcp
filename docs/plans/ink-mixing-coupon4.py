@@ -61,11 +61,11 @@ def wrapped_height(s: str, f: str, w: int, max_lines: int) -> tuple[int, int]:
     """(number of lines actually used, total px height) for a wrap:true text
     op, measured with the real font so the layout below is exact rather than
     a guess at how many lines a paragraph needs."""
-    size, bold = FONTS[f]
-    font = load_font(FONT_DIR, size, bold)
+    face = FONTS[f]
+    font = load_font(FONT_DIR, face)
     lines = wrap_lines(font, s, w, max_lines)
-    lh = round(size * 1.24)
-    return len(lines), (len(lines) - 1) * lh + size if lines else 0
+    lh = face.line_height
+    return len(lines), (len(lines) - 1) * lh + face.size if lines else 0
 
 
 class Page:

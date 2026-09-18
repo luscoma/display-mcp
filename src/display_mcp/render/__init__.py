@@ -1,24 +1,33 @@
 """Renderer: draws a display list the way firmware/display_list.h does.
 
 Port of epaper-display/server/dlpreview.py. The C++ in the firmware is
-authoritative; where they differ, this is the bug — except for the three
+authoritative; where they differ, this is the bug -- except for the three
 deliberate fixes called out in docs/PLAN.md ("Renderer"):
 
 1. ``weather-snowy`` is a valid, compiled-in icon (dlpreview.py was missing
    it). A procedural stand-in is drawn for it like the other weather icons.
 2. Icons are validated as ``name/z`` pairs, the way the firmware keys its
-   compiled icon table (``assets.icons["check/sm"]`` etc.) — an icon whose
+   compiled icon table (``assets.icons["check/sm"]`` etc.) -- an icon whose
    size class was never compiled in is now a problem, not a silent pass.
 3. The off-canvas check also covers ``x+w``/``y+h`` for rects and
    ``x2``/``y2`` for lines, with the same +/-64px tolerance already applied
    to every op's ``x``/``y``.
 
+This package is split by concern -- ``colour.py`` (inks, mixes, Ctx,
+document_colors, the ink-mixing authoring warnings), ``fonts.py`` (the Face
+table, load_font, the uncompiled-glyph warning), ``shapes.py`` (rounded
+rect, icon stencil, poly geometry, the device-safety limits), and
+``swatches.py`` (swatch_document/swatch_groups) -- with this file left
+holding ``render()``/``check()`` themselves, the op-field table, the fmt
+template fields, and vocabulary(). Each submodule carries its own
+docstring saying what it owns; the public surface below is unchanged by
+the split and this is still the one place to import it from.
+
 Public surface (final):
     WIDTH, HEIGHT            1200, 1600
     FONTS                    {name: Face(size, bold, file, cell_height,
                               ink_height, extra_glyphs, layout, optional)}
-                              for xl lg md sm xs mono; Face[0]/Face[1] keep
-                              the old (size, bold) two-tuple reads working;
+                              for xl lg md sm xs mono;
                               Face.line_height is round(size * 1.24)
     GF_LATIN_CORE             frozenset[int]; the code points every compiled
                               face has, vendored in gf_latin_core.txt
@@ -54,125 +63,143 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 import re
-from collections import Counter
 from datetime import datetime
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any
 
 from PIL import Image, ImageDraw, ImageFont
 
+from .colour import (
+    _MIX_HINT,
+    BUILTIN_MIXES,
+    COLORS,
+    DENSITIES,
+    INK,
+    TIERS,
+    Ctx,
+    Ink,
+    _check_contrast,
+    _check_drew_nothing,
+    _check_mix_as_text,
+    _check_thin_mix,
+    _grounds,
+    _snapshot,
+    _union_box,
+    builtin_ink,
+    document_colors,
+    hex_of,
+    mix_on,
+    recipe_of,
+)
+from .fonts import (
+    FONTS,
+    GF_LATIN_CORE,
+    GRID_FACE,
+    Face,
+    _check_uncompiled_glyphs,
+    fonts_available,
+    load_font,
+)
+from .shapes import (
+    POLY_MAX_COORD,
+    SPRITE_MAX_CELL,
+    THICK_MAX,
+    _draw_rounded_rect,
+    _off_canvas,
+    _poly_spans,
+    _resolved_fill,
+    _resolved_rect_radius,
+    _resolved_thickness,
+    _thick_line_points,
+    _valid_poly_points,
+    draw_icon,
+)
+from .swatches import swatch_document, swatch_groups
+
+# Every name this package hands out, defined here or re-exported from a
+# submodule (colour.py/fonts.py/shapes.py/swatches.py): the split changes
+# where each one lives, never what `display_mcp.render` itself exposes.
+# Private names are included too -- tests and docs/plans/ import several
+# of them directly (`_grounds`, `_draw_rounded_rect`, `_poly_spans`, ...),
+# same as before the split.
+__all__ = [
+    "WIDTH",
+    "HEIGHT",
+    "ICONS",
+    "ICON_SIZES",
+    "BEZEL_MARGIN",
+    "ANCHOR",
+    "_NO_HASH_WARNING",
+    "OP_FIELDS",
+    "_MIX_HINT",
+    "_op_field_problems",
+    "vocabulary",
+    "text_width",
+    "fit_line",
+    "wrap_lines",
+    "render_hash",
+    "FIELD_RE",
+    "system_fields",
+    "expand_fields",
+    "draw_on",
+    "paint",
+    "_paint_glyph_op",
+    "_optional_number",
+    "_anchor_of",
+    "render",
+    "bezel_problems",
+    "check",
+    "GRID_COLOR",
+    "grid_overlay",
+    # colour.py
+    "BUILTIN_MIXES",
+    "COLORS",
+    "DENSITIES",
+    "INK",
+    "TIERS",
+    "Ctx",
+    "Ink",
+    "_check_contrast",
+    "_check_drew_nothing",
+    "_check_mix_as_text",
+    "_check_thin_mix",
+    "_grounds",
+    "_snapshot",
+    "_union_box",
+    "builtin_ink",
+    "document_colors",
+    "hex_of",
+    "mix_on",
+    "recipe_of",
+    # fonts.py
+    "FONTS",
+    "GF_LATIN_CORE",
+    "GRID_FACE",
+    "Face",
+    "_check_uncompiled_glyphs",
+    "fonts_available",
+    "load_font",
+    # shapes.py
+    "POLY_MAX_COORD",
+    "SPRITE_MAX_CELL",
+    "THICK_MAX",
+    "_draw_rounded_rect",
+    "_off_canvas",
+    "_poly_spans",
+    "_resolved_fill",
+    "_resolved_rect_radius",
+    "_resolved_thickness",
+    "_thick_line_points",
+    "_valid_poly_points",
+    "draw_icon",
+    # swatches.py
+    "swatch_document",
+    "swatch_groups",
+]
+
 WIDTH, HEIGHT = 1200, 1600
 
-COLORS = ("black", "white", "yellow", "red", "blue", "green")
-
-
-class Face(NamedTuple):
-    """One compiled type-scale entry. A plain `NamedTuple`: read fields by
-    name (`FONTS[name].size`); positional access works but is not used.
-
-    `cell_height` is `size`'s ascent + descent as PIL's `font.getmetrics()`
-    reports it for the *loaded* face (the selected weight instance, for
-    Instrument Sans and JetBrains Mono alike) — measured once, by hand, and
-    stored here as data rather than recomputed at import time, so a font
-    swap that silently changes the metrics is a failing test
-    (test_render.py) rather than a page that quietly reflows. `lh`'s own
-    default stays `round(size * 1.24)` for every face including `mono` (the
-    firmware has no per-face default), so `cell_height` is published
-    separately in `describe().fonts[*]` instead of changing what an unset
-    `lh` means.
-
-    `ink_height` is `None` for every Instrument Sans entry and the one
-    number that actually matters for stacking `mono` block art
-    (docs/plans/dragon-feedback.md D11): the row count a full-height
-    glyph (`│`, `█`) inks at 1bpp, measured by rendering one bilevel and
-    counting rows with any ink. It is *not* `cell_height` — that's 2px more
-    (33 vs 31), which is ascent+descent, not glyph extent, and leaves a 2px
-    hairline seam if you stack by it. `describe().fonts.mono.ink_height` is
-    the field a composer stacking block art by hand should use.
-    """
-
-    size: int
-    bold: bool
-    file: str
-    cell_height: int
-    ink_height: int | None = None
-    # Code points the firmware compiles into this face beyond GF_LATIN_CORE
-    # (docs/plans/dragon-feedback.md D11), as ranges, so the YAML
-    # (`epaper-schedule.yaml`'s `glyphs:` string) and this table say the
-    # same thing — tests/test_firmware_parity.py checks that they do.
-    # Empty for every face but `mono`.
-    extra_glyphs: tuple[range, ...] = ()
-    # "raqm" (Pillow's default layout engine) for every face but `mono`,
-    # which is "basic" — see load_font(). What used to be a string compare
-    # against a mono filename lives here instead, so load_font()/_load_fonts()
-    # read a face's own layout rather than recognising it by name.
-    layout: str = "raqm"
-    # Whether this face's file missing from `font_dir` is tolerated —
-    # `mono`'s alone: it is the one face this repo doesn't ship pre-fetched
-    # (deploy/fetch-fonts.sh's newer half), so _load_fonts() turns its
-    # OSError into a plain `None` instead of letting it raise. Every other
-    # face missing is still fatal, as it always was.
-    optional: bool = False
-
-    @property
-    def line_height(self) -> int:
-        """The wrap default every face uses when an op's `lh` is unset:
-        `round(size * 1.24)`, including for `mono` — the firmware has no
-        per-face default, so this stays one formula for every face, and
-        `cell_height`/`ink_height` are published separately in
-        `describe().fonts[*]` instead of changing what an unset `lh` means."""
-        return round(self.size * 1.24)
-
-
-def _load_gf_latin_core() -> frozenset[int]:
-    """Parse `gf_latin_core.txt` (one hex code point per line, `#` comments
-    ignored) into the set every compiled face carries."""
-    path = Path(__file__).parent / "gf_latin_core.txt"
-    return frozenset(
-        int(line, 16)
-        for line in path.read_text().splitlines()
-        if line and not line.startswith("#")
-    )
-
-
-# The glyph set the firmware compiles into every face (docs/plans/
-# dragon-feedback.md D11) — see gf_latin_core.txt's own header for where
-# this comes from.
-GF_LATIN_CORE: frozenset[int] = _load_gf_latin_core()
-
-# mono alone also gets box drawing (U+2500-U+257F) and block elements
-# (U+2580-U+259F) — the whole reason a monospace face exists at all.
-MONO_EXTRA_GLYPHS: range = range(0x2500, 0x25A0)
-
-# name -> Face. Compiled into the firmware; changing one is a rebuild.
-FONTS: dict[str, Face] = {
-    "xl": Face(84, True, "InstrumentSans-Bold.ttf", 103),
-    "lg": Face(48, True, "InstrumentSans-Bold.ttf", 59),
-    "md": Face(36, False, "InstrumentSans-Regular.ttf", 44),
-    "sm": Face(28, False, "InstrumentSans-Regular.ttf", 35),
-    "xs": Face(22, True, "InstrumentSans-Bold.ttf", 28),
-    # JetBrains Mono, 24px regular (docs/plans/dragon-feedback.md D11): the
-    # one monospace face, for block art, aligned columns and code. Loaded
-    # with BASIC layout and no ligatures — see load_font(). ink_height=31
-    # is measured (test_render.py), not derived: a full-height glyph at
-    # 1bpp inks 31 rows inside the 33px cell.
-    "mono": Face(
-        24, False, "JetBrainsMono-Regular.ttf", 33, 31, (MONO_EXTRA_GLYPHS,),
-        layout="basic", optional=True,
-    ),
-}
-
-# name -> every code point that face's op text/fmt strings can safely use —
-# GF_LATIN_CORE plus the face's own extra_glyphs — precomputed once so
-# _check_uncompiled_glyphs() is a plain set lookup per character.
-_FACE_GLYPHS: dict[str, frozenset[int]] = {
-    name: GF_LATIN_CORE | frozenset(cp for r in face.extra_glyphs for cp in r)
-    for name, face in FONTS.items()
-}
-
-# name -> size classes the firmware compiled. Keyed "name/z" on the panel.
 ICONS: dict[str, frozenset[str]] = {
     "weather-sunny": frozenset({"lg"}),
     "weather-partly-cloudy": frozenset({"lg"}),
@@ -187,75 +214,22 @@ ICONS: dict[str, frozenset[str]] = {
     "battery": frozenset({"sm"}),
 }
 
+
 ICON_SIZES = {"sm": 36, "md": 56, "lg": 88}
 
-# The panel sits behind a printed bezel (mount/epaper_frame_bezel.scad)
-# whose window is the active area less 1 mm per edge: ~6 px hidden, plus a
-# couple of pixels of panel float and the shadow of the 45° bevel. Text and
-# icons whose anchor lands inside this band are flagged by check(); fills and
-# bars are meant to run full bleed and are not.
+
 BEZEL_MARGIN = 24
 
-# Three device-safety bounds, together: a document field the renderer (and
-# the firmware) trusts directly as a loop count or a coordinate magnitude
-# must never let an adversarial, or merely wrong, document turn one op
-# into a multi-second loop or an out-of-range accumulation, on a panel
-# with no watchdog to save it.
-#
-# THICK_MAX bounds an outline's `t` (line, rect/circle/poly outline):
-# thick_line()'s and the rect outline loop's `for (int i = 0; i < t; i++)`
-# clamp to it silently on both sides; a bad `t` is authoring feedback and
-# stays on this side (D1), so here it warns and clamps rather than just
-# clamping.
-# SPRITE_MAX_CELL bounds `sprite`'s `cell` (D9) so c0*cell/row*cell
-# arithmetic can never approach INT32_MAX even for the largest document
-# MAX_DOC_BYTES allows; past this bound there is nothing sensible to draw,
-# so — unlike THICK_MAX — the whole op is rejected, not clamped.
-# POLY_MAX_COORD bounds a `poly` point's magnitude (D12) so
-# poly_spans()'s scanline walk and crossing arithmetic never has to
-# reconcile a coordinate this large; also rejected outright, not clamped.
-#
-# 64 / max(WIDTH, HEIGHT) / 1 << 20 are each generous for anything
-# actually drawn on a 1200x1600 canvas. Mirrors
-# kThickMax/kSpriteMaxCell/kPolyMaxCoord in display_list.h, which sit
-# together the same way; tests/test_firmware_parity.py extracts and
-# diffs all three.
-THICK_MAX = 64
-SPRITE_MAX_CELL = max(WIDTH, HEIGHT)
-POLY_MAX_COORD = 1 << 20
-
-# Roughly what those inks look like on a Spectra 6 panel. This is the only
-# colour table: the panel is the thing being previewed, so an approximation
-# of the glass beats the pure framebuffer RGB the driver writes (the old
-# `--ideal` mode, removed — it was CLI-only and no MCP caller could reach it).
-INK = {
-    "black": (32, 32, 32),
-    "white": (222, 222, 216),
-    "yellow": (206, 172, 44),
-    "red": (156, 46, 42),
-    "blue": (46, 62, 128),
-    "green": (72, 108, 66),
-}
 
 ANCHOR = {"left": "la", "center": "ma", "right": "ra"}
+
 
 _NO_HASH_WARNING = (
     "no meta.hash — the panel will refresh on EVERY wake "
     "(~36 mAh/day, roughly half its battery life). Run display-mcp-cli stamp."
 )
 
-# Per-op field table: required fields, and optional fields with the default
-# render() uses when they're absent. One entry per op render() knows how to
-# draw; "required" is every field it reads with `op["x"]` (missing it is
-# already a KeyError today), "optional" is every field it reads with
-# `op.get("x", default)`. `op` itself is not listed — it's the dispatch key,
-# not a datum an op draws with.
-#
-# This is the table check() warns against (a field on an op that isn't
-# here, D1) and the one a later describe() tool returns verbatim, so the
-# thing that tells a caller which fields exist and the check that enforces
-# them cannot disagree. `lh`'s default of None means "computed from the
-# font size (round(size * 1.24))", not literally absent.
+
 OP_FIELDS: dict[str, dict[str, Any]] = {
     "rect": {
         "required": ("x", "y", "w", "h"),
@@ -317,15 +291,6 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
     },
 }
 
-# The report's whole "mixes don't render" section, in one sentence: `c2`
-# and `mix` are fields of a *palette entry*, not of an op, and a `c` that
-# is an object instead of a name is the same mistake written inline. Both
-# get this exact message (docs/plans/dragon-feedback.md, D1).
-_MIX_HINT = (
-    'mixes are palette entries — write palette: {name: {c, c2, mix}} and '
-    'c: name (docs/SPEC.md "Mixes")'
-)
-
 
 def _op_field_problems(op: dict[str, Any], kind: str | None, where: str) -> list[str]:
     """Warn on every key an op carries that isn't `op` and isn't in its
@@ -366,818 +331,6 @@ def _op_field_problems(op: dict[str, Any], kind: str | None, where: str) -> list
     if stray_mix and not isinstance(op.get("c"), dict):
         problems.append(f"{where}: {_MIX_HINT}")
     return problems
-
-
-def _font_path(font_dir: Path, file: str) -> Path:
-    return Path(font_dir) / file
-
-
-def load_font(font_dir: Path, face: Face) -> ImageFont.FreeTypeFont:
-    """Load one compiled face (`FONTS[name]`). `face.bold` also selects the
-    variable font's "Bold" instance; `face.layout` picks Pillow's layout
-    engine, table-driven instead of a filename comparison.
-
-    Google Fonts ships Instrument Sans as a variable font: Pillow loads the
-    default instance (Regular) unless the named instance is selected, and
-    the wrong weight means text wraps in different places than the panel
-    does. A static Bold face (nothing to select) is fine too.
-
-    A `"basic"`-layout face (`mono`, the only one today) is loaded with
-    `ImageFont.Layout.BASIC` instead of Pillow's default raqm layout:
-    raqm turns `<>`/`->`/`!=` into single ligature glyphs and positions
-    every glyph at a fractional advance (14.4px at 24px here), and at 1bpp
-    that fractional advance opened a 1px gap in every box-drawing rule —
-    the panel's own bitmap font does neither (docs/plans/dragon-feedback.md
-    D11's second finding). Its "Regular" instance is selected the same way
-    Bold is, in its own try/except — every `"basic"` face's `bold` is False,
-    so a raqm face and a basic one never fight over which name to select.
-    """
-    path = _font_path(font_dir, face.file)
-    if face.layout == "basic":
-        f = ImageFont.truetype(str(path), face.size, layout_engine=ImageFont.Layout.BASIC)
-        try:
-            f.set_variation_by_name("Regular")
-        except Exception:
-            pass  # a static Regular face: nothing to select
-        return f
-    f = ImageFont.truetype(str(path), face.size)
-    if face.bold:
-        try:
-            f.set_variation_by_name("Bold")
-        except Exception:
-            pass  # a static Bold face: nothing to select
-    return f
-
-
-def _load_fonts(font_dir: Path) -> dict[str, ImageFont.FreeTypeFont | None]:
-    """Every compiled face, keyed by name. An `optional` face (`mono`,
-    today) may come back `None`: its file is the one face this repo doesn't
-    ship pre-fetched, so a font directory that hasn't run
-    `deploy/fetch-fonts.sh`'s newer half must not break every other render —
-    `Ctx.font()` turns a `None` here into the same "abandon the op" path an
-    unknown font name gets. A non-optional face missing still raises
-    `OSError` out of this function, exactly as before `mono` existed (there
-    is a test pinning that)."""
-    fonts: dict[str, ImageFont.FreeTypeFont | None] = {}
-    for name, face in FONTS.items():
-        if face.optional:
-            try:
-                fonts[name] = load_font(font_dir, face)
-            except OSError:
-                fonts[name] = None
-        else:
-            fonts[name] = load_font(font_dir, face)
-    return fonts
-
-
-def fonts_available(font_dir: Path) -> bool:
-    """Every compiled face's file present in `font_dir` — including
-    `mono`'s, even though `_load_fonts()` alone tolerates it missing: this
-    is the /healthz and setup.sh gate, which wants to know the font
-    directory is genuinely complete, not just render-safe. Deduped by
-    filename (several faces share the two Instrument Sans files), so this
-    stays table-driven rather than three names spelled out by hand."""
-    font_dir = Path(font_dir)
-    return all((font_dir / file).exists() for file in {face.file for face in FONTS.values()})
-
-
-# The 2x2 ordered (Bayer) matrix behind every mix, indexed [y & 1][x & 1].
-# Mirrors mix_on() in display_list.h; see docs/plans/ink-mixing.md decision 2.
-_BAYER2 = ((0, 2), (3, 1))
-
-DENSITIES = (25, 50, 75)
-
-
-# The named mixes, compiled into the firmware as BUILTIN_MIXES in
-# display_list.h and mirrored here. A document writes `"c": "navy"` with no
-# palette entry (decision 10).
-#
-# This table is a permanent contract: these names mean these recipes, and the
-# way to break one is to bump the document's `v`, never to redefine a name in
-# place — the definitions live in the firmware rather than in `palette`, so
-# they are outside `meta.hash` and a redefinition would change what an
-# already-published document draws without changing its identity.
-#
-# tests/test_firmware_parity.py extracts the C++ table and diffs it against
-# this one, so keep both machine-readable: one entry per line.
-BUILTIN_MIXES: dict[str, tuple[str, str, int]] = {
-    "navy": ("black", "blue", 50),
-    "maroon": ("black", "red", 50),
-    "plum": ("red", "blue", 50),
-    "forest": ("black", "green", 50),
-    "teal": ("blue", "green", 50),
-    "brown": ("red", "green", 50),
-    "grey-dark": ("black", "white", 25),
-    "cream-pale": ("yellow", "white", 75),
-    "cream": ("yellow", "white", 50),
-    "sage-pale": ("green", "white", 75),
-    "slate-pale": ("blue", "white", 75),
-    "pink-pale": ("red", "white", 75),
-    "grey-light": ("black", "white", 75),
-    "sage": ("green", "white", 50),
-    "pink": ("red", "white", 50),
-    "slate": ("blue", "white", 50),
-    "chartreuse": ("yellow", "green", 50),
-    "grey-mid": ("black", "white", 50),
-    "mustard": ("black", "yellow", 50),
-    "orange": ("yellow", "red", 50),
-    "olive": ("yellow", "blue", 50),
-}
-
-
-# Which of the three docs/SPEC.md "named palette" tables each built-in mix
-# is grouped under — what text reads well when the mix fills the space
-# behind it, not how the mix reads as text (see SPEC.md "The named palette").
-# One line per entry, grouped by tier to match the SPEC tables; `describe()`
-# returns this alongside each mix's hex, and tests/test_render.py parses the
-# SPEC headings themselves to pin it, so the two cannot drift apart.
-TIERS: dict[str, str] = {
-    "navy": "dark",
-    "teal": "dark",
-    "maroon": "dark",
-    "plum": "dark",
-    "brown": "dark",
-    "forest": "dark",
-    "grey-dark": "dark",
-    "cream": "light",
-    "cream-pale": "light",
-    "sage": "light",
-    "sage-pale": "light",
-    "slate": "light",
-    "slate-pale": "light",
-    "pink": "light",
-    "pink-pale": "light",
-    "chartreuse": "light",
-    "grey-light": "light",
-    "grey-mid": "mid",
-    "mustard": "mid",
-    "orange": "mid",
-    "olive": "mid",
-}
-
-
-def mix_on(x: int, y: int, pct: int) -> bool:
-    """True where the *second* ink of a mix goes.
-
-    Phase is absolute — canvas coordinates, not the op's origin — so abutting
-    fills tile without a seam and a knockout lands exactly on the mix beneath
-    it. At pct=50 the matrix selects cells 0 and 1, which sit at (0,0) and
-    (1,1), i.e. precisely `(x + y) % 2 == 0`: the test tone's knockout has
-    always used. Existing documents therefore render unchanged.
-    """
-    return _BAYER2[y & 1][x & 1] < pct // 25
-
-
-class Ink(NamedTuple):
-    """A resolved colour: two inks and the percentage of `b` among them.
-
-    A plain colour is `Ink(c, c, 100)`, so callers never branch on whether
-    something is a mix — the solid case is a mix with nothing to interleave.
-    """
-
-    a: tuple
-    b: tuple
-    mix: int
-
-    @property
-    def solid(self) -> bool:
-        return self.a == self.b
-
-    @property
-    def avg(self) -> tuple:
-        """The single colour this mix averages to over a large enough area.
-
-        What the eye integrates a dithered fill into, and what the panel's
-        glass actually shows for anything bigger than a few pixels. For a
-        solid ink `mix` is 100 and `a == b`, so this returns that ink
-        unchanged and needs no special case.
-
-        This is the colour `render(dithered_colors=False)` paints, and it
-        reproduces every hex in the named-palette table in docs/SPEC.md
-        exactly — tests/test_render.py pins that, so the table cannot drift
-        away from the renderer.
-
-        It is honest for a fill and optimistic for a glyph: a few pixels of
-        stroke cannot average two inks, so text reads shifted toward the
-        lighter one. That gap is what _check_mix_as_text() warns about, and
-        it is why a flat preview has to carry its warnings with it.
-        """
-        w = self.mix / 100
-        return tuple(round(self.a[i] * (1 - w) + self.b[i] * w) for i in range(3))
-
-
-def _luminance(rgb: tuple) -> float:
-    """WCAG relative luminance of an (r, g, b) triple, channels 0-255."""
-
-    def lin(c: int) -> float:
-        c = c / 255
-        return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
-
-    r, g, b = rgb
-    return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
-
-
-def _contrast_ratio(rgb_a: tuple, rgb_b: tuple) -> float:
-    """WCAG contrast ratio between two colours; always >= 1."""
-    la, lb = _luminance(rgb_a), _luminance(rgb_b)
-    lighter, darker = max(la, lb), min(la, lb)
-    return (lighter + 0.05) / (darker + 0.05)
-
-
-# A few pixels of overhang off the visible edge is ordinary — a
-# right-aligned label's descender, a fill's edge landing exactly at the
-# canvas boundary — so every off-canvas check in render() allows the same
-# margin rather than each picking its own: the sprite far edge, a poly's
-# bounding box, a rect's x+w/y+h, a line's x2/y2, and the generic x/y
-# every op gets.
-OFF_CANVAS_TOLERANCE = 64
-
-
-def _off_canvas(v: float, bound: int) -> bool:
-    """Whether `v` sits outside `[0, bound)` by more than
-    `OFF_CANVAS_TOLERANCE`. Messages stay exactly as they were — this only
-    replaces the repeated `-64 <= v <= bound + 64` comparison, not what a
-    caller does with the result."""
-    return not (-OFF_CANVAS_TOLERANCE <= v <= bound + OFF_CANVAS_TOLERANCE)
-
-
-def _clip_to_canvas(box: tuple) -> tuple | None:
-    """Clip a box to the canvas as ints. None when there is no on-canvas
-    area at all — an op drawn off-screen, a zero-size box (an empty
-    string) — so callers skip rather than warn on those, per the
-    false-positive list in the ink-mixing plan."""
-    x0, y0, x1, y1 = box
-    x0, y0 = max(0, int(x0)), max(0, int(y0))
-    x1, y1 = min(WIDTH, int(x1)), min(HEIGHT, int(y1))
-    if x1 <= x0 or y1 <= y0:
-        return None
-    return x0, y0, x1, y1
-
-
-def _grounds(img: Image.Image, box: tuple) -> list[tuple[tuple[float, ...], Counter]] | None:
-    """The ground colour(s) under `box`, sampled at the scale the eye fuses at.
-
-    A dither is two inks a pixel apart and fuses into one colour at reading
-    distance; two regions side by side do not. So the sample is taken per
-    2x2 mask tile — the mask's whole period (decision 2), 0.34 mm on the
-    glass — averaging each tile into the colour it fuses to, and then taking
-    the tile colour covering most of the box. Tiles align to the mask's own
-    absolute phase, so a mixed fill sampled anywhere yields whole periods.
-
-    That is `most_common` as it was always meant to work; what was wrong
-    before was the scale, not the idea. Sampled per pixel, a 50% mix is two
-    colours tied 50/50 and the tie-break decided whether white text on
-    `grey-mid` scored 12.06:1 or 1.00:1. Sampled per tile there is no tie to
-    break: every tile of that mix is the same fused grey. Sampling the
-    canvas rather than reading the ink also means the density is whatever
-    was really painted, parity trap (decision 2) included.
-
-    When tile colours genuinely tie — a box sitting half on one rect and
-    half on another — every tied colour comes back rather than one of them,
-    so the caller can judge against the harder half instead of flipping a
-    coin. Each comes with the tally of the inks behind it, because a fused
-    colour is generally not an ink and the warning still has to name what is
-    behind the text.
-
-    None when the box has no on-canvas area at all — an op drawn off-screen,
-    a zero-size box (an empty string) — so callers skip rather than warn on
-    those, per the false-positive list in the ink-mixing plan.
-    """
-    clipped = _clip_to_canvas(box)
-    if clipped is None:
-        return None
-    x0, y0, x1, y1 = clipped
-    px = img.load()
-    tiles: Counter = Counter()
-    inks: dict[tuple, Counter] = {}
-    for ty in range(y0 - (y0 % 2), y1, 2):
-        for tx in range(x0 - (x0 % 2), x1, 2):
-            cell = Counter(
-                px[x, y]
-                for y in range(max(ty, y0), min(ty + 2, y1))
-                for x in range(max(tx, x0), min(tx + 2, x1))
-            )
-            n = sum(cell.values())
-            fused = tuple(sum(c[i] * k for c, k in cell.items()) / n for i in range(3))
-            tiles[fused] += n
-            inks.setdefault(fused, Counter()).update(cell)
-    most = max(tiles.values())
-    return [(fused, inks[fused]) for fused, n in tiles.items() if n == most]
-
-
-class Ctx:
-    def __init__(
-        self,
-        doc: dict[str, Any],
-        font_dir: Path | None = None,
-        warn_ink: bool = False,
-        load_fonts: bool | None = None,
-    ):
-        # The contract, made explicit rather than left to `Path(None)`
-        # raising a bare TypeError: no `font_dir` means no fonts by
-        # default (`Ctx(doc)` is a valid colour-only context), but asking
-        # to load fonts with nothing to load them from is a caller error,
-        # not a silent no-op.
-        if load_fonts is None:
-            load_fonts = font_dir is not None
-        elif load_fonts and font_dir is None:
-            raise ValueError("load_fonts needs a font_dir")
-        palette = doc.get("palette") or {}
-        self.problems: list[str] = []
-        if not isinstance(palette, dict):
-            # Never raise from a shape the JSON allows: a palette that is
-            # not an object is ignored, with a problem, and every name then
-            # resolves as if the document had none.
-            self.problems.append(f"palette: must be an object, not {type(palette).__name__}")
-            palette = {}
-        self.palette = palette
-        self.table = INK
-        self.table_rev = {v: k for k, v in self.table.items()}
-        # `load_fonts=False` skips the (comparatively expensive) face load
-        # for callers that only resolve colours — document_colors() is the
-        # one today — and never touch a font. `font_dir` is then unused and
-        # may be omitted.
-        self.fonts = _load_fonts(Path(font_dir)) if load_fonts else {}
-        # The three ink-mixing authoring warnings (contrast floor, chromatic
-        # mix as text, sub-2px density) are check()-only, the same way
-        # bezel_problems() is check()-only — render() on its own reports
-        # only what stops a document from drawing correctly. Gated so a bare
-        # render() call is unaffected.
-        self.warn_ink = warn_ink
-
-    def name_of(self, rgb: tuple) -> str:
-        """Reverse-lookup a raw canvas pixel to its ink name. Every pixel a
-        *dithered* render paints is one of the six table entries verbatim —
-        a mix interleaves two solid inks, it never averages them on canvas —
-        so this always resolves for real pixels.
-
-        `render(dithered_colors=False)` does paint blends, which have no ink
-        name. It cannot reach here: every caller is behind `warn_ink`, and
-        render() rejects `warn_ink` on a flat canvas for exactly this
-        reason. The `"ink"` fallback is therefore unreachable, and kept only
-        so a stray colour degrades a message rather than raising."""
-        return self.table_rev.get(rgb, "ink")
-
-    def ground_name(self, counts: Counter) -> str:
-        """Name a sampled ground for a warning message: a solid one by its
-        ink name, a dithered one as `black+white`. Ordered by how much of
-        the ground each ink covers, darker ink first on a tie, so a 50/50
-        mix is always named the same way round."""
-        inks = sorted(counts, key=lambda c: (-counts[c], _luminance(c)))
-        return "+".join(self.name_of(c) for c in inks)
-
-    def ink(self, name: str, where: str = "") -> Ink:
-        """Resolve a colour name to an Ink, following palette aliases.
-
-        Mirrors resolve_ink() in display_list.h. Every malformed case warns
-        and still yields something drawable; nothing here skips an op.
-
-        `name` is meant to be a string; a document that writes an inline
-        `{c, c2, mix}` object where a colour *name* belongs is caught before
-        the table lookup, since a dict can't be looked up in `self.table`: a
-        dict gets the same palette hint `c2`/`mix`-on-an-op gets
-        (docs/plans/dragon-feedback.md D1), and anything else non-string
-        falls back to the ordinary "unknown colour" message. Either way this
-        returns black rather than raising. Everything else is `resolve()`'s
-        walk, wrapped: black in place of the `None` a name that never
-        resolves gets there.
-        """
-        black = self.table["black"]
-        if isinstance(name, dict):
-            self.problems.append(f"{where}: {_MIX_HINT}")
-            return Ink(black, black, 100)
-        if not isinstance(name, str):
-            self.problems.append(f"{where}: unknown colour {name!r}")
-            return Ink(black, black, 100)
-        resolved = self.resolve(name, where)
-        return resolved if resolved is not None else Ink(black, black, 100)
-
-    def resolve(self, name: str, where: str = "") -> Ink | None:
-        """The alias/mix/built-in walk, `None` where `ink()` falls back to
-        black: base inks -> the document's palette -> the built-in mixes,
-        so the six ink names are immutable and a document can shadow a
-        built-in one by declaring it. A palette entry that is itself a mix
-        definition (a `dict`) is handed to `_mix()` for real — a malformed
-        one still warns and still resolves to something drawable, same as
-        it always has; `_base` stays separate; it walks with different
-        degrade rules for a name found *inside* a mix (D9/D1), not "does
-        this name resolve at all".
-
-        `ink()` wraps this for a caller that always wants something
-        drawable back. `document_colors()` and `swatch_groups()` call it
-        directly (folded from the old module-level `_color_name_resolves()`)
-        so a name that merely warns about something else along the way
-        (a malformed mix, still resolvable) isn't confused with one that
-        never resolves — the two used to need a second, warning-free walk
-        of their own to tell apart; now the one walk answers both.
-
-        Mirrors `resolve_ink()` in display_list.h and the alias-chasing
-        limit in `_base()` (8 hops).
-        """
-        n = name
-        for _ in range(8):
-            if not isinstance(n, str):
-                break  # an alias that lands on a list/number: unknown, below
-            if n in self.table:
-                return Ink(self.table[n], self.table[n], 100)
-            entry = self.palette.get(n)
-            if entry is None:
-                builtin = BUILTIN_MIXES.get(n)
-                if builtin is None:
-                    break
-                a, b, m = builtin
-                return Ink(self.table[a], self.table[b], m)
-            if isinstance(entry, dict):
-                return self._mix(entry, n, where)
-            n = entry
-        self.problems.append(f"{where}: unknown colour {n!r}")
-        return None
-
-    def _mix(self, entry: dict[str, Any], name: str, where: str) -> Ink:
-        black = self.table["black"]
-        c, c2 = entry.get("c"), entry.get("c2")
-        if not isinstance(c, str):
-            self.problems.append(f"{where}: mix {name!r} has no 'c'; using black")
-            return Ink(black, black, 100)
-        a = self._base(c, where)
-        if not isinstance(c2, str):
-            self.problems.append(f"{where}: mix {name!r} has no 'c2'; drawing solid")
-            return Ink(a, a, 100)
-        b = self._base(c2, where)
-        if a == b:
-            self.problems.append(f"{where}: mix {name!r} has c2 == c; drawing solid")
-            return Ink(a, a, 100)
-        return Ink(a, b, self._density(entry.get("mix"), name, where))
-
-    def _base(self, name: str, where: str) -> tuple:
-        """One ink. A mix inside a mix isn't representable in a 2x2 mask, so
-        a nested one warns and contributes only its own base colour."""
-        n = name
-        for _ in range(8):
-            if not isinstance(n, str):
-                break
-            if n in self.table:
-                return self.table[n]
-            entry = self.palette.get(n)
-            if entry is None:
-                builtin = BUILTIN_MIXES.get(n)
-                if builtin is None:
-                    break
-                self.problems.append(
-                    f"{where}: {n!r} is a built-in mix, not a plain colour here; "
-                    "using its base ink"
-                )
-                n = builtin[0]
-                continue
-            if isinstance(entry, dict):
-                self.problems.append(
-                    f"{where}: {n!r} is a mix and mixes cannot nest; using its 'c'"
-                )
-                n = entry.get("c")
-                if not isinstance(n, str):
-                    break
-                continue
-            n = entry
-        self.problems.append(f"{where}: unknown colour {n!r}")
-        return self.table["black"]
-
-    def _density(self, raw: Any, name: str, where: str) -> int:
-        if raw is None:
-            return 50
-        if isinstance(raw, bool) or not isinstance(raw, (int, float)) or not 0 <= raw <= 100:
-            self.problems.append(f"{where}: mix {name!r} has mix={raw!r}; using 50")
-            return 50
-        pct = min(DENSITIES, key=lambda v: (abs(v - raw), v))
-        if pct != raw:
-            self.problems.append(
-                f"{where}: mix {name!r} has mix={raw}, rounded to {pct} (25/50/75 only)"
-            )
-        return pct
-
-    def font(self, name: str, where: str = ""):
-        """Resolve a font name, or None when it isn't compiled in or isn't
-        installed here.
-
-        Mirrors the firmware's `assets.fonts.find()` miss: `text` and `fmt`
-        both `skipped++; continue` there rather than draw with a substitute
-        face, so a caller returning None here must abandon the op the same
-        way rather than fall back to `md` — a fallback would draw in the
-        preview something the panel never puts on the wall.
-
-        `mono` is the one face `_load_fonts` may have stored as `None` (its
-        file missing rather than the font directory itself): that is a
-        second, distinct kind of "no font here" from an unknown *name*, so
-        it gets its own message naming the file to fetch rather than the
-        generic "unknown font" one.
-        """
-        if name not in self.fonts:
-            self.problems.append(f"{where}: unknown font {name!r}")
-            return None
-        f = self.fonts[name]
-        if f is None:
-            self.problems.append(
-                f"{where}: font {name!r} is not installed here "
-                f"(fonts/{FONTS[name].file}); skipped"
-            )
-            return None
-        return f
-
-
-def hex_of(rgb: tuple) -> str:
-    return "#{:02X}{:02X}{:02X}".format(*rgb)
-
-
-def builtin_ink(name: str) -> Ink:
-    """The `Ink` a bare, document-free name resolves to: one of the six
-    base inks, or one of the built-in mixes (`BUILTIN_MIXES`) — the one
-    table lookup `vocabulary()` and `swatch_groups()` both need for a name
-    that is never resolved against a document's own palette (that walk is
-    `Ctx.ink()`'s job, for a name that might be a palette alias). Raises
-    `KeyError` for anything else; both callers only ever pass a name
-    straight out of `INK` or `BUILTIN_MIXES`'s own keys."""
-    if name in INK:
-        return Ink(INK[name], INK[name], 100)
-    c, c2, mix = BUILTIN_MIXES[name]
-    return Ink(INK[c], INK[c2], mix)
-
-
-# Reverse of INK, built once: the lookup recipe_of() needs to name an Ink's
-# two components back as ink names. INK's six values are all distinct, so
-# this is a clean bijection.
-_INK_NAMES: dict[tuple, str] = {v: k for k, v in INK.items()}
-
-
-def recipe_of(ink: Ink) -> str:
-    """`"ink"` for a base ink, `"<a>+<b> <mix>"` for a mix — the one recipe
-    formatter every caller that reports a resolved colour uses
-    (`document_colors()`, `swatch_groups()`, `vocabulary()`), so a name's
-    recipe reads the same way wherever it is shown. `_INK_NAMES` always
-    resolves for a real `Ink`'s components — they come from `INK` itself,
-    directly or through `Ctx.ink()`'s alias walk — so the `"ink"` fallback
-    here is defensive, not a path anything today can reach."""
-    if ink.solid:
-        return "ink"
-    return f"{_INK_NAMES.get(ink.a, 'ink')}+{_INK_NAMES.get(ink.b, 'ink')} {ink.mix}"
-
-
-def document_colors(doc: dict[str, Any]) -> tuple[dict[str, dict[str, str]], list[str]]:
-    """The effective colour of every name a document references, and the
-    problems resolving them turned up along the way.
-
-    `bg`, each op's `c` (and, `icon` ops only — `bgc` is a field of no
-    other op, and writing it on one already earns its own "no such field"
-    from `_op_field_problems`), every string value in a `sprite` op's own
-    `palette` (a sprite has no `c` of its own — its colours are entirely
-    there), and every document `palette` key, each mapped to
-    `{"recipe": ..., "hex": ...}` — `"ink"` for a base ink, `"<a>+<b>
-    <mix>"` for a mix (built-in or from the document's own palette), and an
-    alias's own recipe when a name points at one. `hex` is `Ink.avg`, the
-    same colour `render(dithered_colors=False)` paints, so this cannot say
-    something `preview` disagrees with.
-
-    The second element is every problem resolution raised, `where`d
-    `"palette '<name>'"` — so it reads as this function's own finding, not
-    an op's — including for a palette entry nothing in `ops` ever points
-    at (a malformed one `check()` has no reason to visit, since it only
-    resolves names an op actually references). `validate` merges these
-    into its `warnings`, deduping against what `check()` already reported
-    for the same name.
-
-    Resolution never touches fonts (`Ctx(..., load_fonts=False)`), so this
-    is cheap enough to call on every `validate()`. It never raises: a
-    document that isn't a dict, has no `ops` list, or has a non-dict
-    `palette` simply yields fewer entries — the same tolerance `Ctx`
-    already has for each of those shapes. A colour value that isn't a
-    string is skipped, matching what `Ctx.ink()` does for one it meets
-    while rendering. A name that doesn't resolve at all is left out of
-    `colors` (same as today's "unknown colour" warning from `check()`),
-    but still contributes the problem that says so.
-    """
-    if not isinstance(doc, dict):
-        return {}, []
-    ctx = Ctx(doc, load_fonts=False)
-
-    order: dict[str, None] = {}
-
-    def add(value: Any) -> None:
-        if isinstance(value, str):
-            order.setdefault(value, None)
-
-    add(doc.get("bg", "white"))
-    ops = doc.get("ops")
-    if isinstance(ops, list):
-        for op in ops:
-            if isinstance(op, dict):
-                add(op.get("c"))
-                if op.get("op") == "icon":
-                    add(op.get("bgc"))
-                if op.get("op") == "sprite" and isinstance(op.get("palette"), dict):
-                    for value in op["palette"].values():
-                        add(value)
-    for key in ctx.palette:
-        add(key)
-
-    colors: dict[str, dict[str, str]] = {}
-    for name in order:
-        where = f"palette {name!r}"
-        resolved = ctx.resolve(name, where)
-        if resolved is None:
-            continue
-        colors[name] = {"recipe": recipe_of(resolved), "hex": hex_of(resolved.avg)}
-    return colors, ctx.problems
-
-
-_SWATCH_CHIP_W = 182  # px; fits the widest recipe string ("yellow+green 50")
-_SWATCH_COLS = 6
-
-
-def swatch_groups(
-    palette: dict[str, Any] | None = None,
-) -> list[tuple[str, list[tuple[str, str, str, str]]]]:
-    """The chips `swatch_document()` lays out and `swatches` (the MCP tool)
-    lists as text — one source for both, so the picture and its caption
-    cannot disagree.
-
-    Returns `[(group_title, [(label, c_field, recipe, hex), ...]), ...]`
-    in the order docs/SPEC.md's "The named palette" groups them: `"inks"`,
-    then the `dark`/`light`/`mid` tiers (`TIERS`). `c_field` is what an
-    op's `c` must say to draw that chip's colour in `swatch_document()`'s
-    own palette — a plain ink or built-in name for the first four groups,
-    always the reserved `"sw:<name>"` form for a built-in mix so a
-    document's own `palette` can never shadow it (SPEC.md: a document
-    redefining a built-in "shadows" it).
-
-    With `palette` (a document's own `palette` field), a final
-    `"document palette"` group is appended: each entry's recipe and hex are
-    resolved exactly the way `document_colors()` resolves them (`recipe_of`,
-    the same `Ctx.ink()` walk), `c_field` is the entry's own name, and
-    an entry that doesn't resolve to anything drawable is left off rather
-    than guessed at. Omitted (or empty), there is no fifth group. A palette
-    key that is itself one of the reserved `"sw:<name>"` forms is also left
-    off: `swatch_document()`'s `out_palette` always resolves that key to
-    the built-in's own canonical mix (a collision, not a real entry), so
-    listing whatever the document's *own* palette says at that name would
-    show a recipe the sheet doesn't actually draw there.
-    """
-    groups: list[tuple[str, list[tuple[str, str, str, str]]]] = []
-
-    groups.append(
-        ("inks", [
-            (name, name, recipe_of(builtin_ink(name)), hex_of(builtin_ink(name).avg))
-            for name in COLORS
-        ])
-    )
-
-    by_tier: dict[str, list[str]] = {"dark": [], "light": [], "mid": []}
-    for name in BUILTIN_MIXES:
-        by_tier[TIERS[name]].append(name)
-    for tier in ("dark", "light", "mid"):
-        entries = [
-            (name, f"sw:{name}", recipe_of(builtin_ink(name)), hex_of(builtin_ink(name).avg))
-            for name in by_tier[tier]
-        ]
-        groups.append((tier, entries))
-
-    if palette:
-        ctx = Ctx({"palette": palette}, load_fonts=False)
-        entries = []
-        for name in palette:
-            if isinstance(name, str) and name.startswith("sw:"):
-                continue
-            resolved = ctx.resolve(name)
-            if resolved is None:
-                continue
-            entries.append((name, name, recipe_of(resolved), hex_of(resolved.avg)))
-        if entries:
-            groups.append(("document palette", entries))
-
-    return groups
-
-
-def swatch_document(palette: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Every ink and every built-in mix as a labelled chip, as an ordinary
-    display-list document — publish it with `set_display` and every named
-    colour this renderer knows sits on the wall with its name under it
-    (docs/plans/ink-mixing.md, "Still open"'s closing-coupon bullet).
-
-    Chips come from `swatch_groups(palette)`, `_SWATCH_COLS` (6) to a row.
-    A chip is a filled rect outlined by a 1px black rule drawn just outside
-    it (`x-1, y-1, w+2, h+2`), so the `white` chip reads against the white
-    page and every chip reads the same uniform way; the outline is a plain
-    `black` stroke, never contrast- or bezel-checked the way a chip's own
-    fill is. Its name, recipe and hex sit in three lines of `sm`/`xs` text
-    on the white page underneath — never on the chip itself, where a light
-    or mid-tone fill would trip the contrast floor `check()` enforces for
-    every chip's own tier. Each line is its own plain `text` op with an
-    explicit `y`, not a wrapped one: the firmware computes line height from
-    the font it actually loaded, not the `round(px * 1.24)` estimate a
-    wrapped op's default `lh` uses, so two lines stacked by hand here can
-    never disagree with what the panel measures.
-
-    The four built-in groups (`"inks"`, `"dark"`, `"light"`, `"mid"`) are
-    fixed in size and always fit inside `HEIGHT - BEZEL_MARGIN`. A caller's
-    own `palette` is not: the appended `"document palette"` group lays out
-    only as many rows as still fit, and if any entries are left over, one
-    final `xs` line reads `"+N more not shown"` at the row position the
-    next row would have used — itself checked to fit before it is emitted.
-
-    `out_palette` gives every reserved `"sw:<name>"` key priority over a
-    same-named entry in `palette`, so a document whose own palette happens
-    to define e.g. `"sw:navy"` still gets navy's canonical chip rather than
-    having it silently redrawn as whatever that entry says (`swatch_groups`
-    leaves that colliding entry out of the "document palette" listing for
-    the same reason). Passing this document to `validate` will list those
-    reserved `sw:<name>` keys in its `colors` — expected, since they are
-    ordinary palette entries once this document leaves this function.
-    """
-    margin = 26
-    chip_w, chip_h = _SWATCH_CHIP_W, 80
-    gap_x = 10
-    chip_gap, line_gap = 6, 2
-    name_lh = FONTS["sm"].line_height
-    xs_lh = FONTS["xs"].line_height
-    row_gap = 8
-    heading_lh, heading_gap = FONTS["xs"].line_height, 6
-    # Roughly doubles the gap before a heading (row_gap, already left after
-    # the previous group's last row) so it reads as belonging to the chips
-    # below it rather than the group above.
-    heading_extra_gap = row_gap
-    row_height = chip_h + chip_gap + name_lh + line_gap + xs_lh + line_gap + xs_lh + row_gap
-    col_x = [margin + i * (chip_w + gap_x) for i in range(_SWATCH_COLS)]
-
-    groups = swatch_groups(palette)
-
-    reserved = {
-        f"sw:{name}": {"c": c, "c2": c2, "mix": m} for name, (c, c2, m) in BUILTIN_MIXES.items()
-    }
-    out_palette: dict[str, Any] = {**(palette or {}), **reserved}
-
-    ops: list[dict[str, Any]] = []
-    y = margin
-
-    def emit_row(row: list[tuple[str, str, str, str]], top: int) -> None:
-        for (label, c_field, recipe, hexs), x in zip(row, col_x, strict=False):
-            ops.append({"op": "rect", "x": x, "y": top, "w": chip_w, "h": chip_h, "c": c_field})
-            ops.append(
-                {
-                    "op": "rect",
-                    "x": x - 1,
-                    "y": top - 1,
-                    "w": chip_w + 2,
-                    "h": chip_h + 2,
-                    "c": "black",
-                    "fill": False,
-                    "t": 1,
-                }
-            )
-            name_y = top + chip_h + chip_gap
-            ops.append(
-                {"op": "text", "x": x, "y": name_y, "s": label, "f": "sm", "c": "black",
-                 "w": chip_w - 4}
-            )
-            recipe_y = name_y + name_lh + line_gap
-            ops.append(
-                {"op": "text", "x": x, "y": recipe_y, "s": recipe, "f": "xs", "c": "black",
-                 "w": chip_w - 4}
-            )
-            hex_y = recipe_y + xs_lh + line_gap
-            ops.append(
-                {"op": "text", "x": x, "y": hex_y, "s": hexs, "f": "xs", "c": "black",
-                 "w": chip_w - 4}
-            )
-
-    for gi, (title, entries) in enumerate(groups):
-        if gi > 0:
-            y += heading_extra_gap
-        ops.append({"op": "text", "x": margin, "y": y, "s": title, "f": "xs", "c": "black"})
-        y += heading_lh + heading_gap
-
-        if title == "document palette":
-            # The only group whose size isn't fixed: lay out only the
-            # rows that fit, reserving room for the "+N more" line itself
-            # so it's never the thing that ends up off-canvas.
-            avail = HEIGHT - BEZEL_MARGIN - y
-            rows_needed = -(-len(entries) // _SWATCH_COLS)  # ceil
-            if rows_needed * row_height <= avail:
-                rows_fit = rows_needed
-            else:
-                rows_fit = max(0, (avail - xs_lh) // row_height)
-            shown = entries[: rows_fit * _SWATCH_COLS]
-            hidden = len(entries) - len(shown)
-        else:
-            shown, hidden = entries, 0
-
-        for row_start in range(0, len(shown), _SWATCH_COLS):
-            emit_row(shown[row_start : row_start + _SWATCH_COLS], y)
-            y += row_height
-
-        if hidden:
-            ops.append(
-                {"op": "text", "x": margin, "y": y, "s": f"+{hidden} more not shown", "f": "xs",
-                 "c": "black"}
-            )
-
-    return {"v": 1, "bg": "white", "palette": out_palette, "ops": ops}
 
 
 def vocabulary(max_bytes: int) -> dict[str, Any]:
@@ -1300,128 +453,6 @@ def wrap_lines(font, s: str, max_w, max_lines: int):
     return [fit_line(font, line, max_w) for line in lines[:max_lines]]
 
 
-def _icon_mask(name: str, size: int) -> Image.Image:
-    """The glyph as a 1-bit `size x size` stencil: 1 wherever the ink goes.
-
-    Every shape is drawn into this tile instead of onto the page, so no
-    helper can paint outside the icon's box however PIL decides to cap a
-    thick line or stroke an ellipse. Holes — the moon's crescent, the
-    marker's eye, the bang in the alert triangle — are punched back to 0
-    rather than painted white: the panel's icons are BINARY images drawn
-    with `transparency: chroma_key`, so their off pixels are skipped, not
-    filled with anything.
-    """
-    s = int(size)
-    mask = Image.new("1", (s, s), 0)
-    d = ImageDraw.Draw(mask)
-    ON, OFF = 1, 0
-    cx = cy = s / 2
-    lw = max(2, round(s * 0.09))
-
-    def sun(scale=1.0, ox=0.0, oy=0.0):
-        r = s * 0.19 * scale
-        px, py = cx + ox * s, cy + oy * s
-        d.ellipse([px - r, py - r, px + r, py + r], fill=ON)
-        for i in range(8):
-            a = i * math.pi / 4
-            d.line(
-                [
-                    px + math.cos(a) * r * 1.5,
-                    py + math.sin(a) * r * 1.5,
-                    px + math.cos(a) * r * 2.2,
-                    py + math.sin(a) * r * 2.2,
-                ],
-                fill=ON,
-                width=lw,
-            )
-
-    def cloud(ox=0.0, oy=0.0, scale=1.0):
-        w = s * 0.72 * scale
-        h = s * 0.42 * scale
-        px, py = cx + ox * s, cy + oy * s
-        d.ellipse([px - w / 2, py - h / 2, px - w / 2 + h, py + h / 2], fill=ON)
-        d.ellipse([px + w / 2 - h, py - h / 2, px + w / 2, py + h / 2], fill=ON)
-        d.rectangle([px - w / 2 + h / 2, py - h / 2, px + w / 2 - h / 2, py + h / 2], fill=ON)
-        d.ellipse([px - w * 0.18, py - h * 0.95, px + w * 0.34, py + h * 0.35], fill=ON)
-
-    if name == "weather-sunny":
-        sun(1.25)
-    elif name == "weather-partly-cloudy":
-        sun(0.8, ox=0.16, oy=-0.20)
-        cloud(ox=-0.04, oy=0.12, scale=0.95)
-    elif name == "weather-cloudy":
-        cloud(oy=0.02, scale=1.1)
-    elif name == "weather-rainy":
-        cloud(oy=-0.10, scale=1.0)
-        for i in range(3):
-            rx = cx + (i - 1) * s * 0.22
-            d.line([rx, cy + s * 0.20, rx - s * 0.06, cy + s * 0.40], fill=ON, width=lw)
-    elif name == "weather-snowy":
-        # Same cloud as the other weather glyphs, with a few flake dots
-        # instead of rain's diagonal streaks.
-        cloud(oy=-0.10, scale=1.0)
-        for i in range(3):
-            fx = cx + (i - 1) * s * 0.24
-            fy = cy + s * 0.30 + (i % 2) * s * 0.10
-            rr = max(1.8, s * 0.05)
-            d.ellipse([fx - rr, fy - rr, fx + rr, fy + rr], fill=ON)
-    elif name == "weather-night":
-        r = s * 0.30
-        d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=ON)
-        # The crescent is the bite an offset disc takes out of that one.
-        d.ellipse([cx - r * 0.45, cy - r * 1.30, cx + r * 1.65, cy + r * 0.60], fill=OFF)
-    elif name == "map-marker":
-        r = s * 0.26
-        top = s * 0.14
-        d.ellipse([cx - r, top, cx + r, top + 2 * r], fill=ON)
-        d.polygon(
-            [
-                (cx - r * 0.78, top + r * 1.35),
-                (cx + r * 0.78, top + r * 1.35),
-                (cx, s * 0.92),
-            ],
-            fill=ON,
-        )
-        hr = r * 0.38
-        d.ellipse([cx - hr, top + r - hr, cx + hr, top + r + hr], fill=OFF)
-    elif name == "check":
-        d.line([s * 0.20, s * 0.52, s * 0.42, s * 0.74], fill=ON, width=lw + 1)
-        d.line([s * 0.42, s * 0.74, s * 0.80, s * 0.28], fill=ON, width=lw + 1)
-    elif name == "clock":
-        r = s * 0.36
-        d.ellipse([cx - r, cy - r, cx + r, cy + r], outline=ON, width=lw)
-        d.line([cx, cy, cx, cy - r * 0.55], fill=ON, width=lw)
-        d.line([cx, cy, cx + r * 0.45, cy], fill=ON, width=lw)
-    elif name == "alert":
-        d.polygon([(cx, s * 0.14), (s * 0.92, s * 0.84), (s * 0.08, s * 0.84)], fill=ON)
-        d.line([cx, s * 0.38, cx, s * 0.62], fill=OFF, width=lw)
-        d.ellipse([cx - lw * 0.7, s * 0.68, cx + lw * 0.7, s * 0.68 + lw * 1.4], fill=OFF)
-    elif name == "battery":
-        bw, bh = s * 0.52, s * 0.76
-        d.rectangle([cx - bw / 2, cy - bh / 2, cx + bw / 2, cy + bh / 2], outline=ON, width=lw)
-        d.rectangle(
-            [cx - bw * 0.18, cy - bh / 2 - lw * 1.6, cx + bw * 0.18, cy - bh / 2], fill=ON
-        )
-        d.rectangle(
-            [cx - bw / 2 + lw, cy - bh * 0.10, cx + bw / 2 - lw, cy + bh / 2 - lw], fill=ON
-        )
-    else:
-        d.rectangle([0, 0, s - 1, s - 1], outline=ON, width=lw)
-
-    return mask
-
-
-def draw_icon(d: ImageDraw.ImageDraw, name: str, x, y, size, fill):
-    """Procedural stand-ins. The panel draws real MDI bitmaps.
-
-    Stencilled into a `size x size` tile and blitted at (x, y), the way the
-    firmware's `image->draw()` blits exactly get_width() x get_height():
-    nothing lands outside [x, x+size) x [y, y+size), and the pixels the
-    glyph does not set are left as they were.
-    """
-    d.bitmap((x, y), _icon_mask(name, size), fill=fill)
-
-
 def render_hash(doc: dict[str, Any]) -> str:
     """Identity of what the document DRAWS: bg + palette + ops, nothing else.
 
@@ -1522,174 +553,6 @@ def paint(img: Image.Image, ink: Ink, draw_fn, dithered_colors: bool = True) -> 
                 ip[xx, yy] = ink.b if mix_on(xx, yy, ink.mix) else ink.a
 
 
-def _check_contrast(img, ctx: Ctx, ink: Ink, fg_name: str, where: str, boxes: list[tuple]) -> None:
-    """Warning: 3:1 contrast floor for text/fmt/icon against what is actually
-    behind it (docs/plans/ink-mixing.md decision 4).
-
-    The ground is sampled from the real canvas *before* this op draws, so a
-    rect, a mixed fill or the page bg are all handled the same way. All five
-    compiled font sizes are WCAG "large text", so one floor covers every
-    size. `boxes` lets a wrapped text block check each line's own ground;
-    the worst line is what gets reported. A no-op unless `ctx.warn_ink`
-    (set by check(), not by a bare render() call -- see Ctx.__init__).
-
-    A dithered glyph is legible if *either* of its two inks stands out from
-    the ground — the contrasting pixels alone draw the letterform — so the
-    effective contrast of a mixed ink is `max(contrast(a, ground),
-    contrast(b, ground))`, not the contrast of their blend. Solid ink is
-    unaffected: `max` over two identical colours is just that colour's
-    contrast.
-
-    The ground is measured the other way round, as the single colour it
-    fuses to (`_grounds`). The two sides are asymmetric because the physics
-    is: "a large fill averages the two; a 3 px stem has too few pixels to
-    average" (decision 3). `max` on the ground as well would pass nearly
-    anything — one lucky pairing out of four would carry the op — and in
-    particular it would pass the one mixed-ground case the wall has judged,
-    red/white 50 on pink, which is poor precisely because the letterform
-    fuses to the colour the ground fuses to even though every pixel of it
-    differs from the pixel beneath.
-    """
-    if not ctx.warn_ink:
-        return
-    worst = None
-    for box in boxes:
-        grounds = _grounds(img, box)
-        if grounds is None:
-            continue
-        for bg, counts in grounds:
-            ratio = max(_contrast_ratio(ink.a, bg), _contrast_ratio(ink.b, bg))
-            if worst is None or ratio < worst[0]:
-                worst = (ratio, counts)
-    if worst is None:
-        return
-    ratio, counts = worst
-    if ratio < 3.0:
-        # Floored, not rounded, so a ratio just under the floor cannot print
-        # as "3.0:1 (below 3:1)" — white on `grey-mid` is 2.95 and does.
-        shown = int(ratio * 10) / 10
-        ctx.problems.append(
-            f"{where}: {fg_name} on {ctx.ground_name(counts)} is {shown:.1f}:1 "
-            "(below 3:1) — will be hard to read"
-        )
-
-
-def _union_box(boxes: list[tuple]) -> tuple:
-    """The smallest box containing every box in `boxes` — a wrapped text
-    block's lines land at different y (and, centred/right-aligned, x)
-    positions, so the op's own bounding box for the drew-nothing check is
-    their union, not any single line's."""
-    xs0, ys0, xs1, ys1 = zip(*boxes, strict=True)
-    return min(xs0), min(ys0), max(xs1), max(ys1)
-
-
-def _snapshot(img: Image.Image, box: tuple) -> tuple | None:
-    """Crop `img` to `box` (clipped to the canvas) for a before/after diff.
-
-    Returns `(clipped_box, pixel bytes)`, or None when the box has no
-    on-canvas area — same skip rule as `_grounds`, and for the same
-    reason: an off-screen op drawing nothing is not interesting.
-    """
-    clipped = _clip_to_canvas(box)
-    if clipped is None:
-        return None
-    return clipped, img.crop(clipped).tobytes()
-
-
-def _check_drew_nothing(img: Image.Image, ctx: Ctx, before: tuple | None, where: str) -> None:
-    """Warning: the op changed not one pixel inside its own box
-    (docs/plans/ink-mixing.md, "What the glass showed" / the contrast-check
-    limitation this replaces).
-
-    Contrast measures marginal legibility and cannot see absolute
-    invisibility: text drawn over a ground that is a mix of the same two
-    inks becomes pixel-identical to its background and vanishes completely,
-    while still scoring a comfortable contrast ratio. Rather than model
-    that, observe it — snapshot the op's box before drawing, draw, and diff.
-    A no-op unless `ctx.warn_ink`, or when the op had no on-canvas area to
-    begin with (`before` is None).
-    """
-    if not ctx.warn_ink or before is None:
-        return
-    clipped, before_bytes = before
-    if img.crop(clipped).tobytes() == before_bytes:
-        ctx.problems.append(
-            f"{where}: drew nothing visible — every pixel in its box already "
-            "matched what is behind it"
-        )
-
-
-def _check_mix_as_text(ctx: Ctx, ink: Ink, name: str, where: str) -> None:
-    """Warning: a chromatic mix used as text shifts toward its lighter ink
-    (docs/plans/ink-mixing.md decision 3).
-
-    A fill has enough pixels to average two inks; a glyph does not, so the
-    brighter ink dominates and the blend reads lighter than the swatch of
-    the same mix. Achromatic (black+white) is exempt — there is no hue to
-    lose, and the lightening is the point (it is what the shipping footer
-    stamp already relies on). A no-op unless `ctx.warn_ink`.
-    """
-    if not ctx.warn_ink:
-        return
-    if ink.solid:
-        return
-    black, white = ctx.table["black"], ctx.table["white"]
-    if {ink.a, ink.b} == {black, white}:
-        return
-    gap = abs(_luminance(ink.a) - _luminance(ink.b))
-    if gap > 0.2:
-        a_name, b_name = ctx.name_of(ink.a), ctx.name_of(ink.b)
-        lighter = a_name if _luminance(ink.a) > _luminance(ink.b) else b_name
-        ctx.problems.append(
-            f"{where}: {name!r} mixes {a_name}+{b_name} (luminance gap "
-            f"{gap:.2f}) — as text it will read shifted toward {lighter}, "
-            "not the blend a fill of the same mix would show"
-        )
-
-
-def _check_uncompiled_glyphs(ctx: Ctx, face_name: str, text: str, where: str) -> None:
-    """Warning: a character `face_name` draws that the panel has not
-    compiled in (docs/plans/dragon-feedback.md D11).
-
-    The preview loads the whole TTF, so it draws any glyph the file has;
-    the panel compiles only GF_LATIN_CORE (every face) plus box drawing
-    and block elements (`mono` only, `Face.extra_glyphs`) — `"a → b"`
-    previews fine and loses the arrow on the wall, silently, unless
-    something says so. One warning per op, naming up to five distinct
-    offending characters with their code points.
-
-    `text` is what the op actually draws — after `fit_line`/`wrap_lines`
-    has already trimmed it, so a character that would have been cut
-    anyway is never reported — and a space or a literal `{`/`}` an
-    unexpanded `fmt` field leaves behind is never counted as one, even
-    though both are in GF_LATIN_CORE: a document's own template syntax
-    isn't a font question. A no-op unless `ctx.warn_ink`.
-    """
-    if not ctx.warn_ink:
-        return
-    allowed = _FACE_GLYPHS.get(face_name)
-    if allowed is None:
-        return
-    offenders: list[str] = []
-    seen: set[str] = set()
-    for ch in text:
-        # `seen` keeps this linear: a max-size document of distinct
-        # characters must not turn one op into a multi-second scan.
-        if ch == " " or ch in seen:
-            continue
-        seen.add(ch)
-        if ord(ch) not in allowed:
-            offenders.append(ch)
-    if not offenders:
-        return
-    examples = ", ".join(f"{ch} (U+{ord(ch):04X})" for ch in offenders[:5])
-    ctx.problems.append(
-        f"{where}: {len(offenders)} character(s) the panel has not compiled: "
-        f"{examples} — GF_Latin_Core only (plus box drawing and block "
-        "elements for mono)"
-    )
-
-
 def _paint_glyph_op(
     img: Image.Image,
     ctx: Ctx,
@@ -1710,16 +573,10 @@ def _paint_glyph_op(
     single-element list; wrapped text passes one box per line.
 
     `after_mix_check`, if given, runs between the mix-as-text warning and
-    the snapshot — exactly where `_check_uncompiled_glyphs` already ran at
-    each text/fmt call site before this was factored out, so warning order
-    is unchanged; `icon` (no glyphs to check) omits it. `dithered_colors`
-    is threaded through to `paint()` directly rather than through
-    `render()`'s own `paint_op` closure, since this is a module-level
-    function and can't see that closure.
-
-    Pixel output and warning order are unchanged from before this was
-    factored out — it replaces the same lines repeated at each call site,
-    not what they do.
+    the snapshot, so warning order is unchanged; `icon` (no glyphs to
+    check) omits it. `dithered_colors` is threaded through to `paint()`
+    directly rather than through `render()`'s own `paint_op` closure,
+    since this is a module-level function and can't see that closure.
     """
     _check_contrast(img, ctx, ink, c_name, where, boxes)
     _check_mix_as_text(ctx, ink, c_name, where)
@@ -1728,46 +585,6 @@ def _paint_glyph_op(
     snap = _snapshot(img, _union_box(boxes)) if boxes else None
     paint(img, ink, draw_fn, dithered_colors)
     _check_drew_nothing(img, ctx, snap, where)
-
-
-_PARITY_OUTCOME = {25: "0% or 50%", 75: "50% or 100%"}
-
-
-def _check_thin_mix(ctx: Ctx, ink: Ink, where: str, feature: str, **dims) -> None:
-    """Warning: a feature thinner than 2 px cannot carry 25%/75%
-    (docs/plans/ink-mixing.md decision 2).
-
-    The mask is 2x2, so a one-pixel-wide run samples a single row or column
-    of it and lands on 0/50/100% depending on which row or column that is —
-    only 50% is parity-independent. `feature` is one of "line", "outline"
-    (a rect drawn with fill: false) or "fill" (a filled rect too thin in one
-    dimension); `dims` carries the measurements to report. A no-op unless
-    `ctx.warn_ink`.
-    """
-    if not ctx.warn_ink:
-        return
-    if ink.solid or ink.mix not in _PARITY_OUTCOME:
-        return
-    outcome = _PARITY_OUTCOME[ink.mix]
-    if feature in ("line", "outline"):
-        t = dims["t"]
-        if t >= 2:
-            return
-        noun = "line" if feature == "line" else "rect outline"
-        ctx.problems.append(
-            f"{where}: {ink.mix}% mix on a {t}px {noun} renders at {outcome}, "
-            f"not {ink.mix}%, and which one depends on the op's coordinate "
-            "parity"
-        )
-    else:
-        w, h = dims["w"], dims["h"]
-        if w >= 2 and h >= 2:
-            return
-        ctx.problems.append(
-            f"{where}: {ink.mix}% mix on a {w}x{h} fill is too thin to carry "
-            f"the density — renders at {outcome} depending on the op's "
-            "coordinate parity"
-        )
 
 
 def _optional_number(value: Any) -> int | float | None:
@@ -1785,110 +602,6 @@ def _optional_number(value: Any) -> int | float | None:
     return value
 
 
-def _resolved_rect_radius(r_raw: Any, w: int, h: int, where: str, ctx: Ctx) -> int:
-    """`r` for a filled rect: a non-negative integer, clamped to
-    `(min(w, h) - 1) // 2` (docs/plans/dragon-feedback.md D10). Anything
-    else — not an int, a bool (JSON's `true`/`false` are not the number they
-    subclass), or negative — warns once and is treated as 0, which is
-    `rect`'s existing square-cornered draw, so a malformed `r` degrades to
-    today's behaviour rather than a bad box.
-
-    The bound is `min(w, h) - 1`, not `min(w, h)`: a corner disc is
-    `2r + 1` px across, so at `r == min(w, h) // 2` on an *even* dimension
-    the disc's far edge lands one pixel past the box on that axis (e.g.
-    `w == 40`: a corner circle of `r == 20` centred at `x + 20` spans
-    `[x, x + 40]`, one column wider than the box's own `[x, x + 39]`) —
-    caught by the sweep in test_render.py. `max(0, ...)` guards a
-    zero-size box, where `min(w, h) - 1` would otherwise go negative.
-    """
-    if isinstance(r_raw, bool) or not isinstance(r_raw, int) or r_raw < 0:
-        if r_raw:
-            ctx.problems.append(f"{where}: r={r_raw!r} is not a non-negative integer; using 0")
-        return 0
-    max_r = max(0, (min(w, h) - 1) // 2)
-    if r_raw > max_r:
-        ctx.problems.append(
-            f"{where}: r={r_raw} is larger than (min(w,h)-1)//2={max_r}; clamped to {max_r}"
-        )
-        return max_r
-    return r_raw
-
-
-def _resolved_thickness(t_raw: Any, where: str, ctx: Ctx) -> int:
-    """`t` for an outline: an integer >= 1, clamped to `THICK_MAX`. A `t`
-    that isn't an int (`bool` excluded, same as every other malformed-field
-    check here), or is < 1, warns and uses 1 -- the "warn and draw
-    something" rule every malformed field gets. A `t` larger than
-    `THICK_MAX` warns and clamps rather than silently, unlike the
-    firmware's own clamp: a bad value is authoring feedback and stays on
-    this side (docs/plans/dragon-feedback.md D1).
-    """
-    if isinstance(t_raw, bool) or not isinstance(t_raw, int) or t_raw < 1:
-        ctx.problems.append(f"{where}: t={t_raw!r} is not a positive integer; using 1")
-        return 1
-    if t_raw > THICK_MAX:
-        ctx.problems.append(
-            f"{where}: t={t_raw} is larger than {THICK_MAX}; clamped to {THICK_MAX}"
-        )
-        return THICK_MAX
-    return t_raw
-
-
-def _resolved_fill(op: dict[str, Any], where: str, ctx: Ctx) -> bool:
-    """`fill` for rect/circle/poly: a plain `bool`, default `True`.
-
-    ArduinoJson's `o["fill"] | true` yields the default for anything that
-    isn't a JSON bool, while Python's `op.get("fill", True)` is truthy on
-    `0`/`null`/anything else that isn't literally `False`. A `fill` that is
-    present but not a `bool` therefore warns and uses the default here too,
-    matching the firmware's behaviour instead of Python's own truthiness —
-    otherwise `"fill": 0` would outline on the panel and fill in the
-    preview.
-    """
-    v = op.get("fill", True)
-    if not isinstance(v, bool):
-        ctx.problems.append(f"{where}: fill={v!r} is not true/false; using true")
-        return True
-    return v
-
-
-def _draw_rounded_rect(
-    dr: ImageDraw.ImageDraw, x: int, y: int, w: int, h: int, r: int, col
-) -> None:
-    """The seven shapes a rounded filled rect is built from (D10): the
-    middle band, the two side bands and four corner circles, all onto the
-    same `dr` so `paint()`'s single stencil pass keeps them at one absolute
-    dither phase — the firmware draws the identical seven shapes through
-    one `MixDisplay` for the same reason (`display_list.h`'s `rect` branch).
-
-    A band collapses to nothing (not a negative-width `rectangle` call) once
-    `r` reaches `min(w, h) // 2` — the caller's own clamp — since `r` this
-    large leaves no straight run between the corners on that axis.
-
-    Eyeball parity, not pixel parity, with the firmware: PIL's `ellipse` and
-    ESPHome's own midpoint circle routine round their outlines slightly
-    differently, so the handful of pixels right at each corner's own arc can
-    differ by a pixel between the two renderers, the same standard the rest
-    of this file's shapes are held to.
-    """
-    # r == 0 has no rounding to draw -- the side-band rectangles below would
-    # come out as [x, y+0, x-1, y+h-1] (x1 < x0) and PIL raises on that;
-    # the caller already only takes this branch for r > 0.
-    assert r > 0, "_draw_rounded_rect() is for r > 0; draw a plain rect for r == 0"
-    if w - 2 * r > 0:
-        dr.rectangle([x + r, y, x + w - r - 1, y + h - 1], fill=col)
-    if h - 2 * r > 0:
-        dr.rectangle([x, y + r, x + r - 1, y + h - r - 1], fill=col)
-        dr.rectangle([x + w - r, y + r, x + w - 1, y + h - r - 1], fill=col)
-    for cx, cy in (
-        (x + r, y + r),
-        (x + w - 1 - r, y + r),
-        (x + r, y + h - 1 - r),
-        (x + w - 1 - r, y + h - 1 - r),
-    ):
-        dr.ellipse([cx - r, cy - r, cx + r, cy + r], fill=col)
-
-
 def _anchor_of(op: dict[str, Any], ctx: Ctx, where: str) -> str:
     """Resolve `a` to a PIL anchor code, warning (and falling back to left)
     on a value `ANCHOR` doesn't have — the firmware's `align_of()` falls
@@ -1898,143 +611,6 @@ def _anchor_of(op: dict[str, Any], ctx: Ctx, where: str) -> str:
     if a_value not in ANCHOR:
         ctx.problems.append(f"{where}: unknown alignment {a_value!r}, using left")
     return ANCHOR.get(a_value, "la")
-
-
-def _valid_poly_points(raw: Any) -> list[tuple[int, int]] | None:
-    """`pts` parsed to a list of `(x, y)` int pairs, or `None` if it isn't
-    at least three of them (docs/plans/dragon-feedback.md D12).
-
-    Strict about the shape — a list of exactly-two-element lists/tuples of
-    plain `int`s, `bool` excluded the way every other malformed-field check
-    in this module excludes it — because the fill rule below is integer
-    arithmetic and a float coordinate would silently mean something
-    different on the two sides. Mirrors draw_poly()'s own all-or-nothing
-    parse: one bad point invalidates the whole op, same as `rows` in
-    `sprite`.
-    """
-    if not isinstance(raw, list) or len(raw) < 3:
-        return None
-    pts: list[tuple[int, int]] = []
-    for p in raw:
-        if (
-            not isinstance(p, (list, tuple))
-            or len(p) != 2
-            or any(isinstance(v, bool) or not isinstance(v, int) for v in p)
-        ):
-            return None
-        pts.append((p[0], p[1]))
-    return pts
-
-
-def _poly_spans(pts: list[tuple[int, int]]) -> list[tuple[int, int, int]]:
-    """Even-odd scanline fill (docs/plans/dragon-feedback.md D12) — mirrors
-    `poly_spans()` in display_list.h integer for integer, including the
-    crossing's rounding with negative operands, so the two are bit-for-bit
-    the same raster and the fill is not left to PIL to interpret.
-
-    For each integer scanline `y` from `min(ys)` to `max(ys)` inclusive:
-    take each edge of the closed point list — consecutive points, plus the
-    closing edge from the last point back to the first — with `y0 != y1`.
-    It contributes a crossing when `min(y0, y1) <= y < max(y0, y1)` —
-    half-open, so a vertex shared by two edges is counted on exactly one of
-    them, never twice and never zero times. The crossing's x is
-    `x0 + (y - y0) * (x1 - x0) // (y1 - y0)`: floor division, rounding
-    toward negative infinity for a negative operand on either side. Python's
-    `//` already means exactly that, so — unlike the C++ mirror, which has
-    to reach for a sign-correct `floor_div()` because `/` truncates toward
-    zero — this line needs no helper of its own to get the same answer.
-
-    Crossings on a scanline are sorted and paired up (1st/2nd, 3rd/4th, ...)
-    into `(y, xa, xb)` spans, each filled **inclusive** of both ends. Return
-    order is scanline by scanline, top to bottom, left to right within a
-    scanline — the order `draw_poly()` emits them in too, though nothing
-    downstream depends on that beyond making a diff readable.
-
-    The scanline range is clamped to `[0, HEIGHT)` and each span's x to
-    `[0, WIDTH)` **before** anything is appended
-    (docs/plans/dragon-feedback.md D12): a polygon whose points sit far
-    outside the canvas — but inside `POLY_MAX_COORD` — must not make this
-    loop, or its output, scale with how far outside it they are. A span
-    that clamps to nothing
-    (`xa > xb` after clamping) is dropped rather than appended empty or
-    inverted.
-    """
-    ys = [p[1] for p in pts]
-    y_lo = max(0, min(ys))
-    y_hi = min(HEIGHT - 1, max(ys))
-    n = len(pts)
-    spans: list[tuple[int, int, int]] = []
-    for y in range(y_lo, y_hi + 1):
-        xs: list[int] = []
-        for i in range(n):
-            ax, ay = pts[i]
-            bx, by = pts[(i + 1) % n]
-            if ay == by:
-                continue  # horizontal edges never cross a scanline
-            edge_lo, edge_hi = (ay, by) if ay < by else (by, ay)
-            if edge_lo <= y < edge_hi:
-                xs.append(ax + (y - ay) * (bx - ax) // (by - ay))
-        xs.sort()
-        for i in range(0, len(xs) - 1, 2):
-            xa, xb = max(0, xs[i]), min(WIDTH - 1, xs[i + 1])
-            if xa <= xb:
-                spans.append((y, xa, xb))
-    return spans
-
-
-def _bresenham_points(x1: int, y1: int, x2: int, y2: int):
-    """The panel's own line rasterisation, walked pixel by pixel — mirrors
-    `esphome::display::Display::line()` (esphome/components/display/
-    display.cpp) exactly, integer for integer, rather than delegating to
-    PIL's `ImageDraw.line()`.
-
-    That distinction matters here specifically because it doesn't for the
-    plain `line` op: PIL's `width=` parameter centres a thick stroke on the
-    path, while the firmware's `thick_line()` (`_thick_line_points` below)
-    offsets `t` parallel 1px lines to one side — the two already draw
-    visibly different pixels for `t > 1`, which is accepted as eyeball
-    parity for `line`/`rect` (docs/plans/dragon-feedback.md D10) because
-    nothing has ever diffed them. `poly`'s outline is diffed
-    (tests/test_firmware_parity.py), so it earns its own exact walk instead
-    of inheriting that gap.
-    """
-    dx = abs(x2 - x1)
-    sx = 1 if x1 < x2 else -1
-    dy = -abs(y2 - y1)
-    sy = 1 if y1 < y2 else -1
-    err = dx + dy
-    x, y = x1, y1
-    while True:
-        yield x, y
-        if x == x2 and y == y2:
-            return
-        e2 = 2 * err
-        if e2 >= dy:
-            err += dy
-            x += sx
-        if e2 <= dx:
-            err += dx
-            y += sy
-
-
-def _thick_line_points(x1: int, y1: int, x2: int, y2: int, t: int):
-    """Mirrors `thick_line()` in display_list.h: `t` parallel 1px runs of
-    `_bresenham_points`, offset the same way the firmware offsets
-    `it.line()` calls — vertical thickens in x, horizontal in y, anything
-    else (a genuine diagonal) thickens in y only. `t <= 1` is a single
-    plain line, same as the firmware's early return."""
-    if t <= 1:
-        yield from _bresenham_points(x1, y1, x2, y2)
-        return
-    vertical = x1 == x2
-    horizontal = y1 == y2
-    for i in range(t):
-        if vertical:
-            yield from _bresenham_points(x1 + i, y1, x2 + i, y2)
-        elif horizontal:
-            yield from _bresenham_points(x1, y1 + i, x2, y2 + i)
-        else:
-            yield from _bresenham_points(x1, y1 + i, x2, y2 + i)
 
 
 def render(
@@ -2518,10 +1094,6 @@ def check(doc: dict[str, Any], font_dir: Path) -> list[str]:
     return problems
 
 
-# Outside the six inks and every tier a mix fuses to (SPEC.md's named
-# palette), so a grid line and a document's own colours can never be
-# confused for one another. Chosen over the six-ink table rather than
-# merely "a colour that happens not to appear today".
 GRID_COLOR = (255, 0, 255)
 
 
@@ -2581,3 +1153,4 @@ def grid_overlay(
         label(str(y), 2, y + 3)
 
     return out
+

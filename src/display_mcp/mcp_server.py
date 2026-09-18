@@ -337,12 +337,7 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
             # isn't installed, so a missing font directory never fails a
             # grid preview -- it just looks the way it always did.
             try:
-                # A Face matching no compiled entry (`load_font` takes a
-                # `Face`; `cell_height` is unused there, so 0 is a safe
-                # filler) -- 22px, regular weight, chosen only to survive a
-                # client downscaling the PNG.
-                grid_face = render.Face(22, False, "InstrumentSans-Regular.ttf", 0)
-                grid_font = render.load_font(settings.font_dir, grid_face)
+                grid_font = render.load_font(settings.font_dir, render.GRID_FACE)
             except Exception:  # noqa: BLE001 - the grid must never break a preview
                 grid_font = None
             image = render.grid_overlay(image, font=grid_font)
