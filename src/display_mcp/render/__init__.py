@@ -16,9 +16,10 @@ deliberate fixes called out in docs/PLAN.md ("Renderer"):
 Public surface (final):
     WIDTH, HEIGHT            1200, 1600
     FONTS                    {name: Face(size, bold, file, cell_height,
-                              ink_height, extra_glyphs)} for xl lg md sm xs
-                              mono; Face[0]/Face[1] keep the old (size, bold)
-                              two-tuple reads working
+                              ink_height, extra_glyphs, layout, optional)}
+                              for xl lg md sm xs mono; Face[0]/Face[1] keep
+                              the old (size, bold) two-tuple reads working;
+                              Face.line_height is round(size * 1.24)
     GF_LATIN_CORE             frozenset[int]; the code points every compiled
                               face has, vendored in gf_latin_core.txt
     ICONS                    {name: frozenset(size classes)} e.g. {"check": {"sm"}}
@@ -32,6 +33,10 @@ Public surface (final):
     document_colors(doc) -> (dict[str, dict], list[str])   every name's
         {recipe, hex}, plus the problems resolving them turned up; no fonts needed
     hex_of(rgb) -> str   "#RRGGBB"
+    builtin_ink(name) -> Ink   a bare ink or built-in-mix name, no document
+    recipe_of(ink) -> str   "ink" or "<a>+<b> <mix>", the one recipe formatter
+    vocabulary(max_bytes) -> dict   the whole document vocabulary as one
+        object; the MCP describe tool is a one-line wrapper around this
     fit_line(font, s, max_w) / wrap_lines(font, s, max_w, max_lines)
     fonts_available(font_dir) -> bool
     grid_overlay(img, step=100, font=None) -> PIL.Image.Image   a coordinate
@@ -853,6 +858,39 @@ def hex_of(rgb: tuple) -> str:
     return "#{:02X}{:02X}{:02X}".format(*rgb)
 
 
+def builtin_ink(name: str) -> Ink:
+    """The `Ink` a bare, document-free name resolves to: one of the six
+    base inks, or one of the built-in mixes (`BUILTIN_MIXES`) — the one
+    table lookup `vocabulary()` and `swatch_groups()` both need for a name
+    that is never resolved against a document's own palette (that walk is
+    `Ctx.ink()`'s job, for a name that might be a palette alias). Raises
+    `KeyError` for anything else; both callers only ever pass a name
+    straight out of `INK` or `BUILTIN_MIXES`'s own keys."""
+    if name in INK:
+        return Ink(INK[name], INK[name], 100)
+    c, c2, mix = BUILTIN_MIXES[name]
+    return Ink(INK[c], INK[c2], mix)
+
+
+# Reverse of INK, built once: the lookup recipe_of() needs to name an Ink's
+# two components back as ink names. INK's six values are all distinct, so
+# this is a clean bijection.
+_INK_NAMES: dict[tuple, str] = {v: k for k, v in INK.items()}
+
+
+def recipe_of(ink: Ink) -> str:
+    """`"ink"` for a base ink, `"<a>+<b> <mix>"` for a mix — the one recipe
+    formatter every caller that reports a resolved colour uses
+    (`document_colors()`, `swatch_groups()`, `vocabulary()`), so a name's
+    recipe reads the same way wherever it is shown. `_INK_NAMES` always
+    resolves for a real `Ink`'s components — they come from `INK` itself,
+    directly or through `Ctx.ink()`'s alias walk — so the `"ink"` fallback
+    here is defensive, not a path anything today can reach."""
+    if ink.solid:
+        return "ink"
+    return f"{_INK_NAMES.get(ink.a, 'ink')}+{_INK_NAMES.get(ink.b, 'ink')} {ink.mix}"
+
+
 def document_colors(doc: dict[str, Any]) -> tuple[dict[str, dict[str, str]], list[str]]:
     """The effective colour of every name a document references, and the
     problems resolving them turned up along the way.
@@ -917,18 +955,8 @@ def document_colors(doc: dict[str, Any]) -> tuple[dict[str, dict[str, str]], lis
         resolved = ctx.ink(name, where)
         if not resolves:
             continue
-        colors[name] = {"recipe": _recipe_of(ctx, resolved), "hex": hex_of(resolved.avg)}
+        colors[name] = {"recipe": recipe_of(resolved), "hex": hex_of(resolved.avg)}
     return colors, ctx.problems
-
-
-def _recipe_of(ctx: Ctx, ink: Ink) -> str:
-    """`"ink"` for a base ink, `"<a>+<b> <mix>"` for a mix — the recipe half
-    of `document_colors()`'s `{recipe, hex}`, factored out so
-    `swatch_document()`'s appended palette group reports a name's recipe
-    exactly the way `document_colors()` would."""
-    if ink.solid:
-        return "ink"
-    return f"{ctx.name_of(ink.a)}+{ctx.name_of(ink.b)} {ink.mix}"
 
 
 _SWATCH_CHIP_W = 182  # px; fits the widest recipe string ("yellow+green 50")
@@ -953,7 +981,7 @@ def swatch_groups(
 
     With `palette` (a document's own `palette` field), a final
     `"document palette"` group is appended: each entry's recipe and hex are
-    resolved exactly the way `document_colors()` resolves them (`_recipe_of`,
+    resolved exactly the way `document_colors()` resolves them (`recipe_of`,
     the same `Ctx.ink()` walk), `c_field` is the entry's own name, and
     an entry that doesn't resolve to anything drawable is left off rather
     than guessed at. Omitted (or empty), there is no fifth group. A palette
@@ -965,16 +993,20 @@ def swatch_groups(
     """
     groups: list[tuple[str, list[tuple[str, str, str, str]]]] = []
 
-    groups.append(("inks", [(name, name, "ink", hex_of(INK[name])) for name in COLORS]))
+    groups.append(
+        ("inks", [
+            (name, name, recipe_of(builtin_ink(name)), hex_of(builtin_ink(name).avg))
+            for name in COLORS
+        ])
+    )
 
     by_tier: dict[str, list[str]] = {"dark": [], "light": [], "mid": []}
     for name in BUILTIN_MIXES:
         by_tier[TIERS[name]].append(name)
     for tier in ("dark", "light", "mid"):
         entries = [
-            (name, f"sw:{name}", f"{c}+{c2} {m}", hex_of(Ink(INK[c], INK[c2], m).avg))
+            (name, f"sw:{name}", recipe_of(builtin_ink(name)), hex_of(builtin_ink(name).avg))
             for name in by_tier[tier]
-            for c, c2, m in [BUILTIN_MIXES[name]]
         ]
         groups.append((tier, entries))
 
@@ -987,7 +1019,7 @@ def swatch_groups(
             if not _color_name_resolves(name, ctx.table, ctx.palette):
                 continue
             resolved = ctx.ink(name)
-            entries.append((name, name, _recipe_of(ctx, resolved), hex_of(resolved.avg)))
+            entries.append((name, name, recipe_of(resolved), hex_of(resolved.avg)))
         if entries:
             groups.append(("document palette", entries))
 
@@ -1118,6 +1150,83 @@ def swatch_document(palette: dict[str, Any] | None = None) -> dict[str, Any]:
             )
 
     return {"v": 1, "bg": "white", "palette": out_palette, "ops": ops}
+
+
+def vocabulary(max_bytes: int) -> dict[str, Any]:
+    """The whole document vocabulary as one JSON-safe object: canvas size,
+    the six inks and the built-in mixes with their hexes and tiers, the
+    compiled fonts, the anchor values `text.a`/`fmt.a` accept, the icons
+    and their size classes, the per-op field table, the `fmt` template
+    fields, and the document byte ceiling. Built from this module's own
+    tables at call time, so it can never say something `render()` doesn't
+    do — the MCP `describe` tool is a one-line wrapper around this, the
+    way `guide()` is a one-line wrapper around `compose.md`'s text.
+
+    `max_bytes` is `store.MAX_DOC_BYTES`, passed in rather than imported:
+    this module has no reason to know about the store, and `limits` is the
+    one field nothing above it can derive from the renderer's own tables.
+
+    `fonts[*]` carries three sizes beside `px`/`bold`: `line_height`
+    (`Face.line_height`, what wrapped `text` uses when `lh` is unset),
+    `cell_height` (ascent + descent of the loaded face — every face has
+    one), and `ink_height` (how many rows a full-height glyph actually
+    inks at 1bpp — the row pitch that makes block glyphs meet with no
+    seam; `null` except for `mono`) — docs/plans/dragon-feedback.md D11.
+    `glyphs` is a short string naming the compiled glyph set —
+    `"GF_Latin_Core"` for every face but `mono`, which adds box drawing
+    and block elements: `"GF_Latin_Core + U+2500–U+259F"`. A character
+    outside that set previews fine and has no glyph on the wall; `check()`
+    warns about it.
+
+    In `ops`, an optional field whose default is `null` has no fixed
+    default and may simply be omitted — `lh` is computed from the font
+    size, `w` means no width limit, `n` has no default, and `sprite`'s
+    `mirror` means no mirroring (its only other legal value is `"x"`).
+    """
+    mixes = {
+        name: {
+            "c": c,
+            "c2": c2,
+            "mix": mix,
+            "hex": hex_of(builtin_ink(name).avg),
+            "tier": TIERS[name],
+        }
+        for name, (c, c2, mix) in BUILTIN_MIXES.items()
+    }
+    fonts = {
+        name: {
+            "px": face.size,
+            "bold": face.bold,
+            "line_height": face.line_height,
+            "cell_height": face.cell_height,
+            "ink_height": face.ink_height,
+            "glyphs": "GF_Latin_Core" + (" + U+2500–U+259F" if face.extra_glyphs else ""),
+        }
+        for name, face in FONTS.items()
+    }
+    ops = {
+        op: {"required": list(spec["required"]), "optional": dict(spec["optional"])}
+        for op, spec in OP_FIELDS.items()
+    }
+    # Only the size classes some compiled icon actually has — `md: 56` is
+    # in ICON_SIZES for arithmetic elsewhere but has no icon behind it, and
+    # advertising it here would invite `{"n": "check", "z": "md"}`, which
+    # `check()` then has to reject as "not compiled in".
+    used_sizes = {z for sizes in ICONS.values() for z in sizes}
+    icon_sizes = {z: px for z, px in ICON_SIZES.items() if z in used_sizes}
+    return {
+        "canvas": {"w": WIDTH, "h": HEIGHT, "bezel_margin": BEZEL_MARGIN},
+        "inks": {name: hex_of(rgb) for name, rgb in INK.items()},
+        "mixes": mixes,
+        "densities": list(DENSITIES),
+        "fonts": fonts,
+        "anchors": list(ANCHOR),
+        "icons": {name: sorted(sizes) for name, sizes in ICONS.items()},
+        "icon_sizes": icon_sizes,
+        "ops": ops,
+        "fmt_fields": list(system_fields({}).keys()),
+        "limits": {"max_bytes": max_bytes},
+    }
 
 
 def text_width(font, s: str) -> int:

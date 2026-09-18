@@ -35,6 +35,7 @@ from .store import (
     MAX_DOC_BYTES,
     DisplayError,
     FetchRecord,
+    PublishResult,
     Store,
     UnknownDisplay,
     stamped_body,
@@ -101,78 +102,6 @@ def _merge_color_problems(problems: list[str], color_problems: list[str]) -> lis
             merged.append(p)
             seen.add(rest)
     return merged
-
-
-def _describe() -> dict[str, Any]:
-    """Build `describe()`'s return from the renderer's own tables, at call
-    time, so it can never say something `render()` doesn't do.
-
-    Every hex comes from `INK` or `Ink.avg`, the same values `preview`
-    paints and `docs/SPEC.md`'s named-palette table publishes — never typed
-    twice. `OP_FIELDS`' `required` tuples become lists so the whole object
-    round-trips through plain JSON.
-
-    `fonts[*]` carries three sizes beside `px`/`bold`: `line_height`
-    (`Face.line_height`, `round(px * 1.24)`, what wrapped `text` uses when
-    `lh` is unset),
-    `cell_height` (ascent + descent of the loaded face — every face has
-    one), and `ink_height` (how many rows a full-height glyph actually
-    inks at 1bpp — the row pitch that makes block glyphs meet with no
-    seam; `null` except for `mono`) — docs/plans/dragon-feedback.md D11.
-    `glyphs` is a short string naming the compiled glyph set —
-    `"GF_Latin_Core"` for every face but `mono`, which adds box drawing
-    and block elements: `"GF_Latin_Core + U+2500–U+259F"`. A character
-    outside that set previews fine and has no glyph on the wall;
-    `check()` warns about it.
-    """
-    mixes = {
-        name: {
-            "c": c,
-            "c2": c2,
-            "mix": mix,
-            "hex": render.hex_of(render.Ink(render.INK[c], render.INK[c2], mix).avg),
-            "tier": render.TIERS[name],
-        }
-        for name, (c, c2, mix) in render.BUILTIN_MIXES.items()
-    }
-    fonts = {
-        name: {
-            "px": face.size,
-            "bold": face.bold,
-            "line_height": face.line_height,
-            "cell_height": face.cell_height,
-            "ink_height": face.ink_height,
-            "glyphs": "GF_Latin_Core" + (" + U+2500–U+259F" if face.extra_glyphs else ""),
-        }
-        for name, face in render.FONTS.items()
-    }
-    ops = {
-        op: {"required": list(spec["required"]), "optional": dict(spec["optional"])}
-        for op, spec in render.OP_FIELDS.items()
-    }
-    # Only the size classes some compiled icon actually has — `md: 56` is
-    # in ICON_SIZES for arithmetic elsewhere but has no icon behind it, and
-    # advertising it here would invite `{"n": "check", "z": "md"}`, which
-    # `check()` then has to reject as "not compiled in".
-    used_sizes = {z for sizes in render.ICONS.values() for z in sizes}
-    icon_sizes = {z: px for z, px in render.ICON_SIZES.items() if z in used_sizes}
-    return {
-        "canvas": {
-            "w": render.WIDTH,
-            "h": render.HEIGHT,
-            "bezel_margin": render.BEZEL_MARGIN,
-        },
-        "inks": {name: render.hex_of(rgb) for name, rgb in render.INK.items()},
-        "mixes": mixes,
-        "densities": list(render.DENSITIES),
-        "fonts": fonts,
-        "anchors": list(render.ANCHOR),
-        "icons": {name: sorted(sizes) for name, sizes in render.ICONS.items()},
-        "icon_sizes": icon_sizes,
-        "ops": ops,
-        "fmt_fields": list(render.system_fields({}).keys()),
-        "limits": {"max_bytes": MAX_DOC_BYTES},
-    }
 
 
 def _read_repo_or_bundled(repo_path: Path, bundled_path: Path) -> str:
@@ -249,6 +178,22 @@ def _iso(ts: float | None) -> str | None:
     return datetime.fromtimestamp(ts).astimezone().isoformat()
 
 
+def _publish_reply(result: PublishResult) -> dict[str, Any]:
+    """The eight-key reply `set_display` and `copy_display` both return —
+    same shape, since a copy is an ordinary publish as far as the panel is
+    concerned (docs/PLAN.md's `set_display`/`copy_display` return shapes)."""
+    return {
+        "name": result.name,
+        "hash": result.hash,
+        "etag": result.etag,
+        "ops": result.ops,
+        "bytes": result.bytes,
+        "warnings": result.warnings,
+        "recent_fetch_at": _iso(result.recent_fetch_at),
+        "recent_fetch_ago": _ago(result.recent_fetch_at),
+    }
+
+
 def build_mcp(store: Store, settings: Settings) -> MCPServer:
     mcp: MCPServer = MCPServer(
         "display",
@@ -300,16 +245,7 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
             result = store.publish(_coerce_document(document), name=name)
         except DisplayError as exc:
             raise ToolError(str(exc)) from exc
-        return {
-            "name": result.name,
-            "hash": result.hash,
-            "etag": result.etag,
-            "ops": result.ops,
-            "bytes": result.bytes,
-            "warnings": result.warnings,
-            "recent_fetch_at": _iso(result.recent_fetch_at),
-            "recent_fetch_ago": _ago(result.recent_fetch_at),
-        }
+        return _publish_reply(result)
 
     @mcp.tool(
         annotations=ToolAnnotations(
@@ -346,16 +282,7 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
             result = store.publish(doc, name=name)
         except DisplayError as exc:
             raise ToolError(str(exc)) from exc
-        return {
-            "name": result.name,
-            "hash": result.hash,
-            "etag": result.etag,
-            "ops": result.ops,
-            "bytes": result.bytes,
-            "warnings": result.warnings,
-            "recent_fetch_at": _iso(result.recent_fetch_at),
-            "recent_fetch_ago": _ago(result.recent_fetch_at),
-        }
+        return _publish_reply(result)
 
     @mcp.tool(
         annotations=ToolAnnotations(
@@ -664,7 +591,7 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
         size, `w` means no width limit, `n` has no default, and `sprite`'s
         `mirror` means no mirroring (its only other legal value is `"x"`).
         """
-        return _describe()
+        return render.vocabulary(MAX_DOC_BYTES)
 
     @mcp.tool(
         annotations=ToolAnnotations(
