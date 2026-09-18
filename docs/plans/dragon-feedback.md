@@ -228,9 +228,13 @@ compiler on a scratch disk.
 Rules, in the spirit of "warn and draw something":
 
 - `.` and space are transparent and cannot be redefined.
-- A character not in `palette` warns once per character and draws black —
-  the same fallback as an unknown colour, and visible on the wall, where a
-  transparent fallback would hide the typo.
+- A character not in `palette` draws black and is a `validate`/`check()`
+  warning, once per distinct character — the same fallback as an unknown
+  colour, and visible on the wall, where a transparent fallback would hide
+  the typo. Like every other warning it never blocks the publish or the
+  draw: a sprite that is otherwise well-formed goes up with its stray cells
+  in black, and the warning is how the author finds them. (Decided
+  2026-09-18.)
 - Ragged rows warn; short rows are padded transparent.
 - Palette values are names, never inline `{c, c2, mix}` objects: mixes live
   in the document palette (ink-mixing.md decision 1), which keeps one
@@ -346,9 +350,10 @@ header, compiles it and diffs it against the Python over a set of shapes,
 the way `mix_on` is diffed today. `fill: false` draws the edges with
 `thick_line`, closing edge included.
 
-Lowest priority of the vocabulary changes: sprite covers the report's own
-motivating case (stair-stepped wings at 40 px cells), and `poly` earns its
-place for UI shapes — chevrons, arrows, a timeline pointer — rather than for
+Last of the vocabulary changes because it is the most work, not because it
+is in doubt — decided in 2026-09-18. Sprite covers the report's own
+motivating case (stair-stepped wings at 40 px cells); `poly` earns its
+place for UI shapes — chevrons, arrows, a timeline pointer — as much as for
 the dragon.
 
 ### D13. Declined: `group` with origin, scale and mirror
@@ -408,8 +413,8 @@ sync` on the host.
 
 Then, once: `cd firmware && esphome run epaper-schedule.yaml`, publish
 `samples/sprite.json`, judge on the wall, and record the verdict at the top
-of this file. B4 is the one commit here that can be dropped without
-touching the others.
+of this file. B4 is last only because it is the most work; nothing else
+depends on it, so it can also land after the flash and ride the next one.
 
 ### Phase C — not now
 
@@ -419,12 +424,6 @@ so the next agent's report does not re-open them from scratch.
 
 ## For the user
 
-- **Unknown sprite character: black, or transparent?** D9 picks black for
-  visibility and consistency with unknown colours; transparent is the
-  friendlier reading for sparse art. Either is a one-line change on each
-  side.
-- **`poly` at all?** It is the most work in Phase B and the least tied to the
-  report's own case. The plan keeps it last so it can be cut.
 - **The document itself.** Nothing here edits the feedback doc. If it should
   carry a pointer to this file, or a one-line note that §2 was an authoring
   issue the tools now warn about, that is a separate, small step.
