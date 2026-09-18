@@ -28,9 +28,11 @@ a redraw does. It runs for months on a battery.
 </p>
 
 That is [`samples/display.json`](samples/display.json) — 56 ops, 4.4 KB, hash
-`3cd62aa76e731d2d` — rendered by the same code the preview tool uses. Every op
-in the vocabulary appears in it, so it is the best thing to copy and edit.
-The vocabulary itself is in [`docs/SPEC.md`](docs/SPEC.md).
+`3cd62aa76e731d2d` — rendered by the same code the preview tool uses, and the
+best thing to copy and edit. Every op in the vocabulary appears between it
+and [`samples/sprite.json`](samples/sprite.json), the second sample, which
+shows off pixel art drawn with the `sprite` op. The vocabulary itself is in
+[`docs/SPEC.md`](docs/SPEC.md).
 
 ## How it fits together
 
@@ -151,8 +153,8 @@ design rules, so a scheduled session does not need the spec pasted into it.
 
 **Two renderers, one vocabulary.** The firmware draws the document on the
 panel; `display_mcp.render` draws it as a PNG. They share five font sizes,
-eleven icons, six inks plus twenty-one built-in two-ink mixes, and six ops —
-and nothing else, which is what keeps "what Claude previewed" and "what the
+eleven icons, six inks plus twenty-one built-in two-ink mixes, and seven ops
+— and nothing else, which is what keeps "what Claude previewed" and "what the
 wall shows" from drifting. The wrap and truncate logic is differentially
 tested between them. The one deliberate divergence is colour: the panel
 dithers a mix as a 1 px checkerboard of two inks, and `preview` paints the

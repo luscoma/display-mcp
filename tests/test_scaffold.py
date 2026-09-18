@@ -10,6 +10,8 @@ the originals at build time, and the tests below hold that shut.
 
 from __future__ import annotations
 
+import json
+import re
 import subprocess
 import sys
 import zipfile
@@ -17,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from display_mcp.render import render_hash
+from display_mcp.render import check, render_hash
 
 ROOT = Path(__file__).resolve().parents[1]
 PROMPTS = ROOT / "src" / "display_mcp" / "prompts"
@@ -32,6 +34,47 @@ BUNDLED = {
 
 def test_sample_hash(sample_doc):
     assert render_hash(sample_doc) == "3cd62aa76e731d2d"
+
+
+def test_sprite_sample_hash(sprite_sample_doc):
+    """samples/sprite.json (docs/plans/dragon-feedback.md B1) — the second
+    sample, showing off the `sprite` op the way samples/display.json shows
+    off everything else."""
+    assert render_hash(sprite_sample_doc) == "d5d25873e7907f20"
+
+
+def test_sprite_sample_checks_clean(sprite_sample_doc, font_dir):
+    from display_mcp.render import check
+
+    assert check(sprite_sample_doc, font_dir) == []
+
+
+def _fenced_json_sprite_op(text: str) -> dict:
+    """The first ```json fenced block in `text` whose parsed object is a
+    sprite op — docs/SPEC.md and compose.md each carry exactly one."""
+    for block in re.findall(r"[ \t]*```json\n(.*?)\n[ \t]*```", text, re.DOTALL):
+        try:
+            obj = json.loads(block)
+        except json.JSONDecodeError:
+            continue  # a structural placeholder ("ops": [ ... ]), not a real example
+        if isinstance(obj, dict) and obj.get("op") == "sprite":
+            return obj
+    raise AssertionError(f"no fenced json sprite example found in {text[:40]!r}...")
+
+
+def test_spec_sprite_example_checks_clean(font_dir):
+    """F10 (docs/plans/dragon-feedback.md): docs/SPEC.md's ### sprite
+    example has to be something an agent can paste straight into a
+    document — check() on it must come back clean, the same rule
+    compose.md's example is held to below."""
+    op = _fenced_json_sprite_op((ROOT / "docs" / "SPEC.md").read_text())
+    assert check({"v": 1, "bg": "white", "ops": [op]}, font_dir) == []
+
+
+def test_compose_sprite_example_checks_clean(font_dir):
+    """The compose_display prompt's own sprite example, same rule."""
+    op = _fenced_json_sprite_op((PROMPTS / "compose.md").read_text())
+    assert check({"v": 1, "bg": "white", "ops": [op]}, font_dir) == []
 
 
 @pytest.mark.parametrize("source", BUNDLED, ids=lambda p: p.name)

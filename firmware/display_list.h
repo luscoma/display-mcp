@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <cstring>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -300,6 +301,21 @@ inline size_t utf8_prev(const std::string &s, size_t i) {
   return i;
 }
 
+// The forward twin of utf8_prev: advance one codepoint from a UTF-8 byte
+// index -- skip the lead byte, then any `10xxxxxx` continuation bytes. The
+// sprite op walks a row this way, one grid cell per *character*, not per
+// byte (docs/plans/dragon-feedback.md F1) -- otherwise a multibyte cell
+// character (a box-drawing glyph, say) draws as several narrow cells here
+// while the Python, whose strings are already codepoints, draws one.
+inline size_t utf8_next(const std::string &s, size_t i) {
+  if (i >= s.size())
+    return s.size();
+  i++;
+  while (i < s.size() && (static_cast<unsigned char>(s[i]) & 0xC0) == 0x80)
+    i++;
+  return i;
+}
+
 /// Shorten to fit max_w, appending an ellipsis. Returns s unchanged if it fits.
 inline std::string fit_line(esphome::display::BaseFont *f, const std::string &s, int max_w) {
   if (max_w <= 0 || measure_w(f, s) <= max_w)
@@ -463,6 +479,144 @@ class MixDisplay : public esphome::display::Display {
   Ink inks_[2]{};
   int n_ = 0;
 };
+
+/// Pixel art as rows of characters (docs/plans/dragon-feedback.md D9;
+/// F1-F4, F7 fixed the walk to be per-codepoint and its edge cases to
+/// match the Python exactly). Each row string is one grid row, one
+/// `cell`x`cell` square per *character* -- walked with utf8_next, not
+/// strlen, so a multibyte character is one cell -- coloured by `palette`,
+/// keyed on the full UTF-8 sequence rather than a single byte. `.` and
+/// space are always transparent. A run of equal characters draws as one
+/// filled_rectangle through its own MixDisplay, the same proxy `rect`
+/// draws through, so a mixed cell dithers identically.
+///
+/// Factored out of the op loop (F5) so a host build can extract, compile
+/// and differentially test this one function against the Python without
+/// bringing in the whole op loop or a real ArduinoJson.
+///
+/// Returns false when the op can't be drawn at all -- `cell` isn't a
+/// sane integer, `rows` isn't a list of strings, or `palette` isn't an
+/// object -- the one place a bad op skips instead of drawing something
+/// wrong, mirroring the Python and logging why. Nothing is drawn before
+/// this check passes.
+inline bool draw_sprite(esphome::display::Display &it, JsonObject o, JsonObject palette) {
+  const int x = o["x"] | 0, y = o["y"] | 0;
+  const int cell = o["cell"] | 0;
+  JsonArray sprite_rows = o["rows"];
+  JsonObject sprite_palette = o["palette"];
+
+  // Both sides have to agree on what's too big to be sane, not just what
+  // overflows int arithmetic -- this is display_mcp.render's
+  // max(WIDTH, HEIGHT) (1200 x 1600), so a `cell` this small can never let
+  // c0*cell / row*cell approach INT32_MAX even for a document as large as
+  // MAX_DOC_BYTES allows (F7).
+  static const int kSpriteMaxCell = 1600;
+
+  bool rows_ok = !sprite_rows.isNull();
+  if (rows_ok) {
+    for (JsonVariant rv : sprite_rows) {
+      const char *s = rv;
+      if (s == nullptr) {
+        rows_ok = false;  // a non-string element -- bail before drawing anything (F3)
+        break;
+      }
+    }
+  }
+  if (cell < 1 || cell > kSpriteMaxCell || !rows_ok || sprite_palette.isNull()) {
+    ESP_LOGW(TAG,
+             "sprite needs an integer cell >= 1 and <= %d, rows (a list of "
+             "strings) and palette (an object); skipped",
+             kSpriteMaxCell);
+    return false;
+  }
+
+  // Walk each row into its codepoints (F1): the widest row, in
+  // codepoints, decides the grid's column count, and a short row reads as
+  // transparent past its own length -- the drawing half of the Python's
+  // "ragged rows are padded"; the warning about it is authoring feedback
+  // and stays on that side. Padding happens before mirroring, exactly as
+  // the Python pads then reverses, so a ragged mirrored row pads on what
+  // becomes its trailing edge either way.
+  std::vector<std::vector<std::string>> rows_cp;
+  size_t cols = 0;
+  for (JsonVariant rv : sprite_rows) {
+    const char *s = rv;
+    const std::string row = s != nullptr ? s : "";
+    std::vector<std::string> cps;
+    for (size_t i = 0; i < row.size();) {
+      const size_t j = utf8_next(row, i);
+      cps.push_back(row.substr(i, j - i));
+      i = j;
+    }
+    cols = std::max(cols, cps.size());
+    rows_cp.push_back(std::move(cps));
+  }
+  for (auto &r : rows_cp)
+    while (r.size() < cols)
+      r.push_back(".");
+
+  if (!strcmp(o["mirror"] | "", "x"))
+    for (auto &r : rows_cp)
+      std::reverse(r.begin(), r.end());
+  // Any other non-null mirror value is a Python-side ("x" is the only
+  // legal one, docs/plans/dragon-feedback.md F4) authoring warning; the
+  // firmware just doesn't mirror, as it always has.
+
+  // Resolve each character once, not per cell, keyed on its full UTF-8
+  // sequence (F1) rather than a single byte. A palette key that isn't
+  // exactly one codepoint can't identify a cell at all and is skipped
+  // with a warning (F2); a row that uses it then falls into the "no
+  // palette entry" path below, same as any other unknown character. A
+  // palette value that isn't a plain colour name (missing, or an inline
+  // mix object) reads as "black" the same way `o["c"] | "black"`
+  // degrades one anywhere else in this file.
+  std::map<std::string, Ink> char_ink;
+  for (JsonPair kv : sprite_palette) {
+    const std::string key = kv.key().c_str();
+    size_t n_cp = 0;
+    for (size_t i = 0; i < key.size(); i = utf8_next(key, i))
+      n_cp++;
+    if (n_cp != 1) {
+      ESP_LOGW(TAG, "sprite palette key '%s' is not one character; ignored", key.c_str());
+      continue;
+    }
+    if (key == "." || key == " ")
+      continue;  // always transparent; cannot be redefined
+    const char *cname = kv.value() | "black";
+    char_ink[key] = resolve_ink(cname, palette);
+  }
+
+  const Ink black_ink{esphome::Color(0, 0, 0), esphome::Color(0, 0, 0), 100};
+  std::set<std::string> warned;
+  for (size_t r = 0; r < rows_cp.size(); r++) {
+    const auto &row = rows_cp[r];
+    size_t c0 = 0;
+    while (c0 < cols) {
+      const std::string &ch = row[c0];
+      size_t c1 = c0 + 1;
+      while (c1 < cols && row[c1] == ch)
+        c1++;
+      const size_t run = c1 - c0;
+      if (ch != "." && ch != " ") {
+        Ink cell_ink = black_ink;
+        auto entry = char_ink.find(ch);
+        if (entry != char_ink.end()) {
+          cell_ink = entry->second;
+        } else if (warned.insert(ch).second) {
+          // The UTF-8 sequence, printed with %s -- %c would only show its
+          // first byte (F1).
+          ESP_LOGW(TAG, "sprite: no palette entry for '%s'; drawing black", ch.c_str());
+        }
+        MixDisplay smix(it);
+        smix.add_ink(cell_ink.a, cell_ink);
+        smix.filled_rectangle(x + static_cast<int>(c0) * cell, y + static_cast<int>(r) * cell,
+                               static_cast<int>(run) * cell, cell, cell_ink.a);
+      }
+      c0 = c1;
+    }
+  }
+  return true;
+}
 
 inline void replace_all(std::string &s, const char *key, const std::string &val) {
   const size_t klen = strlen(key);
@@ -644,6 +798,12 @@ inline bool draw_display_list(esphome::display::Display &it, const std::string &
         mix.add_ink(off.a, off);
         const int ix = o["x"] | 0, iy = o["y"] | 0;
         iit->second->draw(ix, iy, &mix, c.a, off.a);
+
+      } else if (!strcmp(kind, "sprite")) {
+        if (!draw_sprite(it, o, palette)) {
+          skipped++;
+          continue;
+        }
 
       } else {
         ESP_LOGW(TAG, "unknown op '%s'", kind);

@@ -5,6 +5,8 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 SAMPLE = ROOT / "samples" / "display.json"
 SAMPLE_HASH = "3cd62aa76e731d2d"
+SPRITE_SAMPLE = ROOT / "samples" / "sprite.json"
+SPRITE_SAMPLE_HASH = "d5d25873e7907f20"
 
 
 @pytest.fixture
@@ -12,6 +14,13 @@ def sample_doc():
     import json
 
     return json.loads(SAMPLE.read_text())
+
+
+@pytest.fixture
+def sprite_sample_doc():
+    import json
+
+    return json.loads(SPRITE_SAMPLE.read_text())
 
 
 @pytest.fixture

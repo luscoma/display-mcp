@@ -162,6 +162,15 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
         # not be told it is unknown.
         "optional": {"c": "black", "n": None, "z": "sm", "bgc": None},
     },
+    "sprite": {
+        # `c` is deliberately absent: colour comes from `palette`, one
+        # entry per distinct character, each resolved exactly the way any
+        # other op's `c` is (docs/plans/dragon-feedback.md D9). Writing
+        # `c` on a sprite is therefore an ordinary "no such field", the
+        # same message any other stray key on any op gets.
+        "required": ("x", "y", "cell", "rows", "palette"),
+        "optional": {"mirror": None},
+    },
 }
 
 # The report's whole "mixes don't render" section, in one sentence: `c2`
@@ -686,7 +695,9 @@ def document_colors(doc: dict[str, Any]) -> tuple[dict[str, dict[str, str]], lis
 
     `bg`, each op's `c` (and, `icon` ops only — `bgc` is a field of no
     other op, and writing it on one already earns its own "no such field"
-    from `_op_field_problems`), and every `palette` key, each mapped to
+    from `_op_field_problems`), every string value in a `sprite` op's own
+    `palette` (a sprite has no `c` of its own — its colours are entirely
+    there), and every document `palette` key, each mapped to
     `{"recipe": ..., "hex": ...}` — `"ink"` for a base ink, `"<a>+<b>
     <mix>"` for a mix (built-in or from the document's own palette), and an
     alias's own recipe when a name points at one. `hex` is `Ink.avg`, the
@@ -729,6 +740,9 @@ def document_colors(doc: dict[str, Any]) -> tuple[dict[str, dict[str, str]], lis
                 add(op.get("c"))
                 if op.get("op") == "icon":
                     add(op.get("bgc"))
+                if op.get("op") == "sprite" and isinstance(op.get("palette"), dict):
+                    for value in op["palette"].values():
+                        add(value)
     for key in ctx.palette:
         add(key)
 
@@ -1587,6 +1601,126 @@ def render(
             snap = _snapshot(img, box)
             paint_op(ink, lambda dr, col: draw_icon(dr, name, op["x"], op["y"], size, col))
             _check_drew_nothing(img, ctx, snap, where)
+
+        elif kind == "sprite":
+            # Pixel art as rows of characters (docs/plans/dragon-feedback.md
+            # D9). `cell`, `rows` and `palette` all have to be sensible
+            # before there is anything to draw; unlike every other op, a
+            # malformed one of these skips the whole op rather than
+            # drawing something wrong — the one place a skip is allowed,
+            # mirroring the firmware, which cannot draw a grid it cannot
+            # parse either.
+            x, y = op["x"], op["y"]
+            cell = op.get("cell")
+            raw_rows = op.get("rows")
+            raw_palette = op.get("palette")
+            # Both sides have to agree on what's too big to be sane, not
+            # just what overflows int arithmetic (F7): a `cell` bigger
+            # than the canvas itself is malformed the same way a zero or
+            # fractional one is.
+            max_cell = max(WIDTH, HEIGHT)
+            if (
+                isinstance(cell, bool)
+                or not isinstance(cell, int)
+                or cell < 1
+                or cell > max_cell
+                or not isinstance(raw_rows, list)
+                or not all(isinstance(r, str) for r in raw_rows)
+                or not isinstance(raw_palette, dict)
+            ):
+                ctx.problems.append(
+                    f"{where}: sprite needs an integer cell >= 1 and <= "
+                    f"{max_cell}, rows (a list of strings) and palette (an "
+                    "object); nothing to draw, skipped"
+                )
+                continue
+
+            widths = [len(r) for r in raw_rows]
+            cols = max(widths, default=0)
+            if widths and min(widths) != cols:
+                ctx.problems.append(
+                    f"{where}: rows are ragged (widths {min(widths)}.."
+                    f"{cols}); short rows padded transparent"
+                )
+            grid = [r.ljust(cols, ".") for r in raw_rows]
+            mirror = op.get("mirror")
+            if mirror == "x":
+                grid = [r[::-1] for r in grid]
+            elif mirror is not None:
+                # `"x"` is the only legal value (docs/SPEC.md "sprite");
+                # anything else just doesn't mirror, same as omitting it.
+                ctx.problems.append(
+                    f'{where}: mirror must be "x"; got {mirror!r}, not mirrored'
+                )
+
+            # Resolve each palette character once, not per cell — the
+            # same alias/mix/built-in walk an op's own `c` gets, via
+            # ctx.ink() itself: a dict value earns the same mix hint `c`
+            # does, and anything else that doesn't resolve is "unknown
+            # colour", both already handled there. A key that isn't
+            # exactly one character can't identify a cell at all, so it's
+            # skipped up front (F2) — a row that uses it then falls into
+            # the "no palette entry" path below, same as any other
+            # unknown character.
+            used_chars = {ch for row in raw_rows for ch in row} - {".", " "}
+            char_ink: dict[str, Ink] = {}
+            checked_inks: set[Ink] = set()
+            for ch, value in raw_palette.items():
+                if len(ch) != 1:
+                    ctx.problems.append(
+                        f"{where}: palette key {ch!r} is not one character; ignored"
+                    )
+                    continue
+                if ch in (".", " "):
+                    ctx.problems.append(
+                        f"{where}: sprite palette cannot redefine {ch!r}; "
+                        "it stays transparent"
+                    )
+                    continue
+                resolved = ctx.ink(value, where)
+                char_ink[ch] = resolved
+                # Only a character some row actually draws can be too thin
+                # to carry a density (F9) — an unused palette entry has no
+                # cell to be thin.
+                if ch in used_chars and resolved not in checked_inks:
+                    checked_inks.add(resolved)
+                    _check_thin_mix(ctx, resolved, where, "fill", w=cell, h=cell)
+
+            black_ink = Ink(ctx.table["black"], ctx.table["black"], 100)
+            warned_chars: set[str] = set()
+            box = (x, y, x + cols * cell, y + len(grid) * cell)
+            snap = _snapshot(img, box)
+            for r, row in enumerate(grid):
+                c0 = 0
+                while c0 < cols:
+                    ch = row[c0]
+                    c1 = c0 + 1
+                    while c1 < cols and row[c1] == ch:
+                        c1 += 1
+                    run = c1 - c0
+                    if ch not in (".", " "):
+                        if ch in char_ink:
+                            run_ink = char_ink[ch]
+                        else:
+                            if ch not in warned_chars:
+                                warned_chars.add(ch)
+                                ctx.problems.append(
+                                    f"{where}: no palette entry for {ch!r}; "
+                                    "drawing black"
+                                )
+                            run_ink = black_ink
+                        rx, ry = x + c0 * cell, y + r * cell
+                        rw, rh = run * cell, cell
+                        paint_op(run_ink, lambda dr, col, rx=rx, ry=ry, rw=rw, rh=rh: dr.rectangle(
+                            [rx, ry, rx + rw - 1, ry + rh - 1], fill=col))
+                    c0 = c1
+            _check_drew_nothing(img, ctx, snap, where)
+
+            xr, yr = x + cols * cell, y + len(grid) * cell
+            if not (-64 <= xr <= WIDTH + 64):
+                ctx.problems.append(f"{where}: x+cols*cell={xr} is off-canvas")
+            if not (-64 <= yr <= HEIGHT + 64):
+                ctx.problems.append(f"{where}: y+rows*cell={yr} is off-canvas")
 
         else:
             ctx.problems.append(f"{where}: unknown op {kind!r}")

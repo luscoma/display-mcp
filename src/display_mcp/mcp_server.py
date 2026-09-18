@@ -637,7 +637,8 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
 
         In `ops`, an optional field whose default is `null` has no fixed
         default and may simply be omitted — `lh` is computed from the font
-        size, `w` means no width limit, `n` has no default.
+        size, `w` means no width limit, `n` has no default, and `sprite`'s
+        `mirror` means no mirroring (its only other legal value is `"x"`).
         """
         return _describe()
 

@@ -2,7 +2,7 @@
 
 A few KB of JSON describing what to draw. The firmware is a renderer, not a
 design: layout lives entirely in the document, so changing the dashboard is a
-file edit. Only the **vocabulary** — five font sizes, eleven icons, six ops —
+file edit. Only the **vocabulary** — five font sizes, eleven icons, seven ops —
 is compiled in, and changing that is a rebuild.
 
 Two implementations must agree:
@@ -80,6 +80,7 @@ not `c`.
 | `text` | `x y s f` · `a` · `w` · `wrap` · `lines` · `lh` | see below |
 | `icon` | `x y n z` · `bgc` | `n` = MDI name, `z` = size class, `x,y` = top-left |
 | `fmt` | `x y s` · `f` · `a` | `text` without wrap whose `s` is a template of system fields: `{hash}` `{hash16}` `{time}` `{time24}` `{battery}` `{battv}`; `f` defaults to `xs` |
+| `sprite` | `x y cell rows palette` · `mirror` | pixel art — a grid of characters, one `palette` entry per colour; no `c` (see below) |
 
 ### text
 
@@ -141,6 +142,49 @@ reason.
 A 304 never draws, so the stamp stays at the last real draw; that is the
 point of it.
 
+### sprite
+
+Pixel art as rows of characters — one `cell` × `cell` square per character,
+`palette` mapping each character to a colour name:
+
+```json
+{"op": "sprite", "x": 40, "y": 220, "cell": 40,
+ "palette": {"K": "black", "O": "navy", "Y": "yellow"},
+ "rows": [".........KK......KK.........",
+          "........KOOK....KOOK........"],
+ "mirror": "x"}
+```
+
+`x,y` is the top-left of the grid. `cell` is required and an integer ≥ 1.
+`rows` is required, one string per grid row, one character per cell — rows
+of different lengths are **ragged**: `check()` warns once and short rows are
+padded transparent on the right. `palette` is required, a single character
+mapped to a colour **name** — resolved exactly the way any other op's `c`
+is (base ink → document `palette` → built-in mix) — **never** an inline
+`{c, c2, mix}` object; a mix goes in the document's own `palette` and the
+sprite entry names it, the same as everywhere else. `mirror`, if present,
+must be `"x"`: every row is reversed before drawing, the wing-mirroring
+case free of charge; any other value warns and is not mirrored.
+
+There is no `c` on a sprite — colour is entirely `palette`'s job, and
+writing `c` here is an ordinary "no such field" warning like any other
+stray key.
+
+`.` and space are always transparent (nothing drawn there) and cannot be
+redefined by `palette`; trying to is a warning. A `palette` key that isn't
+exactly one character is skipped with a warning and ignored — a character
+in `rows` that uses it then falls into the next rule. A character that
+appears in `rows` but has no `palette` entry draws black and is a warning,
+once per distinct character — the same "unknown falls back to black" rule
+as any other colour, and visible on the wall rather than silently skipped.
+A `cell` under 1 or over 1600 (`max(WIDTH, HEIGHT)`), `rows` that isn't a
+list of strings, or a `palette` that isn't an object each warn once and
+skip the whole op — nothing sensible to draw — the one place a bad field
+skips rather than drawing something anyway, mirroring the firmware, which
+cannot draw a grid it cannot parse either. A mixed colour on a `cell`
+under 2 px still can't carry a 25%/75% density, exactly as a thin rect
+fill can't — see "Mixes" below.
+
 ## Vocabulary
 
 **Fonts** — `xl` 84 bold, `lg` 48 bold, `md` 36, `sm` 28, `xs` 22 bold
@@ -151,6 +195,9 @@ point of it.
 
 **Colours** — six inks, `black white yellow red blue green`, plus any
 two-ink **mix** declared in the palette (below). Nothing else exists.
+
+**Ops** — `rect`, `line`, `circle`, `text`, `icon`, `fmt`, `sprite`. Seven,
+compiled in; adding one is a rebuild.
 
 ## Mixes
 

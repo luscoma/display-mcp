@@ -40,6 +40,7 @@ display-mcp/
     prompts/compose.md      the compose_display prompt text
   tests/
   samples/display.json      the sample document (hash 3cd62aa76e731d2d)
+  samples/sprite.json       the second sample: the sprite op (hash d5d25873e7907f20)
   docs/
     PLAN.md                 this file
     SPEC.md                 carried over from the earlier repo, unchanged

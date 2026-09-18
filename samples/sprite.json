@@ -1,0 +1,107 @@
+{
+  "v": 1,
+  "meta": {
+    "hash": "d5d25873e7907f20"
+  },
+  "bg": "white",
+  "palette": {
+    "flame": {
+      "c": "red",
+      "c2": "yellow",
+      "mix": 50
+    }
+  },
+  "ops": [
+    {
+      "op": "rect",
+      "x": 0,
+      "y": 0,
+      "w": 1200,
+      "h": 140,
+      "c": "black"
+    },
+    {
+      "op": "text",
+      "x": 48,
+      "y": 40,
+      "s": "PIXEL ART",
+      "f": "xl",
+      "c": "white"
+    },
+    {
+      "op": "sprite",
+      "x": 100,
+      "y": 300,
+      "cell": 40,
+      "mirror": "x",
+      "palette": {
+        "K": "black",
+        "O": "flame",
+        "N": "navy",
+        "Y": "yellow",
+        "D": "grey-dark"
+      },
+      "rows": [
+        "..........................",
+        "..........................",
+        ".....Y....................",
+        "......Y...................",
+        "...KOKKK...NNNNNNN........",
+        ".KKKKKKK....NNNNN.........",
+        ".KKKKKKKK....NNN..........",
+        ".....KKKK.....N...........",
+        ".....KKKK.KKKKKKKKK.......",
+        ".....KKKKKKKKKKKKKKK.....Y",
+        "......KKKKKKKKKKKKKKK..KKK",
+        "......KKKKKKKKKKKKKKKKKKK.",
+        ".......KKKKKKKKKKKKK......",
+        "........DDD.....DDD.......",
+        "........DDD.....DDD.......",
+        "..........................",
+        "..........................",
+        ".........................."
+      ]
+    },
+    {
+      "op": "rect",
+      "x": 48,
+      "y": 1534,
+      "w": 1104,
+      "h": 2,
+      "c": "black"
+    },
+    {
+      "op": "text",
+      "x": 48,
+      "y": 1552,
+      "s": "sample: sprite",
+      "f": "xs",
+      "c": "black"
+    },
+    {
+      "op": "fmt",
+      "x": 1045,
+      "y": 1552,
+      "s": "{hash}@{time24}",
+      "f": "xs",
+      "c": "grey-mid",
+      "a": "right"
+    },
+    {
+      "op": "icon",
+      "x": 1058,
+      "y": 1545,
+      "n": "battery",
+      "z": "sm",
+      "c": "grey-mid"
+    },
+    {
+      "op": "fmt",
+      "x": 1100,
+      "y": 1552,
+      "s": "{battery}",
+      "f": "xs",
+      "c": "grey-mid"
+    }
+  ]
+}

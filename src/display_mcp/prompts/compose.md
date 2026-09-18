@@ -72,6 +72,26 @@ saying where they belong. Check `warnings` either way.
 - **`icon`** — `x y n z`. `x,y` is the top-left of the icon's box. `n` is the
   MDI name below; only these eleven exist, anything else is skipped. `bgc`
   is accepted and ignored (every compiled icon is transparent).
+- **`sprite`** — `x y cell rows palette`, `mirror` (only `"x"`, reverses
+  every row before drawing; anything else warns and is not mirrored).
+  Pixel art: one `cell`×`cell` square per
+  character in `rows`, coloured by `palette` (a single character → a
+  colour **name**, resolved exactly like any other op's `c` — never an
+  inline `{c, c2, mix}` object; put a mix in the document `palette` and
+  name it here). `.` and space are always transparent, and there is no
+  `c` — colour lives entirely in `palette`. A tiny 8×4 glyph:
+
+  ```json
+  {"op": "sprite", "x": 100, "y": 100, "cell": 20,
+   "palette": {"K": "black"},
+   "rows": ["..KKKK..",
+            ".K....K.",
+            ".K....K.",
+            "..KKKK.."]}
+  ```
+
+  This is how pixel art gets drawn at all — never as a hand-compiled wall
+  of `rect` ops standing in for stair-stepped pixels.
 - **`fmt`** — `x y s`, `f` (default `xs`), `a`, `c`. Like
   `text` but `s` is a template of system fields: `{hash}` (last 5 of the
   document's hash), `{hash16}`, `{time}` (`1:43 PM`, when the panel drew
