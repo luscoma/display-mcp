@@ -3,8 +3,8 @@
 Builds an MCPServer (mcp SDK v2) whose tools call the Store directly, and
 exposes it as a Starlette app via streamable_http_app(stateless_http=True).
 
-Tools: set_display, preview, validate, get_display, status, clear_display,
-describe, guide, swatches.
+Tools: set_display, copy_display, preview, validate, get_display, status,
+clear_display, describe, guide, swatches.
 Resources: display://spec, display://sample, display://current/{name}.
 Prompt: compose_display (text in prompts/compose.md).
 """
@@ -263,12 +263,59 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
         almost always a mistake worth fixing rather than shipping — see
         `validate` for the full list of what is and isn't checked.
         `recent_fetch_at` is when a panel last asked for this name, `null`
-        if none ever has; `status()` lists the names that have been
-        requested.
+        if none has since the name was last created fresh (`clear_display`
+        drops a name's fetch history along with its document); `status()`
+        lists the names that have been requested.
         """
         try:
             validate_name(name)
             result = store.publish(_coerce_document(document), name=name)
+        except DisplayError as exc:
+            raise ToolError(str(exc)) from exc
+        return {
+            "name": result.name,
+            "hash": result.hash,
+            "etag": result.etag,
+            "ops": result.ops,
+            "bytes": result.bytes,
+            "warnings": result.warnings,
+            "recent_fetch_at": _iso(result.recent_fetch_at),
+            "recent_fetch_ago": _ago(result.recent_fetch_at),
+        }
+
+    @mcp.tool(
+        annotations=ToolAnnotations(
+            title="Copy display",
+            read_only_hint=False,
+            destructive_hint=False,
+            idempotent_hint=True,
+            open_world_hint=False,
+        )
+    )
+    def copy_display(source: str, name: str) -> dict[str, Any]:
+        """Republish `source`'s currently published document under `name`, unchanged.
+
+        For promoting a scratch name (draft a display under some other name,
+        judge it with `preview`/`status`, then move it to `default`) without
+        resending the body over the wire. `meta.hash` is unchanged — it
+        covers `bg` + `palette` + `ops`, none of which this touches — and
+        `meta.generated` is stamped fresh, exactly as for any publish;
+        `first_fetch_at` on `name` resets the same way too, since as far as
+        the panel is concerned this is an ordinary publish. `source == name`
+        is allowed and is just a republish: same hash, fresh `generated`.
+        If `name` already held this exact document the panel keeps getting
+        304s and `first_fetch_at` stays `null`; `recent_fetch_status: 304`
+        is then the signal that the wall is current, not that it never
+        collected the copy. `recent_fetch_at` in the reply is the target
+        name's, as for `set_display`.
+
+        Raises if nothing is published under `source`.
+        """
+        try:
+            validate_name(source)
+            validate_name(name)
+            doc = store.get(source).doc
+            result = store.publish(doc, name=name)
         except DisplayError as exc:
             raise ToolError(str(exc)) from exc
         return {
@@ -522,6 +569,10 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
     )
     def clear_display(name: str = "default") -> dict[str, Any]:
         """Unpublish a display; the panel gets 503 on its next fetch until something new is set.
+
+        The name's fetch history goes with it: after a clear, `status()`
+        no longer lists it under `requested` and the next publish under
+        it reports `recent_fetch_at: null` until the panel asks again.
 
         `cleared` is false when nothing was published under `name` to begin
         with — calling this twice in a row is safe.

@@ -369,8 +369,10 @@ different interfaces.
 | `127.0.0.1:8001/mcp` | Claude writes here, via a Cloudflare Tunnel |
 | `<host-lan-ip>:8080/display.json` | the panel reads here, LAN only |
 
-Nine tools: `set_display(document)` validates, stamps `meta.hash` and
-`meta.generated`, and writes atomically; `validate(document)` runs the same
+Ten tools: `set_display(document)` validates, stamps `meta.hash` and
+`meta.generated`, and writes atomically; `copy_display(source, name)`
+republishes `source`'s document under `name` unchanged — same hash, fresh
+`generated` — without resending the body; `validate(document)` runs the same
 checks without rendering or publishing, and also returns the effective
 colour of every name the document references and the document byte
 ceiling; `preview(document)` returns a PNG plus `check()`'s warnings — the
@@ -389,7 +391,8 @@ colours on the wall.
 
 The panel endpoint is read-only and unauthenticated on purpose. The worst case
 is a neighbour reading your schedule; everything that *writes* is behind
-Cloudflare. `set_display` is the only thing that stamps a hash, so writing
+Cloudflare. `Store.publish()` — behind `set_display` and `copy_display` —
+is the only thing that stamps a hash, so writing
 `/var/lib/display-mcp/default.json` by hand is what produces the
 `BUG: document has no meta.hash` line on the device.
 

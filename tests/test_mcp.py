@@ -63,6 +63,7 @@ async def test_list_tools_and_annotations(mcp):
     by_name = {t.name: t for t in tools}
     assert set(by_name) == {
         "set_display",
+        "copy_display",
         "preview",
         "validate",
         "get_display",
@@ -85,6 +86,9 @@ async def test_list_tools_and_annotations(mcp):
     assert by_name["set_display"].annotations.read_only_hint is False
     assert by_name["clear_display"].annotations.read_only_hint is False
     assert by_name["clear_display"].annotations.destructive_hint is True
+    assert by_name["copy_display"].annotations.read_only_hint is False
+    assert by_name["copy_display"].annotations.destructive_hint is False
+    assert by_name["copy_display"].annotations.idempotent_hint is True
 
 
 async def test_set_display_shape_and_stamped_hash(mcp, store, sample_doc):
@@ -814,3 +818,93 @@ async def test_set_display_recent_fetch_reflects_prior_fetch_and_publish_does_no
     assert data["recent_fetch_ago"].endswith("ago")
     # the publish did not reset the fetch record
     assert store.fetch_record("default").recent_fetch_at == fetched_at
+
+
+# ---- D8: copy_display ----------------------------------------------------
+
+
+@pytest.fixture
+def sequential_generated(monkeypatch):
+    """publish() stamps meta.generated from time.strftime(), which has
+    one-second resolution -- too coarse to assert "newer" against reliably
+    in a fast test. Patch the stdlib function itself (one `time` module,
+    shared by fakes.py and store.py alike) to hand out distinct, increasing
+    values for as long as anything asks."""
+    import itertools
+    import time as time_mod
+
+    counter = itertools.count()
+    monkeypatch.setattr(
+        time_mod, "strftime", lambda *a, **k: f"2020-01-01T00:00:00+{next(counter):04d}"
+    )
+
+
+async def test_copy_display_same_hash_newer_generated(
+    mcp, store, sample_doc, sequential_generated
+):
+    store.publish(sample_doc, "draft")
+    source_doc = store.get("draft").doc
+
+    async with Client(mcp) as c:
+        result = await c.call_tool("copy_display", {"source": "draft", "name": "default"})
+    data = result.structured_content
+    assert data["name"] == "default"
+    assert data["hash"] == source_doc["meta"]["hash"]
+    assert data["etag"] == f'"{data["hash"]}"'
+
+    target_doc = store.get("default").doc
+    assert target_doc["meta"]["hash"] == source_doc["meta"]["hash"]
+    assert target_doc["meta"]["generated"] != source_doc["meta"]["generated"]
+    # source is untouched
+    assert store.get("draft").doc == source_doc
+
+
+async def test_copy_display_unknown_source_is_a_tool_error(mcp, store):
+    async with Client(mcp) as c:
+        result = await c.call_tool("copy_display", {"source": "nope", "name": "default"})
+    assert result.is_error is True
+    assert "nope" in (_text_of(result) or "")
+
+
+async def test_copy_display_onto_itself_is_a_republish(
+    mcp, store, sample_doc, sequential_generated
+):
+    store.publish(sample_doc, "default")
+    before = store.get("default").doc
+
+    async with Client(mcp) as c:
+        result = await c.call_tool("copy_display", {"source": "default", "name": "default"})
+    data = result.structured_content
+    assert data["hash"] == before["meta"]["hash"]
+
+    after = store.get("default").doc
+    assert after["meta"]["hash"] == before["meta"]["hash"]
+    assert after["meta"]["generated"] != before["meta"]["generated"]
+
+
+async def test_copy_display_target_status_published(mcp, store, sample_doc):
+    store.publish(sample_doc, "draft")
+    async with Client(mcp) as c:
+        await c.call_tool("copy_display", {"source": "draft", "name": "kitchen"})
+        result = await c.call_tool("status", {"name": "kitchen"})
+    assert result.structured_content["published"] is True
+
+
+async def test_copy_display_reports_the_targets_fetch_record_not_the_sources(
+    mcp, store, sample_doc
+):
+    store.publish(sample_doc, "draft")
+    store.note_fetch("draft", 200, "10.0.0.5")
+    async with Client(mcp) as c:
+        result = await c.call_tool("copy_display", {"source": "draft", "name": "fresh"})
+    data = result.structured_content
+    assert data["recent_fetch_at"] is None and data["recent_fetch_ago"] is None
+
+
+async def test_clearing_an_unpublished_but_requested_name_keeps_it_in_requested(mcp, store):
+    store.note_fetch("ghost", 503, "10.0.0.5")
+    async with Client(mcp) as c:
+        cleared = await c.call_tool("clear_display", {"name": "ghost"})
+        status = await c.call_tool("status", {})
+    assert cleared.structured_content == {"name": "ghost", "cleared": False}
+    assert "ghost" in status.structured_content["requested"]

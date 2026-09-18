@@ -126,7 +126,7 @@ full refresh on every wake — roughly half the battery life.
 
 | | |
 |---|---|
-| [`src/display_mcp/`](src/display_mcp/) | the service. `store.py` publishes and persists, `panel.py` serves the panel, `mcp_server.py` the nine tools, `auth.py` the Access JWT check, `render/` the previewer |
+| [`src/display_mcp/`](src/display_mcp/) | the service. `store.py` publishes and persists, `panel.py` serves the panel, `mcp_server.py` the ten tools, `auth.py` the Access JWT check, `render/` the previewer |
 | [`firmware/`](firmware/) | the ESPHome project, and **the source of truth for rendering**. `display_list.h` is the on-device interpreter; where it and the Python renderer disagree, it wins |
 | [`docs/SPEC.md`](docs/SPEC.md) | the document language and the contract between the two |
 | [`docs/RUNBOOK.md`](docs/RUNBOOK.md) | standing it up, seven steps, a gate on each |
@@ -134,7 +134,9 @@ full refresh on every wake — roughly half the battery life.
 | [`deploy/`](deploy/) | the systemd unit and `setup.sh`, which is idempotent and reversible |
 | [`mount/`](mount/) | the printed bezel the panel hangs behind, in an ordinary picture frame |
 
-**Nine MCP tools.** `set_display` publishes, `preview` renders a PNG plus the
+**Ten MCP tools.** `set_display` publishes, `copy_display` republishes one
+name's document under another (promoting a scratch draft to `default`
+without resending the body), `preview` renders a PNG plus the
 warnings, so a session can look before it commits, `validate` checks a draft, `get_display`
 reads back what is live, `status` reports whether the panel collected it, and
 `clear_display` takes a display down. `describe` returns the op vocabulary —
