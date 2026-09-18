@@ -49,6 +49,32 @@ static const char *const TAG = "display_list";
 // draw_display_list).
 static const int DOCUMENT_VERSION = 1;
 
+// Three device-safety bounds, together: a document field the firmware
+// trusts directly as a loop count or a coordinate magnitude must never
+// let an adversarial, or merely wrong, document turn one op into a
+// multi-second loop or an out-of-range accumulation, on a panel with no
+// watchdog to save it.
+//
+// kThickMax bounds an outline's `t` (line, rect/circle/poly outline):
+// thick_line()'s and the rect outline loop's `for (int i = 0; i < t;
+// i++)` clamp to it silently; a bad `t` is authoring feedback and stays
+// on the Python side (D1).
+// kSpriteMaxCell bounds `sprite`'s `cell` (D9) so c0*cell/row*cell
+// arithmetic can never approach INT32_MAX even for the largest document
+// MAX_DOC_BYTES allows; past this bound there is nothing sensible to
+// draw, so draw_sprite() rejects the whole op rather than clamping it.
+// kPolyMaxCoord bounds a `poly` point's magnitude (D12) so
+// poly_spans()'s scanline walk and crossing arithmetic never has to
+// reconcile a coordinate this large; draw_poly() rejects it outright too.
+//
+// 64 / 1600 / 1 << 20 are each generous for anything actually drawn on a
+// 1200x1600 canvas. Mirrors THICK_MAX/SPRITE_MAX_CELL/POLY_MAX_COORD in
+// display_mcp.render; tests/test_firmware_parity.py extracts and diffs
+// all three.
+static const int kThickMax = 64;
+static const int kSpriteMaxCell = 1600;
+static const int32_t kPolyMaxCoord = 1 << 20;
+
 struct DisplayListAssets {
   // Type scale, keyed by the name the JSON uses: xl, lg, md, sm, xs, mono.
   std::map<std::string, esphome::display::BaseFont *> fonts;
@@ -395,15 +421,6 @@ inline esphome::display::TextAlign align_of(const char *a) {
   return esphome::display::TextAlign::TOP_LEFT;
 }
 
-// Bound on an outline's thickness (docs/plans/dragon-feedback.md D12):
-// thick_line()'s and the rect outline loop's `for (int i = 0; i <
-// t; i++)` turn a document's `t` directly into that many draw calls, so a
-// `t` in the millions must never reach either loop -- the same
-// device-safety shape kSpriteMaxCell guards for `sprite`'s `cell`. Both
-// loops clamp to this silently; a bad `t` is authoring feedback and stays
-// on the Python side (D1). Mirrors `_THICK_MAX` in display_mcp.render.
-static const int kThickMax = 64;
-
 inline void thick_line(esphome::display::Display &it, int x1, int y1, int x2, int y2, int t,
                        esphome::Color c) {
   if (t > kThickMax)
@@ -622,13 +639,6 @@ inline bool draw_sprite(esphome::display::Display &it, JsonObject o, JsonObject 
   JsonArray sprite_rows = o["rows"];
   JsonObject sprite_palette = o["palette"];
 
-  // Both sides have to agree on what's too big to be sane, not just what
-  // overflows int arithmetic -- this is display_mcp.render's
-  // max(WIDTH, HEIGHT) (1200 x 1600), so a `cell` this small can never let
-  // c0*cell / row*cell approach INT32_MAX even for a document as large as
-  // MAX_DOC_BYTES allows.
-  static const int kSpriteMaxCell = 1600;
-
   bool rows_ok = !sprite_rows.isNull();
   if (rows_ok) {
     for (JsonVariant rv : sprite_rows) {
@@ -746,20 +756,6 @@ inline int64_t floor_div(int64_t a, int64_t b) {
   const int64_t r = a % b;
   return (r != 0 && ((r < 0) != (b < 0))) ? q - 1 : q;
 }
-
-// Bound on a poly point's magnitude (docs/plans/dragon-feedback.md D12): a
-// document whose `pts` reach this far out is malformed, not merely
-// off-canvas -- without this bound, a point like [20, 5000000] would make
-// poly_spans() walk millions of scanlines, accumulating tens of megabytes
-// of spans, every wake, forever. draw_poly() rejects a point past this
-// bound outright,
-// so the scanline/span clamp below never has to reconcile a crossing
-// computed from a coordinate this large. 1 << 20 is comfortably past any
-// real document (the canvas is 1200 x 1600) and comfortably inside the
-// int64_t headroom the crossing product below needs -- the same role
-// kSpriteMaxCell plays for `cell`. Mirrors `_POLY_MAX_COORD` in
-// display_mcp.render.
-static const int32_t kPolyMaxCoord = 1 << 20;
 
 /// Even-odd scanline fill (D12): for each integer scanline `y` from `ymin`
 /// to `ymax` inclusive -- already clamped by the caller to the visible

@@ -23,7 +23,19 @@ from pathlib import Path
 
 import pytest
 
-from display_mcp.render import BUILTIN_MIXES, DENSITIES, HEIGHT, INK, WIDTH, check, mix_on, render
+from display_mcp.render import (
+    BUILTIN_MIXES,
+    DENSITIES,
+    HEIGHT,
+    INK,
+    POLY_MAX_COORD,
+    SPRITE_MAX_CELL,
+    THICK_MAX,
+    WIDTH,
+    check,
+    mix_on,
+    render,
+)
 
 HEADER = Path(__file__).resolve().parents[1] / "firmware" / "display_list.h"
 
@@ -36,6 +48,27 @@ def _extract(pattern: str, what: str) -> str:
     m = re.search(pattern, src, re.MULTILINE)
     assert m, f"could not find {what} in {HEADER.name} — has it been renamed?"
     return m.group(0)
+
+
+def _firmware_const_value(name: str) -> int:
+    """A namespace-scope `static const int[32_t] <name> = <expr>;` from the
+    header, evaluated as Python -- a C++ integer-literal expression like
+    `1 << 20` is also a valid Python one, and this only ever runs against
+    our own header, not untrusted input. Pure text, no compiler needed."""
+    src = HEADER.read_text()
+    m = re.search(rf"^static const int(?:32_t)? {name} = (?P<value>.+);$", src, re.MULTILINE)
+    assert m, f"could not find {name} in {HEADER.name} — has it been renamed?"
+    return eval(m.group("value"), {"__builtins__": {}})  # noqa: S307 - our own header
+
+
+def test_device_safety_limits_match_the_firmware():
+    """THICK_MAX/SPRITE_MAX_CELL/POLY_MAX_COORD (docs/plans/dragon-feedback.md
+    D9/D12) are the same bound on both sides -- kThickMax, kSpriteMaxCell and
+    kPolyMaxCoord sit together at namespace scope in the header the same way
+    these three do here. Pure data, no compiler needed."""
+    assert _firmware_const_value("kThickMax") == THICK_MAX
+    assert _firmware_const_value("kSpriteMaxCell") == SPRITE_MAX_CELL
+    assert _firmware_const_value("kPolyMaxCoord") == POLY_MAX_COORD
 
 
 @pytest.fixture(scope="module")
@@ -707,6 +740,9 @@ def sprite_harness(tmp_path_factory) -> _SpriteHarness:
 
     matrix = _extract(r"^static const uint8_t B\[2\]\[2\].*;$", "the Bayer matrix")
     mix_on_fn = _extract(r"^inline bool mix_on\(.*$", "mix_on()")
+    sprite_max_cell_const = _extract(
+        r"^static const int kSpriteMaxCell = \d+;$", "kSpriteMaxCell"
+    )
     utf8_prev_fn = _extract_block(r"^inline size_t utf8_prev\(", "utf8_prev()")
     utf8_next_fn = _extract_block(r"^inline size_t utf8_next\(", "utf8_next()")
     ink_struct = _extract_block(r"^struct Ink \{", "struct Ink")
@@ -725,6 +761,7 @@ def sprite_harness(tmp_path_factory) -> _SpriteHarness:
         "#include <memory>\n#include <set>\n#include <string>\n#include <vector>\n\n"
         + _STUB_ESPHOME_AND_JSON
         + "\n" + matrix + "\n" + mix_on_fn
+        + "\n" + sprite_max_cell_const
         + "\n" + utf8_prev_fn + "\n" + utf8_next_fn
         + "\n" + ink_struct + "\n" + mixdisplay_cls
         + "\n" + _STUB_RESOLVE_INK
@@ -1524,7 +1561,7 @@ def test_poly_two_point_pts_warns_and_skips_on_both_sides(poly_harness, font_dir
 
 
 def test_poly_point_out_of_range_warns_and_skips_on_both_sides(poly_harness, font_dir):
-    """A point past `kPolyMaxCoord` / `_POLY_MAX_COORD`
+    """A point past `kPolyMaxCoord` / `POLY_MAX_COORD`
     (docs/plans/dragon-feedback.md D12) is malformed on both sides, not
     merely off-canvas, so a point millions of units away is rejected
     outright rather than making poly_spans() walk millions of scanlines."""

@@ -196,6 +196,34 @@ ICON_SIZES = {"sm": 36, "md": 56, "lg": 88}
 # bars are meant to run full bleed and are not.
 BEZEL_MARGIN = 24
 
+# Three device-safety bounds, together: a document field the renderer (and
+# the firmware) trusts directly as a loop count or a coordinate magnitude
+# must never let an adversarial, or merely wrong, document turn one op
+# into a multi-second loop or an out-of-range accumulation, on a panel
+# with no watchdog to save it.
+#
+# THICK_MAX bounds an outline's `t` (line, rect/circle/poly outline):
+# thick_line()'s and the rect outline loop's `for (int i = 0; i < t; i++)`
+# clamp to it silently on both sides; a bad `t` is authoring feedback and
+# stays on this side (D1), so here it warns and clamps rather than just
+# clamping.
+# SPRITE_MAX_CELL bounds `sprite`'s `cell` (D9) so c0*cell/row*cell
+# arithmetic can never approach INT32_MAX even for the largest document
+# MAX_DOC_BYTES allows; past this bound there is nothing sensible to draw,
+# so — unlike THICK_MAX — the whole op is rejected, not clamped.
+# POLY_MAX_COORD bounds a `poly` point's magnitude (D12) so
+# poly_spans()'s scanline walk and crossing arithmetic never has to
+# reconcile a coordinate this large; also rejected outright, not clamped.
+#
+# 64 / max(WIDTH, HEIGHT) / 1 << 20 are each generous for anything
+# actually drawn on a 1200x1600 canvas. Mirrors
+# kThickMax/kSpriteMaxCell/kPolyMaxCoord in display_list.h, which sit
+# together the same way; tests/test_firmware_parity.py extracts and
+# diffs all three.
+THICK_MAX = 64
+SPRITE_MAX_CELL = max(WIDTH, HEIGHT)
+POLY_MAX_COORD = 1 << 20
+
 # Roughly what those inks look like on a Spectra 6 panel. This is the only
 # colour table: the panel is the thing being previewed, so an approximation
 # of the glass beats the pure framebuffer RGB the driver writes (the old
@@ -556,6 +584,23 @@ def _contrast_ratio(rgb_a: tuple, rgb_b: tuple) -> float:
     return (lighter + 0.05) / (darker + 0.05)
 
 
+# A few pixels of overhang off the visible edge is ordinary — a
+# right-aligned label's descender, a fill's edge landing exactly at the
+# canvas boundary — so every off-canvas check in render() allows the same
+# margin rather than each picking its own: the sprite far edge, a poly's
+# bounding box, a rect's x+w/y+h, a line's x2/y2, and the generic x/y
+# every op gets.
+OFF_CANVAS_TOLERANCE = 64
+
+
+def _off_canvas(v: float, bound: int) -> bool:
+    """Whether `v` sits outside `[0, bound)` by more than
+    `OFF_CANVAS_TOLERANCE`. Messages stay exactly as they were — this only
+    replaces the repeated `-64 <= v <= bound + 64` comparison, not what a
+    caller does with the result."""
+    return not (-OFF_CANVAS_TOLERANCE <= v <= bound + OFF_CANVAS_TOLERANCE)
+
+
 def _clip_to_canvas(box: tuple) -> tuple | None:
     """Clip a box to the canvas as ints. None when there is no on-canvas
     area at all — an op drawn off-screen, a zero-size box (an empty
@@ -684,11 +729,8 @@ class Ctx:
     def ink(self, name: str, where: str = "") -> Ink:
         """Resolve a colour name to an Ink, following palette aliases.
 
-        Mirrors resolve_ink() in display_list.h. Resolution is base inks ->
-        the document's palette -> the built-in mixes, so the six ink names
-        are immutable and a document can shadow a built-in one by declaring
-        it. Every malformed case warns and still yields something drawable;
-        nothing here skips an op.
+        Mirrors resolve_ink() in display_list.h. Every malformed case warns
+        and still yields something drawable; nothing here skips an op.
 
         `name` is meant to be a string; a document that writes an inline
         `{c, c2, mix}` object where a colour *name* belongs is caught before
@@ -696,7 +738,9 @@ class Ctx:
         dict gets the same palette hint `c2`/`mix`-on-an-op gets
         (docs/plans/dragon-feedback.md D1), and anything else non-string
         falls back to the ordinary "unknown colour" message. Either way this
-        returns black rather than raising.
+        returns black rather than raising. Everything else is `resolve()`'s
+        walk, wrapped: black in place of the `None` a name that never
+        resolves gets there.
         """
         black = self.table["black"]
         if isinstance(name, dict):
@@ -705,6 +749,31 @@ class Ctx:
         if not isinstance(name, str):
             self.problems.append(f"{where}: unknown colour {name!r}")
             return Ink(black, black, 100)
+        resolved = self.resolve(name, where)
+        return resolved if resolved is not None else Ink(black, black, 100)
+
+    def resolve(self, name: str, where: str = "") -> Ink | None:
+        """The alias/mix/built-in walk, `None` where `ink()` falls back to
+        black: base inks -> the document's palette -> the built-in mixes,
+        so the six ink names are immutable and a document can shadow a
+        built-in one by declaring it. A palette entry that is itself a mix
+        definition (a `dict`) is handed to `_mix()` for real — a malformed
+        one still warns and still resolves to something drawable, same as
+        it always has; `_base` stays separate; it walks with different
+        degrade rules for a name found *inside* a mix (D9/D1), not "does
+        this name resolve at all".
+
+        `ink()` wraps this for a caller that always wants something
+        drawable back. `document_colors()` and `swatch_groups()` call it
+        directly (folded from the old module-level `_color_name_resolves()`)
+        so a name that merely warns about something else along the way
+        (a malformed mix, still resolvable) isn't confused with one that
+        never resolves — the two used to need a second, warning-free walk
+        of their own to tell apart; now the one walk answers both.
+
+        Mirrors `resolve_ink()` in display_list.h and the alias-chasing
+        limit in `_base()` (8 hops).
+        """
         n = name
         for _ in range(8):
             if not isinstance(n, str):
@@ -722,7 +791,7 @@ class Ctx:
                 return self._mix(entry, n, where)
             n = entry
         self.problems.append(f"{where}: unknown colour {n!r}")
-        return Ink(black, black, 100)
+        return None
 
     def _mix(self, entry: dict[str, Any], name: str, where: str) -> Ink:
         black = self.table["black"]
@@ -785,23 +854,6 @@ class Ctx:
             )
         return pct
 
-    def color(self, name: str, where: str = ""):
-        # Palette aliases resolve up to 8 hops, matching resolve_color() in
-        # display_list.h; a cycle (or a chain deeper than that) falls back
-        # to black with a problem instead of hanging.
-        n = name
-        for _ in range(8):
-            if not isinstance(n, str):
-                break
-            if n in self.table:
-                return self.table[n]
-            nxt = self.palette.get(n)
-            if nxt is None:
-                break
-            n = nxt
-        self.problems.append(f"{where}: unknown colour {n!r}")
-        return self.table["black"]
-
     def font(self, name: str, where: str = ""):
         """Resolve a font name, or None when it isn't compiled in or isn't
         installed here.
@@ -829,29 +881,6 @@ class Ctx:
             )
             return None
         return f
-
-
-def _color_name_resolves(name: str, table: dict, palette: dict) -> bool:
-    """Whether `name` reaches a base ink, a built-in mix, or a palette entry
-    without raising — the same walk `Ctx.ink()` makes, kept separate so
-    `document_colors()` can decide what to *list* without reading
-    `Ctx.problems`, which conflates a name that resolves to nothing (the
-    "unknown colour" case) with one that resolves but along the way warns
-    about something else (a malformed mix still draws, and still belongs in
-    the map). Mirrors the alias-chasing limit in `Ctx.ink()`."""
-    n = name
-    for _ in range(8):
-        if not isinstance(n, str):
-            return False
-        if n in table:
-            return True
-        entry = palette.get(n)
-        if entry is None:
-            return n in BUILTIN_MIXES
-        if isinstance(entry, dict):
-            return True
-        n = entry
-    return False
 
 
 def hex_of(rgb: tuple) -> str:
@@ -951,9 +980,8 @@ def document_colors(doc: dict[str, Any]) -> tuple[dict[str, dict[str, str]], lis
     colors: dict[str, dict[str, str]] = {}
     for name in order:
         where = f"palette {name!r}"
-        resolves = _color_name_resolves(name, ctx.table, ctx.palette)
-        resolved = ctx.ink(name, where)
-        if not resolves:
+        resolved = ctx.resolve(name, where)
+        if resolved is None:
             continue
         colors[name] = {"recipe": recipe_of(resolved), "hex": hex_of(resolved.avg)}
     return colors, ctx.problems
@@ -1016,9 +1044,9 @@ def swatch_groups(
         for name in palette:
             if isinstance(name, str) and name.startswith("sw:"):
                 continue
-            if not _color_name_resolves(name, ctx.table, ctx.palette):
+            resolved = ctx.resolve(name)
+            if resolved is None:
                 continue
-            resolved = ctx.ink(name)
             entries.append((name, name, recipe_of(resolved), hex_of(resolved.avg)))
         if entries:
             groups.append(("document palette", entries))
@@ -1662,6 +1690,46 @@ def _check_uncompiled_glyphs(ctx: Ctx, face_name: str, text: str, where: str) ->
     )
 
 
+def _paint_glyph_op(
+    img: Image.Image,
+    ctx: Ctx,
+    ink: Ink,
+    c_name: str,
+    where: str,
+    boxes: list[tuple],
+    draw_fn,
+    dithered_colors: bool,
+    after_mix_check=None,
+) -> None:
+    """The sequence every glyph-drawing op (wrapped text, plain text, fmt,
+    icon) repeats: the contrast floor against what's actually behind it,
+    the mix-as-text shift warning, a before-snapshot, the paint itself,
+    and the drew-nothing diff against that snapshot. `boxes` is the op's
+    box(es), for both the contrast sampling and (as their union) the
+    drew-nothing snapshot — every caller but wrapped text passes a
+    single-element list; wrapped text passes one box per line.
+
+    `after_mix_check`, if given, runs between the mix-as-text warning and
+    the snapshot — exactly where `_check_uncompiled_glyphs` already ran at
+    each text/fmt call site before this was factored out, so warning order
+    is unchanged; `icon` (no glyphs to check) omits it. `dithered_colors`
+    is threaded through to `paint()` directly rather than through
+    `render()`'s own `paint_op` closure, since this is a module-level
+    function and can't see that closure.
+
+    Pixel output and warning order are unchanged from before this was
+    factored out — it replaces the same lines repeated at each call site,
+    not what they do.
+    """
+    _check_contrast(img, ctx, ink, c_name, where, boxes)
+    _check_mix_as_text(ctx, ink, c_name, where)
+    if after_mix_check is not None:
+        after_mix_check()
+    snap = _snapshot(img, _union_box(boxes)) if boxes else None
+    paint(img, ink, draw_fn, dithered_colors)
+    _check_drew_nothing(img, ctx, snap, where)
+
+
 _PARITY_OUTCOME = {25: "0% or 50%", 75: "50% or 100%"}
 
 
@@ -1746,32 +1814,23 @@ def _resolved_rect_radius(r_raw: Any, w: int, h: int, where: str, ctx: Ctx) -> i
     return r_raw
 
 
-# Bound on an outline's `t` (line, rect/circle/poly outline). Mirrors
-# `kThickMax` in display_list.h, where thick_line() and the rect outline
-# loop's `for (int i = 0; i < t; i++)` clamp to the same constant silently
-# -- a document-supplied `t` in the millions must never turn one op into a
-# multi-second loop on either side. 64 is generous for anything actually
-# drawn on a 1200x1600 canvas.
-_THICK_MAX = 64
-
-
 def _resolved_thickness(t_raw: Any, where: str, ctx: Ctx) -> int:
-    """`t` for an outline: an integer >= 1, clamped to `_THICK_MAX`. A `t`
+    """`t` for an outline: an integer >= 1, clamped to `THICK_MAX`. A `t`
     that isn't an int (`bool` excluded, same as every other malformed-field
     check here), or is < 1, warns and uses 1 -- the "warn and draw
     something" rule every malformed field gets. A `t` larger than
-    `_THICK_MAX` warns and clamps rather than silently, unlike the
+    `THICK_MAX` warns and clamps rather than silently, unlike the
     firmware's own clamp: a bad value is authoring feedback and stays on
     this side (docs/plans/dragon-feedback.md D1).
     """
     if isinstance(t_raw, bool) or not isinstance(t_raw, int) or t_raw < 1:
         ctx.problems.append(f"{where}: t={t_raw!r} is not a positive integer; using 1")
         return 1
-    if t_raw > _THICK_MAX:
+    if t_raw > THICK_MAX:
         ctx.problems.append(
-            f"{where}: t={t_raw} is larger than {_THICK_MAX}; clamped to {_THICK_MAX}"
+            f"{where}: t={t_raw} is larger than {THICK_MAX}; clamped to {THICK_MAX}"
         )
-        return _THICK_MAX
+        return THICK_MAX
     return t_raw
 
 
@@ -1841,21 +1900,6 @@ def _anchor_of(op: dict[str, Any], ctx: Ctx, where: str) -> str:
     return ANCHOR.get(a_value, "la")
 
 
-# Bound on a poly point's magnitude (docs/plans/dragon-feedback.md D12): a
-# document whose `pts` reach this far out is malformed, not merely
-# off-canvas. Without this bound, a point like [20, 5000000] would make
-# poly_spans() walk millions of scanlines, seconds in check() and tens of
-# megabytes of accumulated spans on the firmware, every wake, forever.
-# Rejecting a point past this bound outright means the scanline/span clamp
-# in _poly_spans() below never has to reconcile a crossing computed from a
-# coordinate this large. 1 << 20 is comfortably past any real document (the
-# canvas is 1200 x 1600) and comfortably inside the headroom the firmware's
-# int64_t crossing arithmetic needs (HEIGHT scanlines * 2*bound, nowhere
-# near overflowing) -- the same role kSpriteMaxCell plays for `cell`.
-# Mirrors `kPolyMaxCoord` in display_list.h.
-_POLY_MAX_COORD = 1 << 20
-
-
 def _valid_poly_points(raw: Any) -> list[tuple[int, int]] | None:
     """`pts` parsed to a list of `(x, y)` int pairs, or `None` if it isn't
     at least three of them (docs/plans/dragon-feedback.md D12).
@@ -1909,7 +1953,7 @@ def _poly_spans(pts: list[tuple[int, int]]) -> list[tuple[int, int, int]]:
     The scanline range is clamped to `[0, HEIGHT)` and each span's x to
     `[0, WIDTH)` **before** anything is appended
     (docs/plans/dragon-feedback.md D12): a polygon whose points sit far
-    outside the canvas — but inside `_POLY_MAX_COORD` — must not make this
+    outside the canvas — but inside `POLY_MAX_COORD` — must not make this
     loop, or its output, scale with how far outside it they are. A span
     that clamps to nothing
     (`xa > xb` after clamping) is dropped rather than appended empty or
@@ -2083,9 +2127,9 @@ def render(
                 paint_op(ink, lambda dr, col: dr.rectangle(
                     [x, y, x + w - 1, y + h - 1], outline=col, width=t))
             xr, yr = x + w, y + h
-            if not (-64 <= xr <= WIDTH + 64):
+            if _off_canvas(xr, WIDTH):
                 ctx.problems.append(f"{where}: x+w={xr} is off-canvas")
-            if not (-64 <= yr <= HEIGHT + 64):
+            if _off_canvas(yr, HEIGHT):
                 ctx.problems.append(f"{where}: y+h={yr} is off-canvas")
 
         elif kind == "line":
@@ -2094,9 +2138,9 @@ def render(
             paint_op(ink, lambda dr, col: dr.line(
                 [op["x"], op["y"], op["x2"], op["y2"]], fill=col, width=t))
             x2, y2 = op.get("x2"), op.get("y2")
-            if isinstance(x2, (int, float)) and not (-64 <= x2 <= WIDTH + 64):
+            if isinstance(x2, (int, float)) and _off_canvas(x2, WIDTH):
                 ctx.problems.append(f"{where}: x2={x2} is off-canvas")
-            if isinstance(y2, (int, float)) and not (-64 <= y2 <= HEIGHT + 64):
+            if isinstance(y2, (int, float)) and _off_canvas(y2, HEIGHT):
                 ctx.problems.append(f"{where}: y2={y2} is off-canvas")
 
         elif kind == "circle":
@@ -2134,24 +2178,31 @@ def render(
                 boxes = [
                     d.textbbox((px, py), line, font=f, anchor=anchor) for px, py, line in positions
                 ]
-                _check_contrast(img, ctx, ink, c_name, where, boxes)
-                _check_mix_as_text(ctx, ink, c_name, where)
-                _check_uncompiled_glyphs(ctx, font_name, "".join(lines), where)
-                snap = _snapshot(img, _union_box(boxes)) if boxes else None
-                for _x, ly, line in positions:
-                    paint_op(ink, lambda dr, col, ly=ly, line=line: dr.text(
-                        (op["x"], ly), line, font=f, fill=col, anchor=anchor))
-                _check_drew_nothing(img, ctx, snap, where)
+
+                def draw_fn(dr, col, positions=positions):
+                    for px, ly, line in positions:
+                        dr.text((px, ly), line, font=f, fill=col, anchor=anchor)
+
+                def check_glyphs(font_name=font_name, lines=lines, where=where):
+                    _check_uncompiled_glyphs(ctx, font_name, "".join(lines), where)
+
+                _paint_glyph_op(
+                    img, ctx, ink, c_name, where, boxes, draw_fn, dithered_colors,
+                    after_mix_check=check_glyphs,
+                )
             else:
                 text = fit_line(f, op["s"], max_w)
                 box = d.textbbox((op["x"], op["y"]), text, font=f, anchor=anchor)
-                _check_contrast(img, ctx, ink, c_name, where, [box])
-                _check_mix_as_text(ctx, ink, c_name, where)
-                _check_uncompiled_glyphs(ctx, font_name, text, where)
-                snap = _snapshot(img, box)
-                paint_op(ink, lambda dr, col: dr.text(
-                    (op["x"], op["y"]), text, font=f, fill=col, anchor=anchor))
-                _check_drew_nothing(img, ctx, snap, where)
+                draw_fn = lambda dr, col: dr.text(  # noqa: E731
+                    (op["x"], op["y"]), text, font=f, fill=col, anchor=anchor)
+
+                def check_glyphs(font_name=font_name, text=text, where=where):
+                    _check_uncompiled_glyphs(ctx, font_name, text, where)
+
+                _paint_glyph_op(
+                    img, ctx, ink, c_name, where, [box], draw_fn, dithered_colors,
+                    after_mix_check=check_glyphs,
+                )
 
         elif kind == "fmt":
             # text without wrap whose `s` is a template of system fields. The
@@ -2171,13 +2222,16 @@ def render(
             for field_name in unknown:
                 ctx.problems.append(f"{where}: unknown field {{{field_name}}} (left literal)")
             box = d.textbbox((op["x"], op["y"]), text, font=f, anchor=anchor)
-            _check_contrast(img, ctx, ink, c_name, where, [box])
-            _check_mix_as_text(ctx, ink, c_name, where)
-            _check_uncompiled_glyphs(ctx, font_name, text, where)
-            snap = _snapshot(img, box)
-            paint_op(ink, lambda dr, col: dr.text(
-                (op["x"], op["y"]), text, font=f, fill=col, anchor=anchor))
-            _check_drew_nothing(img, ctx, snap, where)
+            draw_fn = lambda dr, col: dr.text(  # noqa: E731
+                (op["x"], op["y"]), text, font=f, fill=col, anchor=anchor)
+
+            def check_glyphs(font_name=font_name, text=text, where=where):
+                _check_uncompiled_glyphs(ctx, font_name, text, where)
+
+            _paint_glyph_op(
+                img, ctx, ink, c_name, where, [box], draw_fn, dithered_colors,
+                after_mix_check=check_glyphs,
+            )
 
         elif kind == "icon":
             c_name = op.get("c", "black")
@@ -2189,11 +2243,8 @@ def render(
             size = ICON_SIZES.get(z, 36)
             x, y = op["x"], op["y"]
             box = (x, y, x + size, y + size)
-            _check_contrast(img, ctx, ink, c_name, where, [box])
-            _check_mix_as_text(ctx, ink, c_name, where)
-            snap = _snapshot(img, box)
-            paint_op(ink, lambda dr, col: draw_icon(dr, name, op["x"], op["y"], size, col))
-            _check_drew_nothing(img, ctx, snap, where)
+            draw_fn = lambda dr, col: draw_icon(dr, name, op["x"], op["y"], size, col)  # noqa: E731
+            _paint_glyph_op(img, ctx, ink, c_name, where, [box], draw_fn, dithered_colors)
 
         elif kind == "sprite":
             # Pixel art as rows of characters (docs/plans/dragon-feedback.md
@@ -2210,20 +2261,19 @@ def render(
             # Both sides have to agree on what's too big to be sane, not
             # just what overflows int arithmetic: a `cell` bigger than the
             # canvas itself is malformed the same way a zero or fractional
-            # one is.
-            max_cell = max(WIDTH, HEIGHT)
+            # one is. See SPRITE_MAX_CELL's own comment for why.
             if (
                 isinstance(cell, bool)
                 or not isinstance(cell, int)
                 or cell < 1
-                or cell > max_cell
+                or cell > SPRITE_MAX_CELL
                 or not isinstance(raw_rows, list)
                 or not all(isinstance(r, str) for r in raw_rows)
                 or not isinstance(raw_palette, dict)
             ):
                 ctx.problems.append(
                     f"{where}: sprite needs an integer cell >= 1 and <= "
-                    f"{max_cell}, rows (a list of strings) and palette (an "
+                    f"{SPRITE_MAX_CELL}, rows (a list of strings) and palette (an "
                     "object); nothing to draw, skipped"
                 )
                 continue
@@ -2310,9 +2360,9 @@ def render(
             _check_drew_nothing(img, ctx, snap, where)
 
             xr, yr = x + cols * cell, y + len(grid) * cell
-            if not (-64 <= xr <= WIDTH + 64):
+            if _off_canvas(xr, WIDTH):
                 ctx.problems.append(f"{where}: x+cols*cell={xr} is off-canvas")
-            if not (-64 <= yr <= HEIGHT + 64):
+            if _off_canvas(yr, HEIGHT):
                 ctx.problems.append(f"{where}: y+rows*cell={yr} is off-canvas")
 
         elif kind == "poly":
@@ -2332,13 +2382,11 @@ def render(
             # A coordinate this far out is malformed, not merely
             # off-canvas: reject it before the bounding box or the
             # scanline fill below ever has to reconcile a magnitude this
-            # large. See _POLY_MAX_COORD's own comment for why.
-            if any(
-                abs(px) > _POLY_MAX_COORD or abs(py) > _POLY_MAX_COORD for px, py in pts
-            ):
+            # large. See POLY_MAX_COORD's own comment for why.
+            if any(abs(px) > POLY_MAX_COORD or abs(py) > POLY_MAX_COORD for px, py in pts):
                 ctx.problems.append(
                     f"{where}: poly point out of range "
-                    f"(|x|,|y| <= {_POLY_MAX_COORD}); nothing to draw, skipped"
+                    f"(|x|,|y| <= {POLY_MAX_COORD}); nothing to draw, skipped"
                 )
                 continue
 
@@ -2349,12 +2397,12 @@ def render(
             # There's no single x/y to check here (a poly has no anchor),
             # so the ordinary off-canvas check at the bottom of this loop
             # doesn't fire — this is its replacement, on the bounding box
-            # of every point, same +/-64px tolerance as everywhere else.
-            if not (
-                -64 <= x0 <= WIDTH + 64
-                and -64 <= x1 <= WIDTH + 64
-                and -64 <= y0 <= HEIGHT + 64
-                and -64 <= y1 <= HEIGHT + 64
+            # of every point, same tolerance as everywhere else.
+            if (
+                _off_canvas(x0, WIDTH)
+                or _off_canvas(x1, WIDTH)
+                or _off_canvas(y0, HEIGHT)
+                or _off_canvas(y1, HEIGHT)
             ):
                 ctx.problems.append(
                     f"{where}: pts range x {x0}..{x1}, y {y0}..{y1} is off-canvas"
@@ -2404,7 +2452,7 @@ def render(
         for k in ("x", "y"):
             v = op.get(k)
             bound = WIDTH if k == "x" else HEIGHT
-            if isinstance(v, (int, float)) and not (-64 <= v <= bound + 64):
+            if isinstance(v, (int, float)) and _off_canvas(v, bound):
                 ctx.problems.append(f"{where}: {k}={v} is off-canvas")
 
     return img, ctx.problems

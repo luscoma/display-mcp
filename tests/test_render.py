@@ -17,8 +17,6 @@ import pytest
 from PIL import Image, ImageDraw
 
 from display_mcp.render import (
-    _POLY_MAX_COORD,
-    _THICK_MAX,
     BEZEL_MARGIN,
     BUILTIN_MIXES,
     COLORS,
@@ -27,6 +25,8 @@ from display_mcp.render import (
     ICON_SIZES,
     ICONS,
     INK,
+    POLY_MAX_COORD,
+    THICK_MAX,
     TIERS,
     WIDTH,
     Ctx,
@@ -2819,7 +2819,7 @@ def test_bezel_problems_ignores_poly():
 
 
 def test_poly_extreme_coordinate_is_rejected_and_fast(font_dir):
-    """A point past `_POLY_MAX_COORD` is malformed and the whole op is
+    """A point past `POLY_MAX_COORD` is malformed and the whole op is
     skipped, rather than the scanline fill walking every row between two
     far-apart y coordinates — e.g. `[[10, -5000000], [20, 5000000], [0, 0]]`
     would otherwise walk five million rows, checked in well under a
@@ -2833,7 +2833,7 @@ def test_poly_extreme_coordinate_is_rejected_and_fast(font_dir):
     elapsed = time.monotonic() - t0
     assert elapsed < 1.0, elapsed
     assert problems == [
-        f"ops[0] poly: poly point out of range (|x|,|y| <= {_POLY_MAX_COORD}); "
+        f"ops[0] poly: poly point out of range (|x|,|y| <= {POLY_MAX_COORD}); "
         "nothing to draw, skipped"
     ]
 
@@ -2841,14 +2841,14 @@ def test_poly_extreme_coordinate_is_rejected_and_fast(font_dir):
 @pytest.mark.parametrize(
     ("coord", "should_warn"),
     [
-        (_POLY_MAX_COORD, False),
-        (-_POLY_MAX_COORD, False),
-        (_POLY_MAX_COORD + 1, True),
-        (-_POLY_MAX_COORD - 1, True),
+        (POLY_MAX_COORD, False),
+        (-POLY_MAX_COORD, False),
+        (POLY_MAX_COORD + 1, True),
+        (-POLY_MAX_COORD - 1, True),
     ],
 )
 def test_poly_point_at_the_coordinate_bound(font_dir, coord, should_warn):
-    """A point at exactly +/-`_POLY_MAX_COORD` is accepted; one past it
+    """A point at exactly +/-`POLY_MAX_COORD` is accepted; one past it
     is skipped."""
     doc = {
         "bg": "white",
@@ -2905,7 +2905,7 @@ def test_thin_mix_warns_a_poly_fill_sliver(font_dir):
     ids=["line", "rect", "circle", "poly"],
 )
 class TestThicknessIsBoundedAndValidated:
-    """A non-numeric `t` warns and uses 1, and a `t` above `_THICK_MAX`
+    """A non-numeric `t` warns and uses 1, and a `t` above `THICK_MAX`
     warns and clamps — one helper shared by line, rect, circle and poly,
     so a bad `t` never raises out of `render()` and never turns one op
     into a multi-second loop."""
@@ -2926,4 +2926,4 @@ class TestThicknessIsBoundedAndValidated:
         _, problems = render(doc, font_dir)
         elapsed = time.monotonic() - t0
         assert elapsed < 2.0, elapsed
-        assert any(f"larger than {_THICK_MAX}" in p and "clamped" in p for p in problems)
+        assert any(f"larger than {THICK_MAX}" in p and "clamped" in p for p in problems)
