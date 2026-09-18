@@ -355,7 +355,7 @@ def _bresenham_points(x1: int, y1: int, x2: int, y2: int):
     visibly different pixels for `t > 1`, which is accepted as eyeball
     parity for `line`/`rect` (docs/plans/dragon-feedback.md D10) because
     nothing has ever diffed them. `poly`'s outline is diffed
-    (tests/test_firmware_parity.py), so it earns its own exact walk instead
+    (tests/parity/test_poly.py), so it earns its own exact walk instead
     of inheriting that gap.
     """
     dx = abs(x2 - x1)

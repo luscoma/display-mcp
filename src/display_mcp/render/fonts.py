@@ -49,7 +49,7 @@ class Face(NamedTuple):
     # Code points the firmware compiles into this face beyond GF_LATIN_CORE
     # (docs/plans/dragon-feedback.md D11), as ranges, so the YAML
     # (`epaper-schedule.yaml`'s `glyphs:` string) and this table say the
-    # same thing — tests/test_firmware_parity.py checks that they do.
+    # same thing — tests/parity/test_limits_and_dispatch.py checks that they do.
     # Empty for every face but `mono`.
     extra_glyphs: tuple[range, ...] = ()
     # "raqm" (Pillow's default layout engine) for every face but `mono`,
