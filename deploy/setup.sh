@@ -13,6 +13,7 @@
 #   sudo ./setup.sh sync                    # code-only redeploy: the usual one
 #   ./setup.sh status                       # no root needed
 #   sudo ./setup.sh check                   # can the renderer load fonts + sample
+#   sudo ./setup.sh fonts                   # fetch whatever fonts are missing
 #   sudo ./setup.sh uninstall               # keeps /var/lib/display-mcp
 #   sudo ./setup.sh uninstall --purge       # takes it too, and the user
 #
@@ -155,24 +156,42 @@ install_fonts() {
   if [ "$WITH_FONTS" = 0 ]; then skip "fonts skipped (--no-fonts)"; return 0; fi
 
   local reg="$PREFIX/fonts/InstrumentSans-Regular.ttf" bold="$PREFIX/fonts/InstrumentSans-Bold.ttf"
+  local mono="$PREFIX/fonts/JetBrainsMono-Regular.ttf"
 
   if [ -n "$FONTS_FROM" ]; then
+    # The Regular+Bold pair is the manual escape hatch fetch-fonts.sh's own
+    # comment describes: whatever .ttf/.otf sorts first in the directory
+    # (excluding a JetBrainsMono* file, so it can't accidentally win that
+    # slot). The mono face is a second, separate lookup by name (F4) --
+    # `do_check`'s own failure message is what used to just say "usually
+    # the fonts" when only this half ran.
     log "copying fonts from $FONTS_FROM"
     local src
-    src=$(find "$FONTS_FROM" -maxdepth 1 -iname '*.ttf' -o -maxdepth 1 -iname '*.otf' | sort | head -1)
+    src=$(find "$FONTS_FROM" -maxdepth 1 \( -iname '*.ttf' -o -iname '*.otf' \) \
+      -a -not -iname 'jetbrainsmono*' | sort | head -1)
     [ -n "$src" ] || die "no .ttf/.otf found in $FONTS_FROM"
     run install -o "$SVC_USER" -g "$SVC_USER" -m 0644 "$src" "$reg"
     run install -o "$SVC_USER" -g "$SVC_USER" -m 0644 "$src" "$bold"
     ok "fonts from $(basename "$src")"
+
+    local mono_src
+    mono_src=$(find "$FONTS_FROM" -maxdepth 1 -iname 'jetbrainsmono*.ttf' | sort | head -1)
+    if [ -n "$mono_src" ]; then
+      run install -o "$SVC_USER" -g "$SVC_USER" -m 0644 "$mono_src" "$mono"
+      ok "mono face from $(basename "$mono_src")"
+    else
+      warn "no JetBrainsMono*.ttf in $FONTS_FROM; the mono face is still"
+      warn "missing ($mono). Drop one in by hand, or run: $0 fonts"
+    fi
     return 0
   fi
 
   if [ "$DRY" = 1 ]; then
-    printf '    would fetch Instrument Sans into %s (deploy/fetch-fonts.sh)\n' "$PREFIX/fonts"
+    printf '    would fetch Instrument Sans + JetBrains Mono into %s (deploy/fetch-fonts.sh)\n' "$PREFIX/fonts"
     return 0
   fi
 
-  if is_font "$reg" && is_font "$bold"; then
+  if is_font "$reg" && is_font "$bold" && is_font "$mono"; then
     skip "fonts already installed"
     return 0
   fi
@@ -185,10 +204,12 @@ install_fonts() {
   if "$HERE/fetch-fonts.sh" "$scratch"; then
     run install -o "$SVC_USER" -g "$SVC_USER" -m 0644 "$scratch/InstrumentSans-Regular.ttf" "$reg"
     run install -o "$SVC_USER" -g "$SVC_USER" -m 0644 "$scratch/InstrumentSans-Bold.ttf" "$bold"
+    run install -o "$SVC_USER" -g "$SVC_USER" -m 0644 "$scratch/JetBrainsMono-Regular.ttf" "$mono"
   else
     warn "the service will not render previews until fonts are in place;"
-    warn "the panel endpoint is unaffected. Re-run install once it works, or"
-    warn "use --fonts-from <dir> with a Regular+Bold pair."
+    warn "the panel endpoint is unaffected. Re-run install (or: $0 fonts)"
+    warn "once it works, or use --fonts-from <dir> with a Regular+Bold pair"
+    warn "plus a JetBrainsMono-Regular.ttf dropped in by hand."
   fi
   rm -rf "$scratch"
 }
@@ -495,10 +516,32 @@ do_check() {
   if as_svc "$cli" check "$sample" --font-dir "$PREFIX/fonts"; then
     ok "fonts load, document validates"
   else
-    warn "the renderer could not process the sample — usually the fonts."
+    # F4: --fonts-from only ever copied the Instrument Sans pair, so a host
+    # set up that way used to fail here with a generic "usually the fonts"
+    # that didn't say which font -- distinguish it from a font directory
+    # that's missing outright.
+    if is_font "$PREFIX/fonts/InstrumentSans-Regular.ttf" \
+      && is_font "$PREFIX/fonts/InstrumentSans-Bold.ttf" \
+      && ! is_font "$PREFIX/fonts/JetBrainsMono-Regular.ttf"; then
+      warn "the mono face is missing ($PREFIX/fonts/JetBrainsMono-Regular.ttf)."
+      warn "Run: $0 fonts"
+    else
+      warn "the renderer could not process the sample — no usable fonts in $PREFIX/fonts."
+      warn "Run: $0 fonts"
+    fi
     warn "The panel endpoint still works; only preview() is affected."
     return 1
   fi
+}
+
+do_fonts() {
+  [ -x "$PREFIX/venv/bin/python" ] || die "not installed yet — run: $0 install"
+  # Re-runs fetch-fonts.sh into $PREFIX/fonts, same as install's own step —
+  # `sync` deliberately never touches fonts (see its own comment above), so
+  # this is how an existing install picks up a font added after it, such as
+  # JetBrains Mono after upgrading past B3.
+  install_fonts
+  do_check || true
 }
 
 do_status() {
@@ -570,6 +613,8 @@ Commands:
   uninstall   removes everything install added
   status      is it up, what is published, does revalidation work, is Access on
   check       can the renderer load the fonts and the sample document
+  fonts       fetch whatever fonts are missing into $PREFIX/fonts; a no-op
+              when all three are already there (an existing install only)
 
 Flags:
   --bind IP                  panel endpoint address (default: detected LAN address)
@@ -623,6 +668,7 @@ case "${CMD:-}" in
   uninstall) do_uninstall ;;
   status)    do_status ;;
   check)     need_root; do_check ;;
+  fonts)     need_root; do_fonts ;;
   ""|-h|--help|help) usage ;;
   *) die "unknown command: $CMD (try --help)" ;;
 esac

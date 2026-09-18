@@ -25,8 +25,14 @@ def sprite_sample_doc():
 
 @pytest.fixture
 def font_dir() -> Path:
-    """Instrument Sans pair. Tests that need real fonts skip if absent."""
+    """All three compiled faces: the Instrument Sans pair and JetBrains
+    Mono. Tests that need real fonts skip if any are missing -- checked
+    with fonts_available(), the same check render()/the CLI use, so a
+    `mono`-only test can't pass here and then OSError at runtime instead of
+    skipping cleanly (F5)."""
+    from display_mcp.render import fonts_available
+
     d = Path(__import__("os").environ.get("DISPLAY_MCP_FONT_DIR", ROOT / "fonts"))
-    if not (d / "InstrumentSans-Regular.ttf").exists():
+    if not fonts_available(d):
         pytest.skip(f"fonts not present in {d}; run deploy/fetch-fonts.sh")
     return d

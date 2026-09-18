@@ -112,6 +112,13 @@ def _describe() -> dict[str, Any]:
     paints and `docs/SPEC.md`'s named-palette table publishes — never typed
     twice. `OP_FIELDS`' `required` tuples become lists so the whole object
     round-trips through plain JSON.
+
+    `fonts[*]` carries three sizes beside `px`/`bold`: `line_height`
+    (`round(px * 1.24)`, what wrapped `text` uses when `lh` is unset),
+    `cell_height` (ascent + descent of the loaded face — every face has
+    one), and `ink_height` (how many rows a full-height glyph actually
+    inks at 1bpp — the row pitch that makes block glyphs meet with no
+    seam; `null` except for `mono`, docs/plans/dragon-feedback.md F1).
     """
     mixes = {
         name: {
@@ -124,8 +131,14 @@ def _describe() -> dict[str, Any]:
         for name, (c, c2, mix) in render.BUILTIN_MIXES.items()
     }
     fonts = {
-        name: {"px": px, "bold": bold, "line_height": round(px * 1.24)}
-        for name, (px, bold) in render.FONTS.items()
+        name: {
+            "px": face.size,
+            "bold": face.bold,
+            "line_height": round(face.size * 1.24),
+            "cell_height": face.cell_height,
+            "ink_height": face.ink_height,
+        }
+        for name, face in render.FONTS.items()
     }
     ops = {
         op: {"required": list(spec["required"]), "optional": dict(spec["optional"])}

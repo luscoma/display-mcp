@@ -2,7 +2,7 @@
 
 A few KB of JSON describing what to draw. The firmware is a renderer, not a
 design: layout lives entirely in the document, so changing the dashboard is a
-file edit. Only the **vocabulary** — five font sizes, eleven icons, seven ops —
+file edit. Only the **vocabulary** — six font sizes, eleven icons, seven ops —
 is compiled in, and changing that is a rebuild.
 
 Two implementations must agree:
@@ -198,7 +198,9 @@ fill can't — see "Mixes" below.
 ## Vocabulary
 
 **Fonts** — `xl` 84 bold, `lg` 48 bold, `md` 36, `sm` 28, `xs` 22 bold
-(Instrument Sans). Adding a size is a rebuild, so the scale is a commitment.
+(Instrument Sans); `mono` 24 regular (JetBrains Mono, monospaced — box
+drawing and block art, aligned columns, code). Adding a size is a rebuild,
+so the scale is a commitment.
 
 **Icons** — `weather-{sunny,partly-cloudy,cloudy,rainy,snowy,night}` at `lg`
 (88 px); `check`, `map-marker`, `clock`, `alert`, `battery` at `sm` (36 px).

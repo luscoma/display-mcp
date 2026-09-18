@@ -70,8 +70,9 @@ def _require_fonts(font_dir: Path) -> bool:
     if fonts_available(font_dir):
         return True
     print(
-        f"fonts not found in {font_dir} (need InstrumentSans-Regular.ttf and "
-        "-Bold.ttf) — run deploy/fetch-fonts.sh or set --font-dir",
+        f"fonts not found in {font_dir} (need InstrumentSans-Regular.ttf, "
+        "-Bold.ttf and JetBrainsMono-Regular.ttf) — run deploy/fetch-fonts.sh "
+        "or set --font-dir",
         file=sys.stderr,
     )
     return False

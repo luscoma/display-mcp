@@ -188,10 +188,10 @@ async def test_preview_grid_survives_a_missing_grid_font(
     than erroring the tool call."""
     real_load_font = render.load_font
 
-    def flaky(fd, size, bold):
-        if size == 22 and not bold:  # exactly the grid label's request
+    def flaky(fd, size, bold, file=None):
+        if size == 22 and not bold and file is None:  # exactly the grid label's request
             raise OSError("simulated: grid face not installed")
-        return real_load_font(fd, size, bold)
+        return real_load_font(fd, size, bold, file)
 
     monkeypatch.setattr(render, "load_font", flaky)
     settings = Settings(state_dir=tmp_path / "state", font_dir=font_dir)

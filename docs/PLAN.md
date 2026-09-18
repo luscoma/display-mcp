@@ -112,7 +112,12 @@ Straight port of `dlpreview.py` with the same public surface:
 `render(doc, dithered_colors=True) -> (PIL.Image, problems)`,
 `render_hash(doc)`, `fit_line`, `wrap_lines`. Same Instrument Sans
 Regular/Bold pair, same variable-font "Bold" instance selection, same ink
-table (the ideal table is gone — see "Preview colours" above).
+table (the ideal table is gone — see "Preview colours" above). A second
+family, JetBrains Mono (`mono`, docs/plans/dragon-feedback.md D11), joined
+in B3: loaded with `ImageFont.Layout.BASIC` (no ligatures, integer
+advances) and its own "Regular" instance selection, the same way Bold is
+for Instrument Sans; its file missing is not fatal the way Instrument
+Sans's is — `mono` text ops are abandoned like an unknown font instead.
 
 Fixes carried in during the port:
 

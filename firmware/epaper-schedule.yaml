@@ -130,6 +130,16 @@ font:
     id: font_xs
     size: 22
     glyphsets: [GF_Latin_Core]
+  - file: { type: gfonts, family: JetBrains Mono, weight: 400 }
+    id: font_mono
+    size: 24
+    glyphsets: [GF_Latin_Core]
+    # GF_Latin_Core stops short of U+2500-U+259F (box drawing and block
+    # elements) -- exactly the glyphs that turn `mono` block art into block
+    # art (docs/plans/dragon-feedback.md D11's first finding). Without this,
+    # they silently vanish on the wall while the preview still shows them.
+    # Generated: chr(c) for c in range(0x2500, 0x25A0).
+    glyphs: "─━│┃┄┅┆┇┈┉┊┋┌┍┎┏┐┑┒┓└┕┖┗┘┙┚┛├┝┞┟┠┡┢┣┤┥┦┧┨┩┪┫┬┭┮┯┰┱┲┳┴┵┶┷┸┹┺┻┼┽┾┿╀╁╂╃╄╅╆╇╈╉╊╋╌╍╎╏═║╒╓╔╕╖╗╘╙╚╛╜╝╞╟╠╡╢╣╤╥╦╧╨╩╪╫╬╭╮╯╰╱╲╳╴╵╶╷╸╹╺╻╼╽╾╿▀▁▂▃▄▅▆▇█▉▊▋▌▍▎▏▐░▒▓▔▕▖▗▘▙▚▛▜▝▞▟"
 
 # Icons come from Material Design Icons by NAME, so there are no codepoints
 # to get wrong. chroma_key keeps the off pixels transparent, which matters
@@ -196,6 +206,7 @@ display:
       a.fonts["md"] = id(font_md);
       a.fonts["sm"] = id(font_sm);
       a.fonts["xs"] = id(font_xs);
+      a.fonts["mono"] = id(font_mono);
 
       a.icons["weather-sunny/lg"]         = id(ic_weather_sunny_lg);
       a.icons["weather-partly-cloudy/lg"] = id(ic_weather_partly_cloudy_lg);

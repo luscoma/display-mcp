@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import re
+import shutil
 from pathlib import Path
 
 import pytest
@@ -34,6 +35,7 @@ from display_mcp.render import (
     draw_icon,
     fit_line,
     fonts_available,
+    load_font,
     mix_on,
     render,
     render_hash,
@@ -118,7 +120,7 @@ FIT_CASES = [
 def test_fit_line_cases(font_dir, case_id, text, max_w, expected):
     from display_mcp.render import load_font
 
-    font = load_font(font_dir, *FONTS["sm"])
+    font = load_font(font_dir, FONTS["sm"].size, FONTS["sm"].bold)
     result = fit_line(font, text, max_w)
     if expected is not None:
         assert result == expected
@@ -133,7 +135,7 @@ def test_fit_line_cases(font_dir, case_id, text, max_w, expected):
 def test_fit_line_exact_fit_is_unchanged(font_dir):
     from display_mcp.render import load_font, text_width
 
-    font = load_font(font_dir, *FONTS["sm"])
+    font = load_font(font_dir, FONTS["sm"].size, FONTS["sm"].bold)
     s = "Team standup"
     w = text_width(font, s)
     assert fit_line(font, s, w) == s
@@ -142,7 +144,7 @@ def test_fit_line_exact_fit_is_unchanged(font_dir):
 def test_fit_line_multibyte_truncation_keeps_valid_utf8(font_dir):
     from display_mcp.render import load_font, text_width
 
-    font = load_font(font_dir, *FONTS["sm"])
+    font = load_font(font_dir, FONTS["sm"].size, FONTS["sm"].bold)
     s = "Design review — the 72° display list for today's schedule"
     # Pick a width that forces a cut somewhere in the middle of the string.
     max_w = text_width(font, s) // 3
@@ -155,7 +157,7 @@ def test_fit_line_multibyte_truncation_keeps_valid_utf8(font_dir):
 def test_fit_line_single_word_longer_than_box(font_dir):
     from display_mcp.render import load_font, text_width
 
-    font = load_font(font_dir, *FONTS["sm"])
+    font = load_font(font_dir, FONTS["sm"].size, FONTS["sm"].bold)
     s = "Supercalifragilisticexpialidocious"
     max_w = 60
     result = fit_line(font, s, max_w)
@@ -166,14 +168,14 @@ def test_fit_line_single_word_longer_than_box(font_dir):
 def test_fit_line_empty_string(font_dir):
     from display_mcp.render import load_font
 
-    font = load_font(font_dir, *FONTS["sm"])
+    font = load_font(font_dir, FONTS["sm"].size, FONTS["sm"].bold)
     assert fit_line(font, "", 100) == ""
 
 
 def test_wrap_two_lines_with_overflow_ellipsis(font_dir):
     from display_mcp.render import load_font, text_width
 
-    font = load_font(font_dir, *FONTS["md"])
+    font = load_font(font_dir, FONTS["md"].size, FONTS["md"].bold)
     s = "Order printer filament and a spare 0.4 nozzle for the workshop bench today"
     max_w = 300
     lines = wrap_lines(font, s, max_w, 2)
@@ -186,7 +188,7 @@ def test_wrap_two_lines_with_overflow_ellipsis(font_dir):
 def test_wrap_last_word_just_fits(font_dir):
     from display_mcp.render import load_font, text_width
 
-    font = load_font(font_dir, *FONTS["md"])
+    font = load_font(font_dir, FONTS["md"].size, FONTS["md"].bold)
     words = ["Book", "the", "dentist"]
     s = " ".join(words)
     max_w = text_width(font, s)  # exactly enough for every word on one line
@@ -197,7 +199,7 @@ def test_wrap_last_word_just_fits(font_dir):
 def test_wrap_lines_equals_one(font_dir):
     from display_mcp.render import load_font, text_width
 
-    font = load_font(font_dir, *FONTS["md"])
+    font = load_font(font_dir, FONTS["md"].size, FONTS["md"].bold)
     s = "Measure the driver board for the frame and order new screws"
     max_w = 250
     lines = wrap_lines(font, s, max_w, 1)
@@ -211,7 +213,7 @@ def test_fit_line_none_max_w_is_unchanged(font_dir):
     text branch now relies on this to make a `null`/absent `w` a no-op."""
     from display_mcp.render import load_font
 
-    font = load_font(font_dir, *FONTS["sm"])
+    font = load_font(font_dir, FONTS["sm"].size, FONTS["sm"].bold)
     s = "Supercalifragilisticexpialidocious, quite unchanged"
     assert fit_line(font, s, None) == s
 
@@ -671,7 +673,237 @@ def test_colors_tuple():
 
 
 def test_fonts_keys():
-    assert set(FONTS) == {"xl", "lg", "md", "sm", "xs"}
+    assert set(FONTS) == {"xl", "lg", "md", "sm", "xs", "mono"}
+
+
+# --------------------------------------------------------------------------
+# mono (JetBrains Mono, docs/plans/dragon-feedback.md D11/B3)
+# --------------------------------------------------------------------------
+
+# The measured ascent+descent for every face, at the size and weight
+# instance the renderer actually loads (docs/plans/dragon-feedback.md D11,
+# amended 2026-09-18). A font swap that silently moves these should fail
+# this test, not quietly reflow every document.
+_MEASURED_CELL_HEIGHTS = {
+    "xl": 103,
+    "lg": 59,
+    "md": 44,
+    "sm": 35,
+    "xs": 28,
+    "mono": 33,
+}
+
+
+@pytest.mark.parametrize("name", sorted(FONTS))
+def test_cell_height_matches_getmetrics(name, font_dir):
+    face = FONTS[name]
+    assert face.cell_height == _MEASURED_CELL_HEIGHTS[name]
+    f = load_font(font_dir, face.size, face.bold, face.file)
+    ascent, descent = f.getmetrics()
+    assert face.cell_height == ascent + descent
+
+
+def test_fonts_available_requires_mono_too(tmp_path):
+    (tmp_path / "InstrumentSans-Regular.ttf").write_bytes(b"x")
+    (tmp_path / "InstrumentSans-Bold.ttf").write_bytes(b"x")
+    assert fonts_available(tmp_path) is False
+
+
+def test_mono_ink_height_matches_a_measured_block_glyph(font_dir):
+    """F1: `ink_height` is measured, not derived from `cell_height` — render
+    a full-height glyph (`█`) bilevel, the same target FreeType's mono
+    rasterising uses on the panel, and count the rows with any ink at all.
+    31, not `cell_height`'s 33 (ascent + descent, which is headroom no
+    glyph actually inks) — the gap between them is exactly the 2px hairline
+    seam `test_mono_stacked_bars_leave_a_hairline_seam_at_cell_height`
+    pins below."""
+    from PIL import Image, ImageDraw
+
+    f = load_font(font_dir, *FONTS["mono"][:2], FONTS["mono"].file)
+    img = Image.new("1", (60, 80), 0)
+    dr = ImageDraw.Draw(img)
+    dr.text((10, 10), "█", font=f, fill=1)
+    px = img.load()
+    inked_rows = [y for y in range(80) if any(px[x, y] for x in range(60))]
+    assert len(inked_rows) == FONTS["mono"].ink_height == 31
+
+
+def test_mono_glyph_advance_is_a_constant_integer(font_dir):
+    """The whole point of BASIC layout (D11's second finding): every glyph
+    advances by the same integer width, `M`/`i`/a block character alike —
+    not the fractional 14.4px raqm would use."""
+    f = load_font(font_dir, *FONTS["mono"][:2], FONTS["mono"].file)
+    advances = {f.getlength(ch) for ch in ("M", "i", "█")}
+    assert len(advances) == 1
+    (advance,) = advances
+    assert advance == int(advance)
+
+
+def test_mono_angle_brackets_render_as_two_glyphs_not_a_ligature(font_dir):
+    """Raqm's default layout turns `<>` into one ligature glyph; BASIC keeps
+    it two, so its width equals `<` + `>` measured separately."""
+    f = load_font(font_dir, *FONTS["mono"][:2], FONTS["mono"].file)
+    assert f.getlength("<>") == f.getlength("<") + f.getlength(">")
+
+
+def test_mono_box_drawing_run_has_no_gap(font_dir):
+    """`┌─┐` as one `text` op: the rule's row has one contiguous run of ink
+    with no interior blank column — a fractional advance would have opened
+    a 1px gap at the seam between glyphs (D11's second finding)."""
+    doc = {
+        "v": 1,
+        "meta": {},
+        "bg": "white",
+        "palette": {},
+        "ops": [{"op": "text", "x": 40, "y": 40, "s": "┌─┐", "f": "mono"}],
+    }
+    img, problems = render(doc, font_dir)
+    assert problems == []
+    px = img.load()
+    box = img.getbbox()  # whole canvas is white except the glyphs
+    x0, y0, x1, y1 = box
+    # the row with the most ink is the horizontal rule's row
+    best_y, best_n = None, -1
+    for y in range(y0, y1):
+        n = sum(px[x, y] != INK["white"] for x in range(x0, x1))
+        if n > best_n:
+            best_y, best_n = y, n
+    inked = [x for x in range(x0, x1) if px[x, best_y] != INK["white"]]
+    assert inked == list(range(inked[0], inked[-1] + 1))
+
+
+def _ink_runs(ys: list[int]) -> list[tuple[int, int]]:
+    """Contiguous runs of consecutive integers in sorted `ys`, as
+    `[(start, end), ...]` — the "is this ink one connected run or several"
+    helper the mono stacking tests share."""
+    if not ys:
+        return []
+    runs = []
+    start = prev = ys[0]
+    for y in ys[1:]:
+        if y != prev + 1:
+            runs.append((start, prev))
+            start = y
+        prev = y
+    runs.append((start, prev))
+    return runs
+
+
+def test_mono_stacked_bars_leave_a_hairline_seam_at_cell_height(font_dir):
+    """F1: `cell_height` (33) is ascent + descent, not a glyph's own ink
+    extent, so it is *not* the pitch that makes block art meet — two `│`
+    ops stacked that far apart tile as two distinct runs of ink with a 2px
+    hairline gap between them, not one merged run and not a true meeting
+    point either. `test_mono_stacked_bars_meet_seamlessly_at_ink_height`
+    below is the pitch that actually closes that gap."""
+    cell_height = FONTS["mono"].cell_height
+    doc = {
+        "v": 1,
+        "meta": {},
+        "bg": "white",
+        "palette": {},
+        "ops": [
+            {"op": "text", "x": 40, "y": 100, "s": "│", "f": "mono"},
+            {"op": "text", "x": 40, "y": 100 + cell_height, "s": "│", "f": "mono"},
+        ],
+    }
+    img, problems = render(doc, font_dir)
+    assert problems == []
+    px = img.load()
+    # the stroke column: the one with the most ink over the whole span
+    scan_y = range(90, 100 + cell_height + 40)
+    col = max(range(40, 54), key=lambda x: sum(px[x, y] != INK["white"] for y in scan_y))
+    ys = [y for y in scan_y if px[col, y] != INK["white"]]
+    runs = _ink_runs(ys)
+    assert len(runs) == 2, "expected two separate bars, not one merged run"
+    # and the gap between them is a hairline (Pillow's own 1bpp rasterising
+    # of this glyph at this size clips a row off each end — a FreeType
+    # rounding quirk, not overlap), never the whole next cell.
+    (_, first_end), (second_start, _) = runs
+    assert second_start - first_end <= 4
+
+
+def test_mono_stacked_bars_meet_seamlessly_at_ink_height(font_dir):
+    """F1's fix, and the contrast to the hairline-seam test above: stacking
+    by `ink_height` (31), not `cell_height` (33), is the pitch that makes
+    consecutive block-art rows meet exactly — the two bars' ink merges into
+    a single contiguous run, touching with no gap and no overlap."""
+    ink_height = FONTS["mono"].ink_height
+    doc = {
+        "v": 1,
+        "meta": {},
+        "bg": "white",
+        "palette": {},
+        "ops": [
+            {"op": "text", "x": 40, "y": 100, "s": "│", "f": "mono"},
+            {"op": "text", "x": 40, "y": 100 + ink_height, "s": "│", "f": "mono"},
+        ],
+    }
+    img, problems = render(doc, font_dir)
+    assert problems == []
+    px = img.load()
+    scan_y = range(90, 100 + ink_height + 40)
+    col = max(range(40, 54), key=lambda x: sum(px[x, y] != INK["white"] for y in scan_y))
+    ys = [y for y in scan_y if px[col, y] != INK["white"]]
+    runs = _ink_runs(ys)
+    assert len(runs) == 1, "expected the two bars to meet as a single run, not leave a seam"
+
+
+def test_mono_default_line_height_would_overlap_the_bars(font_dir):
+    """The motivating contrast (docs/plans/dragon-feedback.md D11): stacking
+    by `round(size * 1.24)` — the wrap default every face including `mono`
+    uses (amended 2026-09-18) — is too small for `mono` and fuses
+    consecutive bars into one run instead of two."""
+    lh = round(FONTS["mono"].size * 1.24)
+    doc = {
+        "v": 1,
+        "meta": {},
+        "bg": "white",
+        "palette": {},
+        "ops": [
+            {"op": "text", "x": 40, "y": 100, "s": "│", "f": "mono"},
+            {"op": "text", "x": 40, "y": 100 + lh, "s": "│", "f": "mono"},
+        ],
+    }
+    img, problems = render(doc, font_dir)
+    assert problems == []
+    px = img.load()
+    scan_y = range(90, 100 + lh + 40)
+    col = max(range(40, 54), key=lambda x: sum(px[x, y] != INK["white"] for y in scan_y))
+    ys = [y for y in scan_y if px[col, y] != INK["white"]]
+    assert len(_ink_runs(ys)) == 1, "expected the two bars to have fused into one run"
+
+
+def test_mono_missing_face_warns_and_draws_nothing(tmp_path, font_dir):
+    """A font directory with Instrument Sans but no JetBrains Mono file
+    still renders — `mono` ops are abandoned like an unknown font name,
+    the same way the firmware skips an uncompiled one."""
+    shutil.copy(font_dir / "InstrumentSans-Regular.ttf", tmp_path / "InstrumentSans-Regular.ttf")
+    shutil.copy(font_dir / "InstrumentSans-Bold.ttf", tmp_path / "InstrumentSans-Bold.ttf")
+    doc = {
+        "v": 1,
+        "meta": {},
+        "bg": "white",
+        "palette": {},
+        "ops": [{"op": "text", "x": 40, "y": 40, "s": "hi", "f": "mono"}],
+    }
+    img, problems = render(doc, tmp_path)
+    assert problems == [
+        "ops[0] text: font 'mono' is not installed here "
+        "(fonts/JetBrainsMono-Regular.ttf); skipped"
+    ]
+    blank, _ = render({"v": 1, "meta": {}, "bg": "white", "ops": []}, tmp_path)
+    assert img.tobytes() == blank.tobytes()  # nothing drawn on the white canvas
+
+
+def test_instrument_sans_missing_still_raises(tmp_path, font_dir):
+    """Unlike `mono`, a missing Instrument Sans file is a hard failure at
+    load time (there is nothing to abandon-and-skip a whole render for)."""
+    shutil.copy(
+        font_dir / "JetBrainsMono-Regular.ttf", tmp_path / "JetBrainsMono-Regular.ttf"
+    )
+    with pytest.raises(OSError):
+        render({"v": 1, "meta": {}, "bg": "white", "ops": []}, tmp_path)
 
 
 def test_icon_sizes_keys():

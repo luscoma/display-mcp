@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #
-# fetch-fonts.sh <dir> — put the Instrument Sans Regular/Bold pair in <dir>.
+# fetch-fonts.sh <dir> — put the Instrument Sans Regular/Bold pair and the
+# JetBrains Mono Regular face in <dir>.
 #
 # One implementation, two callers: setup.sh on the host, and local development
 # on whatever you're reading this on:
@@ -11,10 +12,13 @@
 # Regular and Bold end up byte-identical here — the renderer selects the Bold
 # instance itself at render time. Any static Regular + Bold pair works too,
 # so long as it's the same family the firmware compiles in; drop them in
-# <dir> by hand instead of running this script if you'd rather.
+# <dir> by hand instead of running this script if you'd rather. JetBrains
+# Mono is fetched the same way, as a variable font too — the renderer
+# selects its Regular instance the same way it selects Instrument Sans's
+# Bold one.
 #
-# Exits 0 with both files in place and looking like a font. Exits 1, with a
-# warning explaining the manual fallback, if nothing downloadable panned out.
+# Exits 0 with all three files in place and looking like a font. Exits 1, with
+# a warning explaining the manual fallback, if nothing downloadable panned out.
 # Leaves ownership alone — the caller chowns if it needs to.
 
 set -euo pipefail
@@ -31,6 +35,7 @@ DIR=${1:?"usage: $0 <dir>"}
 
 FONT_REGULAR="InstrumentSans-Regular.ttf"
 FONT_BOLD="InstrumentSans-Bold.ttf"
+FONT_MONO="JetBrainsMono-Regular.ttf"
 
 # A real font, not the few hundred bytes of JSON GitHub hands back for a 404
 # or a rate limit. Checks size and the first four magic bytes rather than
@@ -48,47 +53,77 @@ is_font() {
   esac
 }
 
-main() {
-  mkdir -p "$DIR"
-  local reg="$DIR/$FONT_REGULAR" bold="$DIR/$FONT_BOLD"
-
-  if is_font "$reg" && is_font "$bold"; then
-    ok "fonts already present in $DIR"
-    return 0
-  fi
-
-  log "fetching Instrument Sans"
+# One family, installed to one or more destination paths (Instrument Sans
+# writes the same downloaded file to both its Regular and Bold names — the
+# renderer and the firmware both select the Bold instance out of the one
+# variable font; JetBrains Mono has a single destination). Ask GitHub what
+# is actually in that ofl/<slug> directory rather than guessing a filename
+# — upstream renames variable fonts from time to time. The listing also
+# contains the Italic variable font, which must not win: the firmware
+# compiles the upright face. $fallback_url is the fixed URL used when the
+# API is rate limited.
+fetch_family() {
+  local label=$1 slug=$2 fallback_url=$3; shift 3
+  local dests=("$@")
+  log "fetching $label"
   local tmp urls=() u
   tmp=$(mktemp)
   trap 'rm -f "$tmp"' RETURN
 
-  # Ask GitHub what is actually in that directory rather than guessing a
-  # filename — upstream renames variable fonts from time to time. The
-  # listing also contains the Italic variable font, which must not win: the
-  # firmware compiles the upright face. The hardcoded URL is the fallback
-  # for when the API is rate limited.
   while read -r u; do [ -n "$u" ] && urls+=("$u"); done < <(
     curl -fsSL --max-time 20 \
-      https://api.github.com/repos/google/fonts/contents/ofl/instrumentsans 2>/dev/null \
+      "https://api.github.com/repos/google/fonts/contents/ofl/$slug" 2>/dev/null \
       | sed -n 's/.*"download_url": *"\([^"]*\.ttf\)".*/\1/p' \
       | grep -vi 'italic' || true
   )
-  urls+=('https://raw.githubusercontent.com/google/fonts/main/ofl/instrumentsans/InstrumentSans%5Bwdth,wght%5D.ttf')
+  urls+=("$fallback_url")
 
   for u in "${urls[@]}"; do
     if curl -fsSL --retry 2 --max-time 60 -o "$tmp" "$u" && is_font "$tmp"; then
       # mktemp made $tmp 0600; the service user has to be able to read these.
-      install -m 0644 "$tmp" "$reg"
-      install -m 0644 "$tmp" "$bold"
-      ok "fonts installed from ${u##*/}"
+      local d
+      for d in "${dests[@]}"; do install -m 0644 "$tmp" "$d"; done
+      ok "$label installed from ${u##*/}"
       return 0
     fi
   done
 
-  warn "could not download a usable font."
-  warn "Put any Regular+Bold pair in $DIR as $FONT_REGULAR and $FONT_BOLD,"
-  warn "or re-run once the network/API rate limit clears."
+  warn "could not download a usable $label."
   return 1
+}
+
+main() {
+  mkdir -p "$DIR"
+  local reg="$DIR/$FONT_REGULAR" bold="$DIR/$FONT_BOLD" mono="$DIR/$FONT_MONO"
+
+  if is_font "$reg" && is_font "$bold" && is_font "$mono"; then
+    ok "fonts already present in $DIR"
+    return 0
+  fi
+
+  local failed=0
+  if is_font "$reg" && is_font "$bold"; then
+    ok "Instrument Sans already present in $DIR"
+  else
+    fetch_family "Instrument Sans" instrumentsans \
+      'https://raw.githubusercontent.com/google/fonts/main/ofl/instrumentsans/InstrumentSans%5Bwdth,wght%5D.ttf' \
+      "$reg" "$bold" || failed=1
+  fi
+  if is_font "$mono"; then
+    ok "JetBrains Mono already present in $DIR"
+  else
+    fetch_family "JetBrains Mono" jetbrainsmono \
+      'https://raw.githubusercontent.com/google/fonts/main/ofl/jetbrainsmono/JetBrainsMono%5Bwght%5D.ttf' \
+      "$mono" || failed=1
+  fi
+
+  if [ "$failed" = 1 ]; then
+    warn "Put a Regular+Bold pair in $DIR as $FONT_REGULAR and $FONT_BOLD,"
+    warn "and/or a Regular face as $FONT_MONO, by hand, or re-run once the"
+    warn "network/API rate limit clears."
+    return 1
+  fi
+  return 0
 }
 
 main "$@"

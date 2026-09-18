@@ -117,7 +117,11 @@ canvas      {w, h, bezel_margin}
 inks        {name: hex}                          six, from INK
 mixes       {name: {c, c2, mix, hex, tier}}      twenty-one, from BUILTIN_MIXES + Ink.avg
 densities   [25, 50, 75]
-fonts       {name: {px, bold, line_height}}      from FONTS; 1.24× the size, except `mono` (D11)
+fonts       {name: {px, bold, line_height,        from FONTS: line_height is round(px*1.24)
+             cell_height, ink_height}}             for every face; cell_height is the loaded
+                                                    face's ascent+descent; ink_height is the row
+                                                    pitch a full-height glyph needs to meet with
+                                                    no seam, `null` except for `mono` (D11/F1)
 icons       {name: [size classes]}, icon_sizes {class: px}
 ops         {name: {required: [...], optional: {field: default}}}   the D1 table
 fmt_fields  [hash, hash16, time, time24, battery, battv]
@@ -334,11 +338,38 @@ Three findings from the test that the implementation has to carry:
   `mono`'s default line height is therefore its cell height, not 1.24×,
   and `describe()` and the compose guide say so.
 
+  Amended 2026-09-18: not as a per-face default, in the end — the firmware
+  computes wrap's line height as `font_height(font) × 1.24` for every face,
+  not `round(size × 1.24)`; the two formulas only agree approximately
+  (`font_height` measures the loaded face's `"Ag"` box, which the Python
+  side does not do at all), a divergence this predates and that is recorded
+  on its own below ("Noted in passing: the wrap line-height formula only
+  approximately agrees between the two sides"). A `mono`-shaped exception
+  on the firmware side would still mean the header learning face names it
+  otherwise has no reason to know, so the Python's own wrap default stays
+  `round(size × 1.24)` for `mono` too (30, not 33); `cell_height` (33) is
+  published beside `line_height` in `describe().fonts.mono` instead, for a
+  composer stacking block art by hand — one `text` op per row, rather than
+  `wrap`.
+
+  Amended again 2026-09-18 (F1): `cell_height` (33) turned out not to be
+  that pitch either — it's ascent + descent, headroom no glyph actually
+  fills, not how tall a glyph's own ink is. Measured directly (render `█`
+  bilevel, the same target FreeType's mono rasterising uses on the panel,
+  and count inked rows): a full-height glyph inks 31 rows, 2px short of the
+  33px cell. Stacking by `cell_height` leaves a 2px hairline seam, on the
+  wall as well as in the preview; stacking by 31 — published as
+  `ink_height`, beside `cell_height` and `line_height`, in
+  `describe().fonts.mono` — is what actually closes it. The compose guide's
+  block-art paragraph and the two `test_mono_stacked_bars_*` tests now say
+  so.
+
 Implementation:
 
-- `FONTS["mono"] = (24, False, "JetBrainsMono-Regular.ttf")`; the two
-  Instrument Sans entries gain their file name the same way, and the table
-  grows a per-entry default line height so `mono` can differ.
+- `FONTS` becomes `{name: Face(size, bold, file, cell_height, ink_height)}`;
+  the Instrument Sans entries gain their file name the same way `mono` does,
+  and `cell_height`/`ink_height` (see the amendments above) rather than a
+  per-entry default line height. `ink_height` is `None` except for `mono`.
 - `deploy/fetch-fonts.sh` fetches `ofl/jetbrainsmono` from the google/fonts
   repo alongside Instrument Sans (a variable font; the Regular instance is
   selected the way Bold is today) and `fonts_available()` requires it.
@@ -406,6 +437,24 @@ matches it exactly; a compiled parity test diffs the annulus against
 unchanged — still the plain `circle()` call this note originally
 described, not routed through the annulus at all.
 
+### Noted in passing: the wrap line-height formula only approximately agrees between the two sides
+
+D11's amendment above found this while looking for a `mono`-specific
+default: the *general* default wrap line height — every face, not just
+`mono` — is `round(size × 1.24)` in `display_mcp.render` but
+`font_height(font) × 1.24` in the firmware, where `font_height()` measures
+the loaded face's `"Ag"` bounding box. The two only agree approximately —
+for `md` (36 px), `font_height` measures roughly 44, giving `54` against
+the Python's `45`. This predates B3 and applies to every face, not just
+`mono`; it is recorded here, unmeasured on the actual wall, as an open
+parity item rather than fixed now. To measure it: publish a wrapped
+paragraph at the default `lh` and compare its line pitch against the
+preview on the physical panel. If the wall disagrees enough to matter, the
+fix is a per-face constant the firmware reads out of `DisplayListAssets`
+(populated from Python's own `FONTS` table at build/publish time) rather
+than computing `font_height` at all — not attempted here, since nothing
+suggests it matters yet.
+
 ### D14. The document version stays at 1
 
 Everything above is additive: an old firmware meets `sprite` or `poly` and
@@ -449,7 +498,7 @@ sync` on the host.
 |---|---|---|---|---|
 | B1 | `sprite: pixel art as rows of characters` | `firmware/display_list.h`; `render/__init__.py`; `docs/SPEC.md`; `prompts/compose.md`; `describe()` table; `samples/sprite.json`; README | run structure: a row of `KKOO` draws two rects; `mirror`; transparent cells leave the ground; unknown character warns and is black; ragged rows warn; off-canvas on the far edge; mixed cells dither with absolute phase; the new sample validates clean and its hash is pinned | §3a |
 | B2 | `rect: corner radius on a filled rect` | header (also `circle_half_widths()`/`draw_circle_ring()`, R2); renderer; SPEC; compose; `describe()` | seven-shape construction fills the same box as `r: 0`, clamped to `(min(w,h)-1)//2` (R1); `r` on an outline warns and draws square; corner pixel at `r` is bg; circle `t≥2` is an annulus matching `filled_circle(r)-filled_circle(r-t)` exactly, compiled and diffed, with no diagonal holes | §3f |
-| B3 | `fonts: JetBrains Mono as \`mono\`` | `epaper-schedule.yaml` (font entry with the box and block ranges); header untouched; `render/__init__.py` (`FONTS` as `Face(size, bold, file, cell_height)`, basic layout, `None`-able mono face); `deploy/fetch-fonts.sh`; `deploy/setup.sh fonts`; RUNBOOK step 2; `tests/test_deploy.py`; SPEC; compose; `describe()` | glyph advance is a constant integer; `<>` stays two glyphs; `┌─┐` renders with no gap; `mono`'s default `lh` is its cell height; a missing face skips the op with a problem instead of raising; `fonts_available` requires both families; fetch script is still idempotent | §3e |
+| B3 | `fonts: JetBrains Mono as \`mono\`` | `epaper-schedule.yaml` (font entry with the box and block ranges); header untouched; `render/__init__.py` (`FONTS` as `Face(size, bold, file, cell_height, ink_height)`, basic layout, `None`-able mono face); `deploy/fetch-fonts.sh`; `deploy/setup.sh fonts`; RUNBOOK step 2; `tests/test_deploy.py`; SPEC; compose; `describe()` | glyph advance is a constant integer; `<>` stays two glyphs; `┌─┐` renders with no gap; `mono`'s `cell_height` (33) and measured `ink_height` (31, F1) are published beside its `line_height` (30, `round(24×1.24)`, unchanged from every other face — amended above); a missing face skips the op with a problem instead of raising; `fonts_available` requires all three files; fetch script is still idempotent | §3e |
 | B4 | `poly: a point list, filled by a shared scanline` | header; renderer; `tests/test_firmware_parity.py` (extract + compile `poly_spans`); SPEC; compose; `describe()`; `samples/sprite.json` gains one | C++ and Python spans agree over convex, concave and self-touching shapes; `fill: false` closes the edge; a two-point `pts` warns and skips | §3d |
 
 Then, once: `cd firmware && esphome run epaper-schedule.yaml`, publish

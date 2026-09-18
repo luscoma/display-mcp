@@ -15,7 +15,9 @@ deliberate fixes called out in docs/PLAN.md ("Renderer"):
 
 Public surface (final):
     WIDTH, HEIGHT            1200, 1600
-    FONTS                    {name: (size, bold)} for xl lg md sm xs
+    FONTS                    {name: Face(size, bold, file, cell_height)} for
+                              xl lg md sm xs mono; Face[0]/Face[1] keep the
+                              old (size, bold) two-tuple reads working
     ICONS                    {name: frozenset(size classes)} e.g. {"check": {"sm"}}
     ICON_SIZES               {size class: pixel size}
     COLORS                   the six ink names
@@ -57,13 +59,54 @@ WIDTH, HEIGHT = 1200, 1600
 
 COLORS = ("black", "white", "yellow", "red", "blue", "green")
 
-# name -> (size px, bold). Compiled into the firmware; changing one is a rebuild.
-FONTS: dict[str, tuple[int, bool]] = {
-    "xl": (84, True),
-    "lg": (48, True),
-    "md": (36, False),
-    "sm": (28, False),
-    "xs": (22, True),
+
+class Face(NamedTuple):
+    """One compiled type-scale entry. `size`/`bold` are read positionally
+    (`FONTS[name][0]`/`[1]`) by every consumer that predates `file` and
+    `cell_height`, so this stays a 5-tuple in that exact field order rather
+    than growing a differently-shaped record.
+
+    `cell_height` is `size`'s ascent + descent as PIL's `font.getmetrics()`
+    reports it for the *loaded* face (the selected weight instance, for
+    Instrument Sans and JetBrains Mono alike) — measured once, by hand, and
+    stored here as data rather than recomputed at import time, so a font
+    swap that silently changes the metrics is a failing test
+    (test_render.py) rather than a page that quietly reflows. `lh`'s own
+    default stays `round(size * 1.24)` for every face including `mono` (the
+    firmware has no per-face default), so `cell_height` is published
+    separately in `describe().fonts[*]` instead of changing what an unset
+    `lh` means.
+
+    `ink_height` is `None` for every Instrument Sans entry and the one
+    number that actually matters for stacking `mono` block art
+    (docs/plans/dragon-feedback.md D11/F1): the row count a full-height
+    glyph (`│`, `█`) inks at 1bpp, measured by rendering one bilevel and
+    counting rows with any ink. It is *not* `cell_height` — that's 2px more
+    (33 vs 31), which is ascent+descent, not glyph extent, and leaves a 2px
+    hairline seam if you stack by it. `describe().fonts.mono.ink_height` is
+    the field a composer stacking block art by hand should use.
+    """
+
+    size: int
+    bold: bool
+    file: str
+    cell_height: int
+    ink_height: int | None = None
+
+
+# name -> Face. Compiled into the firmware; changing one is a rebuild.
+FONTS: dict[str, Face] = {
+    "xl": Face(84, True, "InstrumentSans-Bold.ttf", 103),
+    "lg": Face(48, True, "InstrumentSans-Bold.ttf", 59),
+    "md": Face(36, False, "InstrumentSans-Regular.ttf", 44),
+    "sm": Face(28, False, "InstrumentSans-Regular.ttf", 35),
+    "xs": Face(22, True, "InstrumentSans-Bold.ttf", 28),
+    # JetBrains Mono, 24px regular (docs/plans/dragon-feedback.md D11): the
+    # one monospace face, for block art, aligned columns and code. Loaded
+    # with BASIC layout and no ligatures — see load_font(). ink_height=31
+    # is measured (test_render.py), not derived: a full-height glyph at
+    # 1bpp inks 31 rows inside the 33px cell (F1).
+    "mono": Face(24, False, "JetBrainsMono-Regular.ttf", 33, 31),
 }
 
 # name -> size classes the firmware compiled. Keyed "name/z" on the panel.
@@ -224,20 +267,48 @@ def _op_field_problems(op: dict[str, Any], kind: str | None, where: str) -> list
     return problems
 
 
-def _font_path(font_dir: Path, bold: bool) -> Path:
-    name = "InstrumentSans-Bold.ttf" if bold else "InstrumentSans-Regular.ttf"
-    return Path(font_dir) / name
+def _font_path(font_dir: Path, file: str) -> Path:
+    return Path(font_dir) / file
 
 
-def load_font(font_dir: Path, size: int, bold: bool) -> ImageFont.FreeTypeFont:
+_MONO_FILE = "JetBrainsMono-Regular.ttf"
+
+
+def load_font(
+    font_dir: Path, size: int, bold: bool, file: str | None = None
+) -> ImageFont.FreeTypeFont:
     """Load one face. `bold` also selects the variable font's "Bold" instance.
+
+    `file` names the font file directly (`FONTS[name].file`); omitted, it is
+    chosen from `bold` the way it always has been — Instrument Sans Regular
+    or Bold, the pair `preview`'s grid label still asks for by size and
+    weight alone.
 
     Google Fonts ships Instrument Sans as a variable font: Pillow loads the
     default instance (Regular) unless the named instance is selected, and
     the wrong weight means text wraps in different places than the panel
     does. A static Bold face (nothing to select) is fine too.
+
+    JetBrains Mono (`file == "JetBrainsMono-Regular.ttf"`) is loaded with
+    `ImageFont.Layout.BASIC` instead of Pillow's default raqm layout:
+    raqm turns `<>`/`->`/`!=` into single ligature glyphs and positions
+    every glyph at a fractional advance (14.4px at 24px here), and at 1bpp
+    that fractional advance opened a 1px gap in every box-drawing rule —
+    the panel's own bitmap font does neither (docs/plans/dragon-feedback.md
+    D11's second finding). Its "Regular" instance is selected the same way
+    Bold is, in its own try/except.
     """
-    f = ImageFont.truetype(str(_font_path(font_dir, bold)), size)
+    if file is None:
+        file = "InstrumentSans-Bold.ttf" if bold else "InstrumentSans-Regular.ttf"
+    path = _font_path(font_dir, file)
+    if file == _MONO_FILE:
+        f = ImageFont.truetype(str(path), size, layout_engine=ImageFont.Layout.BASIC)
+        try:
+            f.set_variation_by_name("Regular")
+        except Exception:
+            pass  # a static Regular face: nothing to select
+        return f
+    f = ImageFont.truetype(str(path), size)
     if bold:
         try:
             f.set_variation_by_name("Bold")
@@ -246,15 +317,33 @@ def load_font(font_dir: Path, size: int, bold: bool) -> ImageFont.FreeTypeFont:
     return f
 
 
-def _load_fonts(font_dir: Path) -> dict[str, ImageFont.FreeTypeFont]:
-    return {name: load_font(font_dir, size, bold) for name, (size, bold) in FONTS.items()}
+def _load_fonts(font_dir: Path) -> dict[str, ImageFont.FreeTypeFont | None]:
+    """Every compiled face, keyed by name. `mono` alone may come back `None`:
+    its file is the one face this repo doesn't ship pre-fetched, so a font
+    directory that hasn't run `deploy/fetch-fonts.sh`'s newer half must not
+    break every other render — `Ctx.font()` turns a `None` here into the
+    same "abandon the op" path an unknown font name gets. Instrument Sans
+    missing still raises `OSError` out of this function, exactly as before
+    `mono` existed (there is a test pinning that)."""
+    fonts: dict[str, ImageFont.FreeTypeFont | None] = {}
+    for name, face in FONTS.items():
+        if name == "mono":
+            try:
+                fonts[name] = load_font(font_dir, face.size, face.bold, face.file)
+            except OSError:
+                fonts[name] = None
+        else:
+            fonts[name] = load_font(font_dir, face.size, face.bold, face.file)
+    return fonts
 
 
 def fonts_available(font_dir: Path) -> bool:
     font_dir = Path(font_dir)
-    return (font_dir / "InstrumentSans-Regular.ttf").exists() and (
-        font_dir / "InstrumentSans-Bold.ttf"
-    ).exists()
+    return (
+        (font_dir / "InstrumentSans-Regular.ttf").exists()
+        and (font_dir / "InstrumentSans-Bold.ttf").exists()
+        and (font_dir / _MONO_FILE).exists()
+    )
 
 
 # The 2x2 ordered (Bayer) matrix behind every mix, indexed [y & 1][x & 1].
@@ -648,18 +737,32 @@ class Ctx:
         return self.table["black"]
 
     def font(self, name: str, where: str = ""):
-        """Resolve a font name, or None when it isn't compiled in.
+        """Resolve a font name, or None when it isn't compiled in or isn't
+        installed here.
 
         Mirrors the firmware's `assets.fonts.find()` miss: `text` and `fmt`
         both `skipped++; continue` there rather than draw with a substitute
         face, so a caller returning None here must abandon the op the same
         way rather than fall back to `md` — a fallback would draw in the
         preview something the panel never puts on the wall.
+
+        `mono` is the one face `_load_fonts` may have stored as `None` (its
+        file missing rather than the font directory itself): that is a
+        second, distinct kind of "no font here" from an unknown *name*, so
+        it gets its own message naming the file to fetch rather than the
+        generic "unknown font" one.
         """
         if name not in self.fonts:
             self.problems.append(f"{where}: unknown font {name!r}")
             return None
-        return self.fonts[name]
+        f = self.fonts[name]
+        if f is None:
+            self.problems.append(
+                f"{where}: font {name!r} is not installed here "
+                f"(fonts/{FONTS[name].file}); skipped"
+            )
+            return None
+        return f
 
 
 def _color_name_resolves(name: str, table: dict, palette: dict) -> bool:

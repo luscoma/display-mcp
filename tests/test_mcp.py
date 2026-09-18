@@ -456,8 +456,42 @@ async def test_describe_fonts_matches_fonts_table(mcp):
         result = await c.call_tool("describe", {})
     fonts = result.structured_content["fonts"]
     assert set(fonts) == set(render.FONTS)
-    for name, (px, bold) in render.FONTS.items():
-        assert fonts[name] == {"px": px, "bold": bold, "line_height": round(px * 1.24)}
+    for name, face in render.FONTS.items():
+        assert fonts[name] == {
+            "px": face.size,
+            "bold": face.bold,
+            "line_height": round(face.size * 1.24),
+            "cell_height": face.cell_height,
+            "ink_height": face.ink_height,
+        }
+
+
+async def test_describe_mono_cell_height_differs_from_its_line_height(mcp):
+    """The amendment to D11 (docs/plans/dragon-feedback.md, 2026-09-18):
+    `mono`'s wrap-default `line_height` stays `round(size * 1.24)` like
+    every other face (30), not its cell height (33). Neither is the pitch
+    that makes block glyphs meet with no seam — `ink_height` (31, F1) is —
+    published beside both for a composer stacking block art by hand."""
+    async with Client(mcp) as c:
+        result = await c.call_tool("describe", {})
+    mono = result.structured_content["fonts"]["mono"]
+    assert mono == {
+        "px": 24,
+        "bold": False,
+        "line_height": 30,
+        "cell_height": 33,
+        "ink_height": 31,
+    }
+
+
+async def test_describe_instrument_sans_has_no_ink_height(mcp):
+    """`ink_height` only means something for `mono`'s block art — the five
+    Instrument Sans sizes carry it as `null` rather than a made-up number."""
+    async with Client(mcp) as c:
+        result = await c.call_tool("describe", {})
+    fonts = result.structured_content["fonts"]
+    for name in ("xl", "lg", "md", "sm", "xs"):
+        assert fonts[name]["ink_height"] is None
 
 
 async def test_describe_icons_matches_icons_table(mcp):

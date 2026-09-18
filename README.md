@@ -152,7 +152,7 @@ a third block and `set_display` it, putting every named colour on the wall.
 design rules, so a scheduled session does not need the spec pasted into it.
 
 **Two renderers, one vocabulary.** The firmware draws the document on the
-panel; `display_mcp.render` draws it as a PNG. They share five font sizes,
+panel; `display_mcp.render` draws it as a PNG. They share six font sizes,
 eleven icons, six inks plus twenty-one built-in two-ink mixes, and seven ops
 — and nothing else, which is what keeps "what Claude previewed" and "what the
 wall shows" from drifting. The wrap and truncate logic is differentially
@@ -167,7 +167,7 @@ inks in any viewer that scales the image down. See
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -e '.[dev]'
-deploy/fetch-fonts.sh ./fonts        # once; gitignored
+deploy/fetch-fonts.sh ./fonts        # Instrument Sans + JetBrains Mono; once, gitignored
 .venv/bin/pytest
 
 DISPLAY_MCP_FONT_DIR=./fonts DISPLAY_MCP_STATE_DIR=./state .venv/bin/display-mcp

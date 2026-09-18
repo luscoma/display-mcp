@@ -83,23 +83,32 @@ sudo install -d -o display-mcp -g display-mcp /opt/display-mcp/fonts
 
 The preview must use the *same faces the firmware compiles in*, or it will
 wrap text in different places than the panel does — which defeats the point
-of previewing.
+of previewing. Two families: Instrument Sans (the five proportional sizes)
+and JetBrains Mono (`mono`, block art and code).
 
 ```bash
 sudo -u display-mcp ./deploy/fetch-fonts.sh /opt/display-mcp/fonts
-file /opt/display-mcp/fonts/*.ttf     # both should say TrueType, not "JSON text"
+file /opt/display-mcp/fonts/*.ttf     # all three should say TrueType, not "JSON text"
 ```
 
 Google Fonts ships Instrument Sans as a single variable font, which is why
 both names point at the same file — the renderer selects the Bold instance
-itself. If the GitHub API is rate limited or the raw URL 404s, browse
-`ofl/instrumentsans` in `google/fonts` yourself and take whatever `.ttf` is
-there, or pass `--fonts-from <dir>` to `setup.sh install`. Any static Regular
-+ Bold pair works too, so long as the ESPHome config compiles the same
-family.
+itself. JetBrains Mono is fetched the same way, as a variable font too; the
+renderer selects its Regular instance. If the GitHub API is rate limited or
+a raw URL 404s, browse `ofl/instrumentsans` or `ofl/jetbrainsmono` in
+`google/fonts` yourself and take whatever `.ttf` is there, or pass
+`--fonts-from <dir>` to `setup.sh install` for the Instrument Sans pair (a
+JetBrains Mono face still needs to land in the fonts directory by hand, or
+via `setup.sh fonts` once the network works). Any static Regular + Bold
+pair works too, so long as the ESPHome config compiles the same family.
 
-**Done when:** `file *.ttf` reports TrueType for both. Step 3 checks that the
-renderer can actually load them.
+On a host already running an older install, upgrading past B3 means running
+`sudo ./deploy/setup.sh fonts` once to fetch the new JetBrains Mono face
+into `/opt/display-mcp/fonts` — `setup.sh sync`, the usual redeploy, is
+code-only and deliberately never touches fonts.
+
+**Done when:** `file *.ttf` reports TrueType for all three. Step 3 checks
+that the renderer can actually load them.
 
 ## Step 3 — Install the service
 

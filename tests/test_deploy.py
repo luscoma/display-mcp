@@ -172,6 +172,69 @@ def test_fetch_fonts_usage_without_args():
     assert "usage" in (result.stdout + result.stderr).lower()
 
 
+def _fake_font(path: Path) -> None:
+    """A file `is_font()` accepts: >20000 bytes, TrueType magic -- big
+    enough to skip the network without ever making a real request."""
+    path.write_bytes(b"\x00\x01\x00\x00" + b"\x00" * 20000)
+
+
+def test_fetch_fonts_skips_the_network_when_all_three_are_present(tmp_path):
+    """The early return (main()'s first `is_font ... && is_font ...`) needs
+    all three files, not just the Instrument Sans pair -- run for real, with
+    fake-but-valid fonts already in place, so this never touches the
+    network and can't be flaky in a sandboxed CI run."""
+    for name in (
+        "InstrumentSans-Regular.ttf",
+        "InstrumentSans-Bold.ttf",
+        "JetBrainsMono-Regular.ttf",
+    ):
+        _fake_font(tmp_path / name)
+    result = run(["bash", str(FETCH_FONTS), str(tmp_path)])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "already present" in result.stdout.lower()
+
+
+def test_fetch_fonts_early_return_requires_mono_too():
+    """A directory with only Instrument Sans present must not take the
+    early-return "already present" path -- the mono face still needs
+    fetching. Pinned against main()'s own guard (this suite has no network
+    to drive the fetch itself with), not retyped, so a future edit that
+    drops `is_font "$mono"` from it fails this test rather than silently
+    reintroducing F4's bug."""
+    text = FETCH_FONTS.read_text()
+    m = re.search(r'if is_font "\$reg" && is_font "\$bold" && is_font "\$mono"', text)
+    assert m, "main()'s early-return guard must check all three files, not just the pair"
+
+
+def test_fetch_fonts_italic_filter_covers_both_families():
+    """Both `fetch_family()` calls (Instrument Sans, JetBrains Mono) share
+    one implementation, so `grep -vi 'italic'` filtering the GitHub API
+    listing applies to both automatically -- pinned by construction: the
+    filter appears exactly once, inside the shared function, and that
+    function is what both `main()` calls invoke."""
+    text = FETCH_FONTS.read_text()
+    assert text.count("grep -vi 'italic'") == 1
+    fn_start = text.index("fetch_family() {")
+    fn_end = text.index("\n}\n", fn_start)
+    assert "grep -vi 'italic'" in text[fn_start:fn_end]
+    calls = re.findall(r'fetch_family "[^"]+" (\w+)', text[fn_end:])
+    assert set(calls) == {"instrumentsans", "jetbrainsmono"}
+
+
+def test_fetch_fonts_temp_file_is_cleaned_up_by_a_trap(tmp_path):
+    """F6: two explicit `rm -f "$tmp"` calls (one per return path) leak the
+    temp file when `install` fails partway under `set -e` -- a RETURN trap
+    covers every exit from the function, not just the ones someone
+    remembered to clean up after by hand."""
+    text = FETCH_FONTS.read_text()
+    fn_start = text.index("fetch_family() {")
+    fn_end = text.index("\n}\n", fn_start)
+    body = text[fn_start:fn_end]
+    assert re.search(r"""trap\s+'rm -f "\$tmp"'\s+RETURN""", body), (
+        "fetch_family() must trap its own temp file on RETURN"
+    )
+
+
 # --- shellcheck, if available -------------------------------------------------
 
 
@@ -181,6 +244,19 @@ def test_shellcheck_clean(script):
         pytest.skip("shellcheck not installed")
     result = run(["shellcheck", "--severity=warning", str(script)])
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_fonts_command_is_documented_and_dispatched():
+    """test_help_and_dispatch_agree() above catches a documented/dispatched
+    mismatch generically; this pins that "fonts" itself, the B3 subcommand,
+    is actually one of the pair rather than relying on that generic test
+    alone to notice if it were ever dropped from just one side."""
+    text = SETUP.read_text()
+    assert re.search(r"^  fonts\)\s+need_root; do_fonts ;;", text, re.M)
+    out = run([str(SETUP), "--help"]).stdout
+    commands_block = out.split("Commands:")[1].split("Flags:")[0]
+    assert re.search(r"^  fonts\s{2,}", commands_block, re.M)
+    assert "setup.sh fonts" in out.split("Commands:")[0]
 
 
 def test_install_dry_run_with_tunnel_plans_cloudflared_and_hides_the_token():

@@ -61,7 +61,8 @@ saying where they belong. Check `warnings` either way.
 - **`line`** — `x y x2 y2`, `t` (thickness; works on horizontal/vertical
   lines, diagonals only thicken vertically).
 - **`circle`** — `x y r` is the centre and radius, `fill` (default true), `t`.
-- **`text`** — `x y s f` (`f` defaults to `md`), `a` (`left`/`center`/`right`, default `left`,
+- **`text`** — `x y s f` (`f` defaults to `md`; `f: "mono"` for the monospace
+  face — block art, aligned columns, code), `a` (`left`/`center`/`right`, default `left`,
   changes what `x` means — not `y`), `w` (max width), `wrap` (bool), `lines`
   (default 2 when wrapping), `lh` (line height override). `x,y` is the top
   of the glyph box, not its baseline.
@@ -108,19 +109,32 @@ saying where they belong. Check `warnings` either way.
 
 ## Type scale
 
-Fixed, compiled into the firmware — five sizes, nothing between them:
+Fixed, compiled into the firmware — six sizes, nothing between them:
 
-| name | px | weight | default line height |
-|---|---|---|---|
-| `xl` | 84 | bold | 104 |
-| `lg` | 48 | bold | 60 |
-| `md` | 36 | regular | 45 |
-| `sm` | 28 | regular | 35 |
-| `xs` | 22 | bold | 27 |
+| name | px | weight | default line height | cell height | ink height |
+|---|---|---|---|---|---|
+| `xl` | 84 | bold | 104 | 103 | — |
+| `lg` | 48 | bold | 60 | 59 | — |
+| `md` | 36 | regular | 45 | 44 | — |
+| `sm` | 28 | regular | 35 | 35 | — |
+| `xs` | 22 | bold | 27 | 28 | — |
+| `mono` | 24 | regular | 30 | 33 | 31 |
 
 Default line height is `round(size * 1.24)` — what wrapped `text` uses when
 you don't set `lh`, so it's also what to stack lines by hand: a `lg` title
-over an `md` subtitle sits the second line's `y` at `title_y + 60`.
+over an `md` subtitle sits the second line's `y` at `title_y + 60`. This is
+true for `mono` too — its default `lh` (30) is not its `cell_height` (33),
+and neither is the pitch that makes block art meet.
+
+**Block art is one `text` op per row, stacked `ink_height` apart, not a
+wrapped one.** A full-height `mono` glyph (`│`, `█`) inks 31 rows at 1bpp —
+`ink_height` — inside a 33px `cell_height` (ascent + descent, which is
+headroom no glyph actually fills). Stack by `round(24 * 1.24) = 30` (the
+default `lh`) and rows fuse into one blob; stack by `cell_height` (33) and
+they leave a 2px hairline gap, on the wall as well as in the preview. Draw
+each row of a box-drawing or block diagram as its own `text` op at `y`,
+`y + 31`, `y + 62`, … (`describe().fonts.mono.ink_height`) and they meet
+exactly instead.
 
 Aligning a **36 px (`sm`) icon** beside a line of text at the same `y`: the
 icon's own box doesn't share the text's metrics, so centre it by eye against
