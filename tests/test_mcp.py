@@ -139,6 +139,19 @@ async def test_preview_returns_the_right_note_beside_the_image(mcp, sample_doc):
     assert mcp_server._FLAT_NOTE != mcp_server._DITHERED_NOTE
 
 
+async def test_preview_grid_parameter_is_accepted_and_notes_the_overlay(mcp, sample_doc):
+    """Plumbing only — that the PNG genuinely carries the overlay is pinned
+    for real in tests/test_mcp_preview_render.py, which doesn't stub the
+    renderer out."""
+    async with Client(mcp) as c:
+        plain = await c.call_tool("preview", {"document": sample_doc})
+        gridded = await c.call_tool("preview", {"document": sample_doc, "grid": True})
+    assert plain.is_error is not True
+    assert gridded.is_error is not True
+    assert mcp_server._GRID_NOTE not in plain.content[1].text
+    assert mcp_server._GRID_NOTE in gridded.content[1].text
+
+
 def test_the_two_notes_each_describe_their_own_image():
     """The one place wording is pinned, because these two sentences are the
     whole point of the change: the flat note must not claim the image is

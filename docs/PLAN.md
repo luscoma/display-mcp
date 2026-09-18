@@ -133,7 +133,7 @@ preview beats publishing three times).
 | Tool | Args | Returns |
 |---|---|---|
 | `set_display` | `document` (dict or JSON string), `name="default"` | `{name, hash, etag, ops, bytes, warnings}` |
-| `preview` | `document?` (dict or JSON string), `name="default"`, `dithered_colors=False` | PNG **and** a text block: a note on how colour was rendered, then `check()`'s warnings. No document → what is published; with one → render the draft, publish nothing |
+| `preview` | `document?` (dict or JSON string), `name="default"`, `dithered_colors=False`, `grid=False` | PNG **and** a text block: a note on how colour was rendered, then `check()`'s warnings. No document → what is published; with one → render the draft, publish nothing. `grid=True` overlays a labelled 100 px coordinate grid, for placing things by coordinate |
 | `validate` | `document` (dict or JSON string) | `{hash, ops, bytes, warnings, colors, max_bytes}` — `colors` is `{name: {recipe, hex}}` for every colour name the document references, `max_bytes` is `store.MAX_DOC_BYTES` |
 | `get_display` | `name="default"` | the published document, or an error if none |
 | `status` | `name?` | one display, or all: `{published, hash, ops, bytes, published_at, first_fetch_at, recent_fetch_at, recent_fetch_status, recent_fetch_ip}`; timestamps are ISO 8601 plus a matching `*_ago` string |

@@ -29,6 +29,10 @@ Public surface (final):
     hex_of(rgb) -> str   "#RRGGBB"
     fit_line(font, s, max_w) / wrap_lines(font, s, max_w, max_lines)
     fonts_available(font_dir) -> bool
+    grid_overlay(img, step=100) -> PIL.Image.Image   a coordinate grid drawn
+        on a copy of `img`; never touches render()'s own output
+    swatch_document(palette=None) -> dict   every ink and built-in mix as a
+        labelled chip, an ordinary display-list document
 """
 
 from __future__ import annotations
@@ -1443,3 +1447,59 @@ def check(doc: dict[str, Any], font_dir: Path) -> list[str]:
         if stamped != h:
             problems = [f"meta.hash is stale ({stamped}) — re-run with --stamp"] + problems
     return problems
+
+
+# Outside the six inks and every tier a mix fuses to (SPEC.md's named
+# palette), so a grid line and a document's own colours can never be
+# confused for one another. Chosen over the six-ink table rather than
+# merely "a colour that happens not to appear today".
+GRID_COLOR = (255, 0, 255)
+
+
+def grid_overlay(img: Image.Image, step: int = 100) -> Image.Image:
+    """A coordinate grid drawn on a *copy* of `img`; `img` itself is untouched.
+
+    Lines run every `step` px, heavier (2px vs 1px) every 5th line, in
+    `GRID_COLOR` — a magenta that is none of the six inks and reads on both
+    light and dark grounds. Each line is labelled with its coordinate along
+    the canvas's top edge (x) and left edge (y); the label text sits on a
+    small solid-black chip so it stays legible over any fill underneath,
+    the same problem `check()`'s contrast floor exists for. `WIDTH`/`HEIGHT`
+    themselves are one past the last real pixel column/row, so the far edge
+    is closed with an explicit, unlabelled border line at `w-1`/`h-1`
+    instead — a coordinate line drawn at `w`/`h` would land entirely
+    off-canvas and disappear, which is what this did before: a bordered
+    canvas reads better than one whose last edge is invisible.
+
+    Labels use `PIL.ImageFont.load_default()`, a bitmap face Pillow ships
+    with the library, so this needs no `font_dir` and works even where the
+    Instrument Sans faces are not installed.
+
+    This is meant to be called on `render()`'s *return value*, never from
+    inside it: `render()`'s own output — what `test_render_emits_only_the_six_inks`
+    pins and what the CLI writes — must stay exactly the six inks.
+    """
+    out = img.convert("RGB").copy()
+    d = ImageDraw.Draw(out)
+    font = ImageFont.load_default()
+    w, h = out.size
+
+    for x in range(0, w, step):
+        d.line([(x, 0), (x, h - 1)], fill=GRID_COLOR, width=2 if x % (step * 5) == 0 else 1)
+    d.line([(w - 1, 0), (w - 1, h - 1)], fill=GRID_COLOR, width=2)
+    for y in range(0, h, step):
+        d.line([(0, y), (w - 1, y)], fill=GRID_COLOR, width=2 if y % (step * 5) == 0 else 1)
+    d.line([(0, h - 1), (w - 1, h - 1)], fill=GRID_COLOR, width=2)
+
+    def label(text: str, x: int, y: int) -> None:
+        pad = 1
+        bx0, by0, bx1, by1 = d.textbbox((x, y), text, font=font)
+        d.rectangle([bx0 - pad, by0 - pad, bx1 + pad, by1 + pad], fill=(0, 0, 0))
+        d.text((x, y), text, font=font, fill=GRID_COLOR)
+
+    for x in range(0, w - step + 1, step):
+        label(str(x), x + 3, 2)
+    for y in range(0, h - step + 1, step):
+        label(str(y), 2, y + 3)
+
+    return out

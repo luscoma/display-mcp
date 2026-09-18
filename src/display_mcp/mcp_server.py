@@ -65,6 +65,10 @@ _DITHERED_NOTE = (
     "order-swapped mixes look like different colours and unrelated mixes look "
     "identical. Re-run without `dithered_colors` to see what these mixes average to."
 )
+_GRID_NOTE = (
+    "Grid lines and labels are an overlay for placing things; they are not in the "
+    "document and the panel never draws them."
+)
 
 COMPOSE_PROMPT = (_PROMPTS_DIR / "compose.md").read_text()
 
@@ -285,6 +289,7 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
         document: dict[str, Any] | str | None = None,
         name: str = "default",
         dithered_colors: bool = False,
+        grid: bool = False,
     ) -> list[ContentBlock]:
         """Render a PNG of how the panel will draw this, plus its warnings.
         Publishes nothing.
@@ -305,6 +310,11 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
         a preview closer to what the panel really draws. The text block
         returned with the image explains the trade-off for whichever mode ran
         and carries the warnings `validate` would give you.
+
+        `grid` overlays a labelled 100 px coordinate grid on the image, so an
+        op's `x`/`y` can be placed by coordinate in one pass instead of a
+        guess-preview-adjust round each time; it changes nothing about the
+        document or the panel's output.
         """
         try:
             validate_name(name)
@@ -312,6 +322,8 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
         except DisplayError as exc:
             raise ToolError(str(exc)) from exc
         image, _problems = render.render(doc, settings.font_dir, dithered_colors=dithered_colors)
+        if grid:
+            image = render.grid_overlay(image)
         buf = io.BytesIO()
         image.save(buf, format="PNG")
         # Warnings come from check() rather than from the render above. On a
@@ -323,6 +335,8 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
         # word.
         problems = render.check(doc, settings.font_dir)
         note = _DITHERED_NOTE if dithered_colors else _FLAT_NOTE
+        if grid:
+            note = "\n".join([note, _GRID_NOTE])
         if problems:
             note = "\n".join([note, "", *(f"- {p}" for p in problems)])
         return [
