@@ -2,8 +2,14 @@
 
 Status: implemented 2026-09-18 on branch `claude/display-mcp-artifact-plan-dkw4zc`,
 server side verified end-to-end twice, firmware host-compiled but **not yet
-flashed** — the flash and the wall judgement are the open items. The source
-is the doc
+flashed** — the flash and the wall judgement are the open items. After the
+plan's own commits, a quality pass (2026-09-19) rewrote comments to state
+rules rather than history, split the renderer into `canvas`/`colour`/`fonts`/
+`shapes`/`swatches`, merged the three host-compile harnesses into one, thinned
+the tests from 789 to about 500 with no invariant unpinned, and — from a
+review taken in the agent's own seat — made a missing or mistyped field a
+warning-and-skip rather than a crash, and rewrote `guide()` for a reader who
+can see nothing but the tools. The source is the doc
 *Display MCP — feedback and proposed primitives*, written by an agent after
 it drew a 28×28 pixel-art dragon on the panel through the MCP tools with no
 access to this repo. It is a good report from a bad seat: nearly every point
