@@ -350,6 +350,11 @@ async def test_status_unpublished_name_is_not_an_error(mcp):
         "recent_fetch_ago": None,
         "recent_fetch_status": None,
         "recent_fetch_ip": None,
+        "panel_battery": None,
+        "panel_volts": None,
+        "panel_draw_at": None,
+        "panel_draw_ago": None,
+        "panel_wakes": None,
     }
 
 
@@ -766,6 +771,20 @@ async def test_status_unpublished_name_reports_panel_requests(mcp, store):
     assert data["recent_fetch_ago"] is not None
 
 
+async def test_status_survives_an_unrepresentable_stored_timestamp(mcp, store, sample_doc):
+    """Defence in depth for a record written before panel.py bounded the input:
+    a stored value must never be able to break the tool that reads it."""
+    store.publish(sample_doc)
+    store.note_fetch("default", 200, "1.2.3.4")
+    rec = store.fetch_record("default")
+    rec.panel_draw_at = -62135596800.0  # 0001-01-01
+    store._fetch["default"] = rec  # the fake store keeps records in a dict
+    async with Client(mcp) as c:
+        result = await c.call_tool("status", {"name": "default"})
+    assert result.is_error is not True
+    assert result.structured_content["panel_draw_at"] is None
+
+
 # ---- D7: who has been fetching -----------------------------------------
 
 
@@ -781,6 +800,11 @@ async def test_status_requested_lists_an_unpublished_fetched_name(mcp, store):
         "recent_fetch_ago",
         "recent_fetch_status",
         "recent_fetch_ip",
+        "panel_battery",
+        "panel_volts",
+        "panel_draw_at",
+        "panel_draw_ago",
+        "panel_wakes",
     }
     assert entry["recent_fetch_status"] == 503
     assert entry["recent_fetch_ip"] == "172.17.0.5"

@@ -11,6 +11,7 @@ from display_mcp.store import (
     MAX_DOC_BYTES,
     DisplayError,
     FetchRecord,
+    PanelReport,
     Store,
     UnknownDisplay,
 )
@@ -207,6 +208,32 @@ def test_note_fetch_200_sets_first_fetch_once(store, sample_doc):
     fetch = store.get("default").fetch
     assert fetch.first_fetch_at == first
     assert fetch.recent_fetch_ip == "9.9.9.9"
+
+
+def test_note_fetch_records_a_panel_report(store, sample_doc):
+    store.publish(sample_doc, "default")
+    store.note_fetch(
+        "default", 200, "1.2.3.4", PanelReport(battery=82, volts=4.04, draw_at=1.0, wakes=7)
+    )
+    fetch = store.get("default").fetch
+    assert (fetch.panel_battery, fetch.panel_volts, fetch.panel_draw_at, fetch.panel_wakes) == (
+        82,
+        4.04,
+        1.0,
+        7,
+    )
+
+
+def test_note_fetch_keeps_panel_fields_the_panel_did_not_send(store, sample_doc):
+    """A firmware too old to report, or a wake whose ADC read NaN, must not
+    erase a good reading from an hour ago."""
+    store.publish(sample_doc, "default")
+    store.note_fetch("default", 200, "1.2.3.4", PanelReport(battery=82, wakes=7))
+    store.note_fetch("default", 304, "1.2.3.4", PanelReport(wakes=8))
+    store.note_fetch("default", 304, "1.2.3.4")  # no report at all
+    fetch = store.get("default").fetch
+    assert fetch.panel_battery == 82
+    assert fetch.panel_wakes == 8
 
 
 def test_note_fetch_updates_recent_every_time(store, sample_doc):

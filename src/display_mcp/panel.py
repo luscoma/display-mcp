@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import os
 import tempfile
+from datetime import UTC, datetime
 from pathlib import Path
 
 from starlette.applications import Starlette
@@ -23,7 +24,7 @@ from starlette.routing import Route
 
 from . import render
 from .config import Settings
-from .store import DEFAULT_NAME, DisplayError, Store, UnknownDisplay, validate_name
+from .store import DEFAULT_NAME, DisplayError, PanelReport, Store, UnknownDisplay, validate_name
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,72 @@ logger = logging.getLogger(__name__)
 def _client_ip(request: Request) -> str | None:
     # Nothing proxies this listener, so X-Forwarded-For is deliberately ignored.
     return request.client.host if request.client else None
+
+
+# 2020-01-01 .. 2100-01-01. See the bound check in `_panel_report`.
+PLAUSIBLE_DRAW_AT = (1577836800.0, 4102444800.0)
+
+
+def _int_header(request: Request, name: str, lo: int, hi: int) -> int | None:
+    try:
+        value = int((request.headers.get(name) or "").strip())
+    except ValueError:
+        return None
+    return value if lo <= value <= hi else None
+
+
+def _panel_report(request: Request) -> PanelReport:
+    """Parse the panel's `X-Panel-*` self-report off a fetch.
+
+    Anything missing, empty or malformed becomes `None`. This listener is
+    unauthenticated, so these values are hearsay from whoever made the
+    request -- worth recording, never worth trusting enough to raise over.
+    Ranges are sanity bounds, not validation: they keep a garbled header out
+    of `status` rather than rejecting the fetch, which must still be served.
+    """
+    volts: float | None = None
+    try:
+        volts = float((request.headers.get("x-panel-volts") or "").strip())
+    except ValueError:
+        volts = None
+    else:
+        if not 0.0 <= volts <= 10.0:
+            volts = None
+
+    draw_at: float | None = None
+    raw_draw = (request.headers.get("x-panel-last-draw") or "").strip()
+    if raw_draw:
+        try:
+            # The firmware sends "2026-09-19T14:03:11Z"; fromisoformat only
+            # learned "Z" in 3.11, which is the floor this package targets.
+            parsed = datetime.fromisoformat(raw_draw)
+        except ValueError:
+            draw_at = None
+        else:
+            # A stamp with no zone would otherwise be read as the *server's*
+            # local time, quietly off by the offset. Treat it as UTC, which
+            # is what the firmware sends.
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=UTC)
+            draw_at = parsed.timestamp()
+            # The one field whose range is not obviously bounded by its type,
+            # and the one that reaches `status` through a formatter that
+            # raises. `0001-01-01` parses fine and lands at -6.2e10, which
+            # `datetime.fromtimestamp` cannot represent -- one unauthenticated
+            # GET would then have broken `status` for every display, for good,
+            # since the value is persisted to the meta file. The panel only
+            # stamps this after an SNTP sync, so anything outside a plausible
+            # decade is a bad clock or a forgery either way.
+            if not PLAUSIBLE_DRAW_AT[0] <= draw_at <= PLAUSIBLE_DRAW_AT[1]:
+                draw_at = None
+
+    return PanelReport(
+        battery=_int_header(request, "x-panel-battery", 0, 100),
+        volts=volts,
+        draw_at=draw_at,
+        # An upper bound only so a garbled value cannot look like a real count.
+        wakes=_int_header(request, "x-panel-wakes", 0, 2**32 - 1),
+    )
 
 
 def _etag_matches(if_none_match: str | None, etag: str) -> bool:
@@ -78,15 +145,16 @@ def build_panel_app(store: Store, settings: Settings) -> Starlette:
             return JSONResponse({"error": str(exc)}, status_code=404)
 
         ip = _client_ip(request)
+        panel = _panel_report(request)
 
         try:
             published = store.get(name)
         except UnknownDisplay:
-            store.note_fetch(name, 503, ip)
+            store.note_fetch(name, 503, ip, panel)
             return PlainTextResponse("no display list yet", status_code=503)
 
         if _etag_matches(request.headers.get("if-none-match"), published.etag):
-            store.note_fetch(name, 304, ip)
+            store.note_fetch(name, 304, ip, panel)
             return Response(
                 content=b"",
                 status_code=304,
@@ -96,7 +164,7 @@ def build_panel_app(store: Store, settings: Settings) -> Starlette:
         if request.method == "GET":
             # HEAD is how a human looks at the ETag; only a GET is the panel
             # collecting the document, so only a GET counts as a fetch.
-            store.note_fetch(name, 200, ip)
+            store.note_fetch(name, 200, ip, panel)
         headers = {
             "Content-Type": "application/json",
             "ETag": published.etag,
@@ -132,6 +200,13 @@ def build_panel_app(store: Store, settings: Settings) -> Starlette:
                     "first_fetch_at": published.fetch.first_fetch_at,
                     "recent_fetch_at": published.fetch.recent_fetch_at,
                     "recent_fetch_status": published.fetch.recent_fetch_status,
+                    # What the panel said about itself on that fetch. This is
+                    # what a Home Assistant REST sensor polls: the panel itself
+                    # is unreachable for most of the hour, this endpoint is not.
+                    "panel_battery": published.fetch.panel_battery,
+                    "panel_volts": published.fetch.panel_volts,
+                    "panel_draw_at": published.fetch.panel_draw_at,
+                    "panel_wakes": published.fetch.panel_wakes,
                 }
             )
 

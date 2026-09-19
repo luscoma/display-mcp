@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 
 import pytest
 from starlette.testclient import TestClient
@@ -176,3 +177,130 @@ def test_head_does_not_count_as_a_fetch(client, store, sample_doc):
     rec = store.fetch_record("default")
     assert rec.first_fetch_at is not None
     assert rec.recent_fetch_status == 200
+
+
+# ---- the panel's X-Panel-* self-report ---------------------------------
+
+PANEL_HEADERS = {
+    "X-Panel-Battery": "82",
+    "X-Panel-Volts": "4.04",
+    "X-Panel-Last-Draw": "2026-09-19T14:03:11Z",
+    "X-Panel-Wakes": "412",
+}
+
+
+def test_panel_headers_are_recorded_on_a_200(client, store, sample_doc):
+    store.publish(sample_doc)
+    client.get("/display.json", headers=PANEL_HEADERS)
+    rec = store.fetch_record("default")
+    assert rec.panel_battery == 82
+    assert rec.panel_volts == pytest.approx(4.04)
+    assert rec.panel_wakes == 412
+    # "Z" means UTC, not the server's local zone.
+    assert rec.panel_draw_at == pytest.approx(
+        datetime(2026, 9, 19, 14, 3, 11, tzinfo=UTC).timestamp()
+    )
+
+
+def test_panel_headers_are_recorded_on_a_304(client, store, sample_doc):
+    """The whole point: the cheap wake is the one that usually happens."""
+    result = store.publish(sample_doc)
+    headers = {**PANEL_HEADERS, "If-None-Match": result.etag}
+    resp = client.get("/display.json", headers=headers)
+    assert resp.status_code == 304
+    assert store.fetch_record("default").panel_battery == 82
+
+
+def test_panel_headers_are_recorded_for_an_unpublished_name(client, store):
+    resp = client.get("/d/ghost.json", headers=PANEL_HEADERS)
+    assert resp.status_code == 503
+    assert store.fetch_record("ghost").panel_wakes == 412
+
+
+def test_a_fetch_without_panel_headers_is_still_served(client, store, sample_doc):
+    store.publish(sample_doc)
+    resp = client.get("/display.json")
+    assert resp.status_code == 200
+    rec = store.fetch_record("default")
+    assert rec.panel_battery is None
+    assert rec.panel_draw_at is None
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"X-Panel-Battery": "not-a-number"},
+        {"X-Panel-Battery": "999"},  # outside 0..100
+        {"X-Panel-Battery": "-1"},
+        {"X-Panel-Volts": ""},
+        {"X-Panel-Volts": "1e309"},  # inf, outside the sanity bound
+        {"X-Panel-Last-Draw": "yesterday"},
+        {"X-Panel-Last-Draw": ""},
+        {"X-Panel-Wakes": "12.5"},
+        {"X-Panel-Wakes": "-3"},
+    ],
+)
+def test_a_garbled_panel_header_never_breaks_the_fetch(client, store, sample_doc, headers):
+    """This listener is unauthenticated: a bad header is hearsay, not a 500."""
+    store.publish(sample_doc)
+    resp = client.get("/display.json", headers=headers)
+    assert resp.status_code == 200
+    rec = store.fetch_record("default")
+    assert (rec.panel_battery, rec.panel_volts, rec.panel_draw_at, rec.panel_wakes) == (
+        None,
+        None,
+        None,
+        None,
+    )
+
+
+def test_a_missing_header_does_not_erase_the_last_good_value(client, store, sample_doc):
+    """A wake whose ADC read NaN sends an empty header; the old reading stands."""
+    store.publish(sample_doc)
+    client.get("/display.json", headers=PANEL_HEADERS)
+    client.get("/display.json", headers={"X-Panel-Wakes": "413"})
+    rec = store.fetch_record("default")
+    assert rec.panel_wakes == 413
+    assert rec.panel_battery == 82
+
+
+@pytest.mark.parametrize(
+    "stamp",
+    [
+        "0001-01-01",  # -6.2e10; datetime.fromtimestamp cannot represent it
+        "0001-01-01T00:00:00+23:59",
+        "9999-12-31T23:59:59.999999-23:59",  # past year 9999 once shifted
+        "1970-01-01T00:00:00Z",  # before the panel could plausibly have drawn
+        "2200-01-01T00:00:00Z",
+    ],
+)
+def test_an_out_of_range_draw_stamp_is_dropped(client, store, sample_doc, stamp):
+    """One unauthenticated GET must not be able to poison the record.
+
+    `status` formats this through `datetime.fromtimestamp`, which raises
+    outside year 1..9999 -- and the value is persisted, so a single bad
+    header would have broken the tool for every display until someone
+    hand-edited the meta file.
+    """
+    store.publish(sample_doc)
+    resp = client.get("/display.json", headers={"X-Panel-Last-Draw": stamp})
+    assert resp.status_code == 200
+    assert store.fetch_record("default").panel_draw_at is None
+
+
+def test_healthz_reports_the_panel_report(client, store, sample_doc):
+    store.publish(sample_doc)
+    client.get("/display.json", headers=PANEL_HEADERS)
+    entry = client.get("/healthz").json()["displays"][0]
+    assert entry["panel_battery"] == 82
+    assert entry["panel_volts"] == pytest.approx(4.04)
+    assert entry["panel_wakes"] == 412
+    assert entry["panel_draw_at"] is not None
+
+
+def test_panel_report_survives_a_restart(store, settings, sample_doc, tmp_path):
+    """The fields ride the meta file, like the rest of the fetch record."""
+    store.publish(sample_doc)
+    TestClient(build_panel_app(store, settings)).get("/display.json", headers=PANEL_HEADERS)
+    reopened = Store(tmp_path / "state", tmp_path / "fonts")
+    assert reopened.fetch_record("default").panel_battery == 82

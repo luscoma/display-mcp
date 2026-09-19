@@ -56,6 +56,27 @@ class UnknownDisplay(DisplayError):
 
 
 @dataclass
+class PanelReport:
+    """What the panel told us about itself on a fetch, via `X-Panel-*` headers.
+
+    Everything else about the exchange the server sees for itself; this is
+    only the part it cannot. Each field is `None` when the header was absent
+    or unparseable -- a panel that does not send them is not an error, and
+    neither is a garbled value.
+
+    `draw_at` is the panel's *previous* completed draw, because the headers
+    ride the request that precedes this wake's draw. That is the useful
+    reading: a 200 served an hour ago with `draw_at` unmoved since means the
+    panel collected the document and failed to put it on the glass.
+    """
+
+    battery: int | None = None  # percent
+    volts: float | None = None
+    draw_at: float | None = None  # unix
+    wakes: int | None = None
+
+
+@dataclass
 class FetchRecord:
     """What the panel has done with the current document. Times are unix floats."""
 
@@ -64,6 +85,11 @@ class FetchRecord:
     recent_fetch_at: float | None = None
     recent_fetch_status: int | None = None
     recent_fetch_ip: str | None = None
+    # From the most recent fetch's X-Panel-* headers; see PanelReport.
+    panel_battery: int | None = None
+    panel_volts: float | None = None
+    panel_draw_at: float | None = None
+    panel_wakes: int | None = None
 
 
 @dataclass
@@ -372,12 +398,20 @@ class Store:
         with entry.lock:
             return replace(entry.fetch)
 
-    def note_fetch(self, name: str, status: int, ip: str | None) -> None:
+    def note_fetch(
+        self, name: str, status: int, ip: str | None, panel: PanelReport | None = None
+    ) -> None:
         """Record a panel request. A 200 sets first_fetch_at if unset.
 
         Works even when nothing is published under `name` -- the panel could
         be asking for a display that does not exist, and that is itself
         worth recording (see module docstring).
+
+        `panel` is what the panel said about itself in this request's
+        `X-Panel-*` headers. A field it did not send leaves the stored value
+        alone rather than clearing it: a firmware too old to report, or one
+        whose ADC read NaN this wake, should not erase a good reading from an
+        hour ago.
         """
         validate_name(name)
         entry = self._get_or_create_entry(name)
@@ -386,6 +420,15 @@ class Store:
             entry.fetch.recent_fetch_at = now
             entry.fetch.recent_fetch_status = status
             entry.fetch.recent_fetch_ip = ip
+            if panel is not None:
+                if panel.battery is not None:
+                    entry.fetch.panel_battery = panel.battery
+                if panel.volts is not None:
+                    entry.fetch.panel_volts = panel.volts
+                if panel.draw_at is not None:
+                    entry.fetch.panel_draw_at = panel.draw_at
+                if panel.wakes is not None:
+                    entry.fetch.panel_wakes = panel.wakes
             if status == 200 and entry.fetch.first_fetch_at is None:
                 entry.fetch.first_fetch_at = now
             self._write_meta(name, entry.fetch)

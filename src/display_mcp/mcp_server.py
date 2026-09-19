@@ -175,7 +175,14 @@ def _iso(ts: float | None) -> str | None:
     """Unix float -> ISO 8601 with the local UTC offset, or None."""
     if not ts:
         return None
-    return datetime.fromtimestamp(ts).astimezone().isoformat()
+    try:
+        return datetime.fromtimestamp(ts).astimezone().isoformat()
+    except (OSError, OverflowError, ValueError):
+        # Unrepresentable as a datetime (year outside 1..9999, or past the
+        # platform's range). `_panel_report` bounds the only field that could
+        # get here, but a record written before it did is still on disk, and a
+        # stored value must never be able to break the tool that reads it.
+        return None
 
 
 def _publish_reply(result: PublishResult) -> dict[str, Any]:
@@ -468,6 +475,11 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
             "recent_fetch_ago": _ago(fetch.recent_fetch_at),
             "recent_fetch_status": fetch.recent_fetch_status,
             "recent_fetch_ip": fetch.recent_fetch_ip,
+            "panel_battery": fetch.panel_battery,
+            "panel_volts": fetch.panel_volts,
+            "panel_draw_at": _iso(fetch.panel_draw_at),
+            "panel_draw_ago": _ago(fetch.panel_draw_at),
+            "panel_wakes": fetch.panel_wakes,
         }
 
     def _display_status(name: str) -> dict[str, Any]:
@@ -533,6 +545,19 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
         "which name is the panel actually configured to request", since the
         server cannot read the firmware's own `dl_url`, only what has
         actually shown up asking.
+
+        The `panel_*` fields are the panel's own half of the picture, which
+        it sends as `X-Panel-*` headers on the fetch itself: `panel_battery`
+        (percent) and `panel_volts` from the reading it took that wake,
+        `panel_wakes` since its last flash erase, and `panel_draw_at` --
+        when it last finished putting a document on the glass. They are
+        `null` for a panel whose firmware does not send them, and they carry
+        over from the last fetch that did, so a wake with a bad ADC reading
+        does not blank them. `panel_draw_at` is the draw *before* this
+        fetch, since the headers ride the request that precedes the draw:
+        `recent_fetch_status: 200` an hour ago with `panel_draw_at` still
+        older than it means the panel collected the document and then failed
+        to draw it, which nothing else here can tell you.
         """
         if name is not None:
             try:

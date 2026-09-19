@@ -21,6 +21,7 @@ from display_mcp.store import (
     MAX_DOC_BYTES,
     DisplayError,
     FetchRecord,
+    PanelReport,
     Published,
     PublishResult,
     UnknownDisplay,
@@ -119,13 +120,26 @@ class FakeStore:
         rec = self._fetch.get(name)
         return replace(rec) if rec is not None else None
 
-    def note_fetch(self, name: str, status: int, ip: str | None) -> None:
+    def note_fetch(
+        self, name: str, status: int, ip: str | None, panel: PanelReport | None = None
+    ) -> None:
         """Simulate the panel listener recording a request for `name`."""
         fetch = self._fetch.setdefault(name, FetchRecord())
         now = time.time()
         fetch.recent_fetch_at = now
         fetch.recent_fetch_status = status
         fetch.recent_fetch_ip = ip
+        if panel is not None:
+            # Same "a field not sent leaves the last one alone" rule as Store.
+            for src, dst in (
+                ("battery", "panel_battery"),
+                ("volts", "panel_volts"),
+                ("draw_at", "panel_draw_at"),
+                ("wakes", "panel_wakes"),
+            ):
+                value = getattr(panel, src)
+                if value is not None:
+                    setattr(fetch, dst, value)
         if status == 200 and fetch.first_fetch_at is None:
             fetch.first_fetch_at = now
 

@@ -92,15 +92,29 @@ bound explicitly; wildcards refused; setup.sh writes `<lan-ip>,127.0.0.1`),
   `recent_fetch_status`, `recent_fetch_ip` always; `first_fetch_at` the first
   time a 200 is served for the current hash. A new publish resets
   `first_fetch_at`.
-- `GET /healthz` → `{ok, fonts_loaded, state_dir_writable, displays: [...]}`.
-  Used by `setup.sh status` and the runbook gates.
+- A request may also carry the panel's own report as `X-Panel-Battery`
+  (percent), `X-Panel-Volts`, `X-Panel-Last-Draw` (ISO 8601 UTC) and
+  `X-Panel-Wakes`, recorded as `panel_battery`, `panel_volts`,
+  `panel_draw_at` and `panel_wakes`. All four are optional and unvalidated
+  input on an unauthenticated listener: anything missing or out of range is
+  dropped, never an error, and a field that is not sent leaves the stored
+  value alone rather than clearing it.
+- `GET /healthz` → `{ok, fonts_loaded, state_dir_writable, displays: [...]}`,
+  each display carrying `{name, hash, published_at, first_fetch_at,
+  recent_fetch_at, recent_fetch_status, panel_battery, panel_volts,
+  panel_draw_at, panel_wakes}` — raw unix floats, not ISO. Used by
+  `setup.sh status`, the runbook gates, and Home Assistant's REST sensors.
+  Only *published* names are listed.
 
 ## Store
 
 `/var/lib/display-mcp/<name>.json` is the document, written atomically
 (temp file, fsync, rename) so the panel can never read half a document.
 `/var/lib/display-mcp/<name>.meta.json` holds `published_at`, `first_fetch_at`,
-`recent_fetch_at`, `recent_fetch_status`, `recent_fetch_ip`. Both are reloaded on start. One lock per display.
+`recent_fetch_at`, `recent_fetch_status`, `recent_fetch_ip`, `panel_battery`,
+`panel_volts`, `panel_draw_at`, `panel_wakes`. Unknown keys are dropped on
+load and missing ones default to `null`, so the file is forward- and
+backward-compatible. Both are reloaded on start. One lock per display.
 
 `Store.publish(name, doc)` is the only code path that stamps `meta.hash`
 and `meta.generated`; the spec's "one identity, stamped in one place" rule.
@@ -153,7 +167,7 @@ preview beats publishing three times).
 | `preview` | `document?` (dict or JSON string), `name="default"`, `dithered_colors=False`, `grid=False` | PNG **and** a text block: a note on how colour was rendered, then `check()`'s warnings. No document → what is published; with one → render the draft, publish nothing. `grid=True` overlays a labelled 100 px coordinate grid, for placing things by coordinate |
 | `validate` | `document` (dict or JSON string) | `{hash, ops, bytes, warnings, colors, max_bytes}` — `colors` is `{name: {recipe, hex}}` for every colour name the document references, `max_bytes` is `store.MAX_DOC_BYTES` |
 | `get_display` | `name="default"` | the published document, or an error if none |
-| `status` | `name?` | one display, or all: `{published, hash, ops, bytes, published_at, first_fetch_at, recent_fetch_at, recent_fetch_status, recent_fetch_ip}`; timestamps are ISO 8601 plus a matching `*_ago` string. With no `name`, also `{displays: {name: ...above...}, requested: {name: {recent_fetch_at, recent_fetch_ago, recent_fetch_status, recent_fetch_ip}}, auth}` — `requested` covers every name in `Store.fetched_names()`, published or not, which is the answer to "which name is the panel on" |
+| `status` | `name?` | one display, or all: `{published, hash, ops, bytes, published_at, first_fetch_at, recent_fetch_at, recent_fetch_status, recent_fetch_ip, panel_battery, panel_volts, panel_draw_at, panel_wakes}`; timestamps are ISO 8601 plus a matching `*_ago` string. The `panel_*` fields are what the panel reported about itself on that fetch (see Panel endpoint); `panel_draw_at` is the draw *before* it, so a `200` older than an unmoved `panel_draw_at` means the panel fetched and failed to draw. With no `name`, also `{displays: {name: ...above...}, requested: {name: {recent_fetch_at, recent_fetch_ago, recent_fetch_status, recent_fetch_ip, panel_battery, panel_volts, panel_draw_at, panel_draw_ago, panel_wakes}}, auth}` — `requested` covers every name in `Store.fetched_names()`, published or not, which is the answer to "which name is the panel on" |
 | `clear_display` | `name="default"` | `{name, cleared}` |
 | `describe` | none | the renderer's vocabulary as one JSON object: `{canvas, inks, mixes, densities, fonts, anchors, icons, icon_sizes, ops, fmt_fields, limits}`, built from the renderer's own tables at call time — `anchors` is the list of values `text.a`/`fmt.a` accept (`left`, `center`, `right`) |
 | `guide` | none | the text of `prompts/compose.md` — the composing guide, as a tool call for a client that cannot read prompts |
