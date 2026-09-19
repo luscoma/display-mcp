@@ -33,6 +33,22 @@ die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
 
 DIR=${1:?"usage: $0 <dir>"}
 
+# $TMP is the download in flight, cleaned up on exit. Deliberately not a
+# `local` with a RETURN trap: a RETURN trap set inside a function is global
+# and fires on *every* later function return, so it ran again when main()
+# returned with $tmp already out of scope, and `set -u` turned that into
+# "tmp: unbound variable" -- exit 1 after both faces had installed fine,
+# which made setup.sh discard the scratch dir it had just filled.
+#
+# on_exit re-raises the status it was entered with: an EXIT trap that falls
+# off the end hands the script the trap's own status instead. It is armed
+# below the usage check on purpose -- a ${1:?} abort is already past $? by
+# the time a trap could see it, and would exit 0.
+TMP=""
+cleanup() { if [ -n "$TMP" ]; then rm -f "$TMP"; TMP=""; fi; }
+on_exit() { local rc=$?; cleanup; exit "$rc"; }
+trap on_exit EXIT
+
 FONT_REGULAR="InstrumentSans-Regular.ttf"
 FONT_BOLD="InstrumentSans-Bold.ttf"
 FONT_MONO="JetBrainsMono-Regular.ttf"
@@ -66,9 +82,8 @@ fetch_family() {
   local label=$1 slug=$2 fallback_url=$3; shift 3
   local dests=("$@")
   log "fetching $label"
-  local tmp urls=() u
-  tmp=$(mktemp)
-  trap 'rm -f "$tmp"' RETURN
+  local urls=() u
+  cleanup; TMP=$(mktemp)
 
   while read -r u; do [ -n "$u" ] && urls+=("$u"); done < <(
     curl -fsSL --max-time 20 \
@@ -79,10 +94,10 @@ fetch_family() {
   urls+=("$fallback_url")
 
   for u in "${urls[@]}"; do
-    if curl -fsSL --retry 2 --max-time 60 -o "$tmp" "$u" && is_font "$tmp"; then
-      # mktemp made $tmp 0600; the service user has to be able to read these.
+    if curl -fsSL --retry 2 --max-time 60 -o "$TMP" "$u" && is_font "$TMP"; then
+      # mktemp made $TMP 0600; the service user has to be able to read these.
       local d
-      for d in "${dests[@]}"; do install -m 0644 "$tmp" "$d"; done
+      for d in "${dests[@]}"; do install -m 0644 "$TMP" "$d"; done
       ok "$label installed from ${u##*/}"
       return 0
     fi
