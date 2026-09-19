@@ -326,6 +326,20 @@ that your generator hashes only `bg`, `palette` and `ops`, not the whole
 document — `set_display` does this for you; nothing else should touch
 `meta.hash`.
 
+The panel adds its own half to the same record, as `X-Panel-*` headers on the
+fetch: `panel_battery` and `panel_volts` from the reading it took that wake,
+`panel_wakes` since its last flash erase, and `panel_draw_at`, when it last
+finished putting a document on the glass. Healthy is `recent_fetch_at` within
+the hour, `recent_fetch_status: 304`, and `panel_draw_at` much older.
+
+`panel_draw_at` is the draw *before* the fetch that carried it, which is what
+makes it useful: a `200` served an hour ago with `panel_draw_at` still older
+than it means the panel collected the document and failed to draw it. The
+same fields are on `/healthz`, which is what Home Assistant should poll —
+`docs/plans/panel-diagnostics.md` has the REST sensors. Do not point Home
+Assistant at the panel itself; it is asleep for most of the hour, and
+"unavailable" and "dead" look identical from there.
+
 ## When it doesn't
 
 | Symptom | Look at |
@@ -336,6 +350,8 @@ document — `set_display` does this for you; nothing else should touch
 | `/healthz` says `fonts_loaded: false` | Same as above — fonts missing or unreadable by the `display-mcp` user. |
 | Panel: `select() timeout` | The panel cannot reach the host on 8080: a firewall between segments, if they differ. Not the server. |
 | Panel: `BUG: document has no meta.hash` | Something wrote the file directly, bypassing `set_display`. It stamps; nothing else does. |
+| `recent_fetch_at` stops advancing | The panel is not waking: battery, Wi-Fi, or a hang. Unlike an ESPHome entity going `unavailable`, this is unambiguous. |
+| All `panel_*` fields `null` | Firmware older than the `X-Panel-*` headers, or something other than the panel is fetching. `recent_fetch_ip` says which. |
 | Panel refreshes every hour regardless | Your ETag or hash is timestamp-derived. Compare `status.hash` across two publishes of identical content. |
 | Claude can't reach the connector | The tunnel first (`journalctl -u cloudflared`, and **Healthy** in the dashboard), then whether the Access application still sits on that hostname. |
 | MCP calls succeed with no login prompt | Access isn't configured — `setup.sh status` will say `mcp auth: not configured`. Fine for local testing, not for the internet-facing endpoint. |

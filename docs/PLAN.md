@@ -264,6 +264,18 @@ only from the boot button or a power cycle. The "Stay awake" switch persists acr
 defeats deep sleep entirely, so turn it off before running on battery
 (`fetch_and_watch.py --release`).
 
+The panel reports the three things the server cannot see for itself —
+battery, when it last finished a draw, and how many times it has woken — as
+`X-Panel-*` request headers on the fetch it already makes. `note_fetch()`
+records them alongside the status and address it already had, and they come
+back out of `status` and `/healthz` as `panel_battery`, `panel_volts`,
+`panel_draw_at` and `panel_wakes`. Home Assistant polls `/healthz`; it is not
+told anything by the panel directly, because a deep-sleeping device is
+unreachable for most of the hour and "unavailable" cannot be told apart from
+"dead".
+`docs/plans/panel-diagnostics.md` has the decisions, the readings and the
+Home Assistant REST sensors.
+
 ## Mount
 
 `mount/` is the hardware side and lives here now. The panel hangs portrait in

@@ -43,6 +43,11 @@ esphome:
   on_boot:
     priority: -100
     then:
+      # Counted here and not in wake_cycle, which also runs from the
+      # refresh_now action and both template buttons: X-Panel-Wakes is meant
+      # to be comparable against the hourly schedule, so a manual refresh
+      # must not look like an extra wake.
+      - lambda: "id(diag_wakes) += 1;"
       - script.execute: wake_cycle
 
 esp32:
@@ -178,6 +183,30 @@ globals:
     type: std::string
     restore_value: false
 
+  # The two things the server cannot see for itself. It already records when
+  # the panel asked, what it answered and from which address, so the only
+  # news the panel has is its battery, whether the last fetch actually
+  # reached the glass, and how many times it has woken. They ride the next
+  # fetch as request headers. Persisted because every wake is a cold boot.
+  - id: diag_draw_ts
+    type: std::string
+    restore_value: true
+    max_restore_data_length: 32
+  - id: diag_wakes
+    type: uint32_t
+    restore_value: true
+    initial_value: "0"
+
+  # Log-only, within one wake: what the fetch did, so the line at the end of
+  # the cycle can say so instead of guessing from an empty body.
+  - id: diag_status
+    type: int
+    restore_value: false
+    initial_value: "0"
+  - id: diag_result
+    type: std::string
+    restore_value: false
+
 ########################################################################
 # Display
 ########################################################################
@@ -234,18 +263,20 @@ display:
         a.time24 = buf;
       }
 
-      // {battery} / {battv}. First cut: linear 3.3 V -> 0 %, 4.2 V -> 100 %,
-      // clamped; a LiPo curve can replace it later. The wake cycle forces a
-      // fresh ADC reading before the draw, so this is not stale.
+      // {battery} / {battv}. The percentage curve lives in one place, batt_v's
+      // on_value below, so the wall and the X-Panel-Battery header the server
+      // records cannot disagree. The wake cycle forces a fresh ADC reading
+      // before the fetch, so neither is stale.
+      char bbuf[16];
       const float v = id(batt_v).state;
       if (!std::isnan(v)) {
-        char buf[16];
-        int pct = static_cast<int>((v - 3.3f) / (4.2f - 3.3f) * 100.0f + 0.5f);
-        pct = std::max(0, std::min(100, pct));
-        snprintf(buf, sizeof buf, "%d%%", pct);
-        a.battery = buf;
-        snprintf(buf, sizeof buf, "%.1fV", v);
-        a.battv = buf;
+        snprintf(bbuf, sizeof bbuf, "%.1fV", v);
+        a.battv = bbuf;
+      }
+      const float pct = id(batt_pct).state;
+      if (!std::isnan(pct)) {
+        snprintf(bbuf, sizeof bbuf, "%d%%", static_cast<int>(std::lround(pct)));
+        a.battery = bbuf;
       }
 
       if (!dl::draw_display_list(it, id(dl_body), a)) {
@@ -268,6 +299,33 @@ sensor:
       - multiply: 3.0 # vendor BSP: volts = adc_mv * 3 / 1000
     unit_of_measurement: "V"
     device_class: voltage
+    on_value:
+      # The only copy of the curve. First cut: linear 3.3 V -> 0 %,
+      # 4.2 V -> 100 %, clamped; a LiPo curve can replace it here and the
+      # display's {battery} follows.
+      - sensor.template.publish:
+          id: batt_pct
+          state: !lambda |-
+            // NaN first, and not by way of the clamp: NaN compares false
+            // against everything, so std::min(100.0f, NAN) returns 100.0f and
+            // a failed ADC read would report a *full* battery — on the wall,
+            // in the header, and in Home Assistant. Propagating the NaN is
+            // what keeps the display's "--%" fallback and the empty header
+            // reachable. adc_sensor_esp32.cpp returns NAN on a read or
+            // calibration failure, and the multiply filter passes it through.
+            if (std::isnan(x)) return x;
+            return std::max(0.0f, std::min(100.0f, (x - 3.3f) / (4.2f - 3.3f) * 100.0f));
+
+  # Not exported: the panel is awake for seconds an hour, so a Home Assistant
+  # entity here would read "unavailable" almost always. The percentage goes to
+  # the server on the next fetch instead. This exists so the curve has exactly
+  # one home, shared with the display's {battery}.
+  - platform: template
+    id: batt_pct
+    internal: true
+    accuracy_decimals: 0
+    # Driven by batt_v's on_value, never polled on its own.
+    update_interval: never
 
 switch:
   # Debug hold. The script's sleep_now checks this, but deep_sleep's own
@@ -326,6 +384,13 @@ script:
   - id: wake_cycle
     mode: single
     then:
+      - lambda: |-
+          id(diag_status) = 0;
+          id(diag_result) = "no response";
+      # The ADC's own poll lands at a random offset inside its interval, so
+      # force one before the fetch: the battery headers below and the draw's
+      # {battery} both read it, and neither wants an hour-old value.
+      - component.update: batt_v
       - wait_until:
           condition:
             wifi.connected:
@@ -338,6 +403,14 @@ script:
           # the server's 256 KB hard limit on a document.
           max_response_buffer_size: 256kB
           # Empty on first boot, which simply means "no match" and gets a 200.
+          #
+          # The X-Panel-* headers are the panel's half of the diagnostics: the
+          # server already logs when it was asked, what it answered and from
+          # where, so these carry only what it cannot see. They describe the
+          # wake as it starts, so Last-Draw is the *previous* draw — which is
+          # the useful reading: a 200 served last hour with this header
+          # unchanged means the panel fetched fine and failed to draw.
+          # Each needs its own static: the value has to outlive the lambda.
           request_headers:
             If-None-Match: !lambda |-
               // Header values are const char*; keep the storage alive for
@@ -345,20 +418,56 @@ script:
               static std::string hdr;
               hdr = id(dl_shown_id).empty() ? "" : "\"" + id(dl_shown_id) + "\"";
               return hdr.c_str();
+            X-Panel-Wakes: !lambda |-
+              static std::string hdr;
+              hdr = std::to_string(id(diag_wakes));
+              return hdr.c_str();
+            X-Panel-Last-Draw: !lambda |-
+              // Empty until the panel has drawn once with a valid clock.
+              static std::string hdr;
+              hdr = id(diag_draw_ts);
+              return hdr.c_str();
+            X-Panel-Battery: !lambda |-
+              static std::string hdr;
+              const float pct = id(batt_pct).state;
+              hdr = std::isnan(pct) ? "" : std::to_string(static_cast<int>(std::lround(pct)));
+              return hdr.c_str();
+            X-Panel-Volts: !lambda |-
+              // The raw reading as well as the percentage, so a wrong curve
+              // is diagnosable from the server without reflashing.
+              static std::string hdr;
+              const float v = id(batt_v).state;
+              if (std::isnan(v)) {
+                hdr.clear();
+              } else {
+                char buf[16];
+                snprintf(buf, sizeof buf, "%.2f", v);
+                hdr = buf;
+              }
+              return hdr.c_str();
           on_response:
             then:
               - lambda: |-
                   // A 304 has no body, so dl_body stays empty and the guard
                   // below skips the refresh. ESPHome logs its own ERROR line
                   // for any non-2xx: on an unchanged wake that is cosmetic.
+                  id(diag_status) = response->status_code;
                   if (response->status_code == 304) {
+                    id(diag_result) = "304 not modified";
                     ESP_LOGI("dl", "304 not modified");
                     return;
                   }
                   if (response->status_code != 200) {
+                    char buf[24];
+                    snprintf(buf, sizeof buf, "HTTP %d", response->status_code);
+                    id(diag_result) = buf;
                     ESP_LOGW("dl", "HTTP %d", response->status_code);
                     return;
                   }
+                  // Overwritten by the redraw/unchanged branches below; it
+                  // stands only for a 200 whose body was empty or unusable,
+                  // which would otherwise be logged as "no response".
+                  id(diag_result) = "200 received";
                   id(dl_body) = body;
                   id(dl_new_id) = dl::document_id(body);
                   if (id(dl_new_id).empty()) {
@@ -370,6 +479,13 @@ script:
                   ESP_LOGI("dl", "%u bytes, id '%s' (shown '%s')",
                            (unsigned) body.size(), id(dl_new_id).c_str(),
                            id(dl_shown_id).c_str());
+          on_error:
+            # No response at all: DNS, routing, a server that is not up. Without
+            # this the wake would report whatever the last one did.
+            then:
+              - lambda: |-
+                  id(diag_result) = "fetch failed";
+                  ESP_LOGW("dl", "fetch failed: no response from ${dl_url}");
       - if:
           condition:
             lambda: |-
@@ -379,21 +495,23 @@ script:
               return id(dl_new_id).empty() || id(dl_new_id) != id(dl_shown_id);
           then:
             # Only on the redraw path, never on a 304: give SNTP a moment so
-            # the {time} stamp is real. A cold boot that misses it prints --:--.
+            # the {time} stamp, and the draw stamp below, are real. A cold
+            # boot that misses it prints --:--.
             - wait_until:
                 condition:
                   time.has_time:
                 timeout: 5s
-            # The ADC sensor's first poll lands at a random offset inside its
-            # interval, usually after the draw; force one so {battery} is real.
-            - component.update: batt_v
             - component.update: epd
             - wait_until:
                 condition:
                   lambda: "return !id(epd).is_processing();"
                 timeout: 180s
             - delay: 3s
-            - lambda: "id(dl_shown_id) = id(dl_new_id);"
+            - lambda: |-
+                id(dl_shown_id) = id(dl_new_id);
+                id(diag_result) = "200 redrawn";
+                auto t = id(sntp_time).utcnow();
+                if (t.is_valid()) id(diag_draw_ts) = t.strftime("%Y-%m-%dT%H:%M:%SZ");
           else:
             # Say which guard stopped the refresh. A 304 means the ETag did its
             # job. A 200 with identical bytes means the server's ETag changed
@@ -401,11 +519,16 @@ script:
             # and only the hash saved you a 30 s refresh. Worth fixing at the
             # source: see "Server-side ETag" in SPEC.md.
             - lambda: |-
-                if (id(dl_body).empty()) {
-                  ESP_LOGI("dl", "unchanged (304) — no download, no refresh");
-                } else {
+                if (!id(dl_body).empty()) {
+                  id(diag_result) = "200 unchanged";
                   ESP_LOGW("dl", "unchanged, but the server sent 200 — its ETag "
                                  "does not match meta.hash; meta.hash caught it");
+                } else if (id(diag_status) == 304) {
+                  ESP_LOGI("dl", "unchanged (304) — no download, no refresh");
+                } else {
+                  // Not a quiet wake at all: no usable document this hour, and
+                  // the wall is still showing the last one that worked.
+                  ESP_LOGW("dl", "nothing drawn: %s", id(diag_result).c_str());
                 }
       - script.execute: sleep_now
 
