@@ -25,11 +25,11 @@ class Face(NamedTuple):
     Instrument Sans and JetBrains Mono alike) — measured once, by hand, and
     stored here as data rather than recomputed at import time, so a font
     swap that silently changes the metrics is a failing test
-    (test_render.py) rather than a page that quietly reflows. `lh`'s own
-    default stays `round(size * 1.24)` for every face including `mono` (the
-    firmware has no per-face default), so `cell_height` is published
-    separately in `describe().fonts[*]` instead of changing what an unset
-    `lh` means.
+    (tests/renderer/test_text.py) rather than a page that quietly reflows.
+    `lh`'s own default stays `round(size * 1.24)` for every face including
+    `mono` (the firmware has no per-face default), so `cell_height` is
+    published separately in `describe().fonts[*]` instead of changing what
+    an unset `lh` means.
 
     `ink_height` is `None` for every Instrument Sans entry and the one
     number that actually matters for stacking `mono` block art
@@ -99,8 +99,8 @@ FONTS: dict[str, Face] = {
     # JetBrains Mono, 24px regular (docs/plans/dragon-feedback.md D11): the
     # one monospace face, for block art, aligned columns and code. Loaded
     # with BASIC layout and no ligatures — see load_font(). ink_height=31
-    # is measured (test_render.py), not derived: a full-height glyph at
-    # 1bpp inks 31 rows inside the 33px cell.
+    # is measured (tests/renderer/test_text.py), not derived: a
+    # full-height glyph at 1bpp inks 31 rows inside the 33px cell.
     "mono": Face(
         24, False, "JetBrainsMono-Regular.ttf", 33, 31, (MONO_EXTRA_GLYPHS,),
         layout="basic", optional=True,

@@ -239,7 +239,7 @@ Off-canvas is judged on the bounding box of every point — `min`/`max` of
 `pts`, the same ±64px tolerance every other op's `x`/`y` gets — since a
 poly has no single anchor of its own to check.
 
-`tests/test_firmware_parity.py` extracts the C++ scanline function
+`tests/parity/test_poly.py` extracts the C++ scanline function
 (`poly_spans()`) and the outline's own line-walking primitive, compiles
 them, and diffs both the fill and the outline pixel-for-pixel against
 `display_mcp.render` over convex, concave and self-touching shapes.

@@ -19,10 +19,12 @@ deliberate fixes called out in docs/PLAN.md ("Renderer"):
    preview refuses to show a wall the author did not ask for, and the
    warning is how they find out before the panel does.
 
-This package is split by concern -- ``colour.py`` (inks, mixes, Ctx,
-document_colors, the ink-mixing authoring warnings), ``fonts.py`` (the Face
-table, load_font, the uncompiled-glyph warning), ``shapes.py`` (rounded
-rect, icon stencil, poly geometry, the device-safety limits), and
+This package is split by concern -- ``canvas.py`` (WIDTH, HEIGHT,
+BEZEL_MARGIN, OFF_CANVAS_TOLERANCE: the one leaf every other module reads
+canvas geometry from), ``colour.py`` (inks, mixes, Ctx, document_colors,
+the ink-mixing authoring warnings), ``fonts.py`` (the Face table,
+load_font, the uncompiled-glyph warning), ``shapes.py`` (rounded rect,
+icon stencil, poly geometry, the device-safety limits), and
 ``swatches.py`` (swatch_document/swatch_groups) -- with this file left
 holding ``render()``/``check()`` themselves, the op-field table, the fmt
 template fields, and vocabulary(). Each submodule carries its own
@@ -76,6 +78,7 @@ from typing import Any
 
 from PIL import Image, ImageDraw, ImageFont
 
+from .canvas import BEZEL_MARGIN, HEIGHT, WIDTH
 from .colour import (
     _MIX_HINT,
     BUILTIN_MIXES,
@@ -130,11 +133,8 @@ from .swatches import swatch_document, swatch_groups
 # of them directly (`_grounds`, `_draw_rounded_rect`, `_poly_spans`, ...),
 # same as before the split.
 __all__ = [
-    "WIDTH",
-    "HEIGHT",
     "ICONS",
     "ICON_SIZES",
-    "BEZEL_MARGIN",
     "ANCHOR",
     "_NO_HASH_WARNING",
     "OP_FIELDS",
@@ -160,6 +160,10 @@ __all__ = [
     "check",
     "GRID_COLOR",
     "grid_overlay",
+    # canvas.py
+    "WIDTH",
+    "HEIGHT",
+    "BEZEL_MARGIN",
     # colour.py
     "BUILTIN_MIXES",
     "COLORS",
@@ -206,8 +210,6 @@ __all__ = [
     "swatch_groups",
 ]
 
-WIDTH, HEIGHT = 1200, 1600
-
 ICONS: dict[str, frozenset[str]] = {
     "weather-sunny": frozenset({"lg"}),
     "weather-partly-cloudy": frozenset({"lg"}),
@@ -224,9 +226,6 @@ ICONS: dict[str, frozenset[str]] = {
 
 
 ICON_SIZES = {"sm": 36, "md": 56, "lg": 88}
-
-
-BEZEL_MARGIN = 24
 
 
 ANCHOR = {"left": "la", "center": "ma", "right": "ra"}

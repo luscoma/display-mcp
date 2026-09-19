@@ -4,7 +4,7 @@ which it's built on -- can be extracted verbatim, compiled against a stub
 Display/ArduinoJson, and rasterised, then diffed pixel-for-pixel against
 display_mcp.render.render(). JSON edge cases that never reach the pixels
 (a palette key that isn't one character, a non-string row element, a bad
-mirror value...) are exercised on the Python side in tests/render/; this
+mirror value...) are exercised on the Python side in tests/renderer/; this
 module only has to prove the two sides paint the same thing once an op's
 fields are legal.
 

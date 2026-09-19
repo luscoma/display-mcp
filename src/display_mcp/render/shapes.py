@@ -1,7 +1,8 @@
 """Shapes: the rounded rect (D10), the icon stencil, the poly scanline fill
 and outline walk (D12), the device-safety limits (THICK_MAX/SPRITE_MAX_CELL/
-POLY_MAX_COORD) and the off-canvas tolerance every op's bounding box is
-checked against.
+POLY_MAX_COORD) and the off-canvas check every op's bounding box goes
+through (`OFF_CANVAS_TOLERANCE` itself lives in `canvas.py`, since it's a
+canvas constant, not a shape one -- this module is just its one reader).
 """
 
 from __future__ import annotations
@@ -11,10 +12,10 @@ from typing import TYPE_CHECKING, Any
 
 from PIL import Image, ImageDraw
 
+from .canvas import HEIGHT, OFF_CANVAS_TOLERANCE, WIDTH
+
 if TYPE_CHECKING:
     from .colour import Ctx
-
-WIDTH, HEIGHT = 1200, 1600
 
 THICK_MAX = 64
 
@@ -23,9 +24,6 @@ SPRITE_MAX_CELL = max(WIDTH, HEIGHT)
 
 
 POLY_MAX_COORD = 1 << 20
-
-
-OFF_CANVAS_TOLERANCE = 64
 
 
 def _off_canvas(v: float, bound: int) -> bool:
@@ -169,8 +167,9 @@ def _resolved_rect_radius(r_raw: Any, w: int, h: int, where: str, ctx: Ctx) -> i
     the disc's far edge lands one pixel past the box on that axis (e.g.
     `w == 40`: a corner circle of `r == 20` centred at `x + 20` spans
     `[x, x + 40]`, one column wider than the box's own `[x, x + 39]`) —
-    caught by the sweep in test_render.py. `max(0, ...)` guards a
-    zero-size box, where `min(w, h) - 1` would otherwise go negative.
+    caught by the sweep in tests/renderer/test_shapes.py. `max(0, ...)`
+    guards a zero-size box, where `min(w, h) - 1` would otherwise go
+    negative.
     """
     if isinstance(r_raw, bool) or not isinstance(r_raw, int) or r_raw < 0:
         if r_raw:

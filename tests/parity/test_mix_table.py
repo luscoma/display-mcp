@@ -85,7 +85,7 @@ def test_builtin_table_has_no_compiler_dependency():
 def test_builtin_mixes_match_the_firmware():
     """The firmware's table is the same 21 names with the same recipes as
     Python's, and every recipe names two real, different inks at a legal
-    density -- the SPEC-table parser test (tests/render/test_colour.py) is
+    density -- the SPEC-table parser test (tests/renderer/test_colour.py) is
     the stronger check that every name is documented, so this stays
     firmware-focused."""
     fw = _firmware_table()

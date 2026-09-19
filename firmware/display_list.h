@@ -69,8 +69,8 @@ static const int DOCUMENT_VERSION = 1;
 //
 // 64 / 1600 / 1 << 20 are each generous for anything actually drawn on a
 // 1200x1600 canvas. Mirrors THICK_MAX/SPRITE_MAX_CELL/POLY_MAX_COORD in
-// display_mcp.render; tests/test_firmware_parity.py extracts and diffs
-// all three.
+// display_mcp.render; tests/parity/test_limits_and_dispatch.py extracts
+// and diffs all three.
 static const int kThickMax = 64;
 static const int kSpriteMaxCell = 1600;
 static const int32_t kPolyMaxCoord = 1 << 20;
@@ -519,7 +519,7 @@ inline void draw_circle_ring(esphome::display::Display &it, int cx, int cy, int 
 /// one absolute phase rather than seven independent draws that could show
 /// a seam. `filled_rectangle(x, y, w, h)` covers `[x, x+w) x [y, y+h)`;
 /// `filled_circle` is centred on the given pixel. Eyeball, not pixel,
-/// parity with the Python's PIL ellipse -- see render/__init__.py's
+/// parity with the Python's PIL ellipse -- see render/shapes.py's
 /// `_draw_rounded_rect()` for which pixels may differ.
 ///
 /// `r <= 0` draws a plain fill and nothing else. The caller is expected to
@@ -771,7 +771,7 @@ inline int64_t floor_div(int64_t a, int64_t b) {
 /// what survives -- no vector of spans is ever materialised.
 ///
 /// A free function, not folded into draw_poly(), so the parity harness
-/// (tests/test_firmware_parity.py) can extract and diff it on its own
+/// (tests/parity/test_poly.py) can extract and diff it on its own
 /// against display_mcp.render's `_poly_spans()` -- the one place the two
 /// renderers could genuinely disagree, per D12. Products go through
 /// `int64_t`: `kPolyMaxCoord` bounds each coordinate, but

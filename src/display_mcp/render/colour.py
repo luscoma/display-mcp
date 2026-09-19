@@ -16,9 +16,8 @@ from typing import Any, NamedTuple
 
 from PIL import Image
 
+from .canvas import HEIGHT, WIDTH
 from .fonts import FONTS, _load_fonts
-
-WIDTH, HEIGHT = 1200, 1600
 
 COLORS = ("black", "white", "yellow", "red", "blue", "green")
 
@@ -127,7 +126,7 @@ class Ink(NamedTuple):
 
         This is the colour `render(dithered_colors=False)` paints, and it
         reproduces every hex in the named-palette table in docs/SPEC.md
-        exactly — tests/render/test_colour.py pins that, so the table
+        exactly — tests/renderer/test_colour.py pins that, so the table
         cannot drift away from the renderer.
 
         It is honest for a fill and optimistic for a glyph: a few pixels of

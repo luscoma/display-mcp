@@ -7,11 +7,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from .canvas import BEZEL_MARGIN, HEIGHT
 from .colour import BUILTIN_MIXES, COLORS, TIERS, Ctx, builtin_ink, hex_of, recipe_of
 from .fonts import FONTS
-
-WIDTH, HEIGHT = 1200, 1600
-BEZEL_MARGIN = 24
 
 _SWATCH_CHIP_W = 182  # px; fits the widest recipe string ("yellow+green 50")
 

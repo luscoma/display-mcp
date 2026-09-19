@@ -9,9 +9,20 @@ semantics.
 
 ## Layout
 
-- `src/display_mcp/render/` renderer port of dlpreview.py; `cli.py` its CLI
+- `src/display_mcp/render/` renderer port of dlpreview.py, split by
+  concern: `__init__.py` the op loop, `check()`, the op-field table and
+  vocabulary(); `canvas.py` WIDTH/HEIGHT/BEZEL_MARGIN/
+  OFF_CANVAS_TOLERANCE; `colour.py` inks, mixes, Ctx; `fonts.py` the Face
+  table and load_font; `shapes.py` rounded rect, icon stencil, poly
+  geometry, the device-safety limits; `swatches.py`
+  swatch_document/swatch_groups. `cli.py` its CLI.
 - `src/display_mcp/store.py`, `panel.py`, `main.py`, `config.py` core
 - `src/display_mcp/mcp_server.py`, `auth.py`, `prompts/` the MCP side
+- `tests/renderer/` the renderer's tests, one file per concern
+  (fields, colour, fonts/text, shapes, sprite, poly, swatches);
+  `tests/parity/` the host-compiled firmware diffs (poly's scanline, the
+  sprite/rect/circle harnesses, the device-safety constants,
+  `test_mix_table.py`'s mix_on()/built-in-mix table diff).
 - `deploy/` systemd unit, setup.sh, fonts fetch
 - `samples/display.json` known-good document, hash `3cd62aa76e731d2d`
 - `firmware/` ESPHome project, the source of truth for the panel:

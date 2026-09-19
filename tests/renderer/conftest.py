@@ -1,4 +1,4 @@
-"""Shared fixtures and helpers for the render test package.
+"""Shared fixtures and helpers for the renderer test package.
 
 `sample_doc`/`sprite_sample_doc`/`vocabulary_sample_doc`/`font_dir` come from
 the parent `tests/conftest.py` and apply here too. This file adds what more
