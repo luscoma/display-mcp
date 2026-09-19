@@ -8,9 +8,19 @@ Fixture note: `font_dir` comes from tests/conftest.py.
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
-from display_mcp.render import INK, check, render
+from display_mcp.render import (
+    INK,
+    MAX_COORD,
+    SPRITE_MAX_COLS,
+    SPRITE_MAX_PALETTE,
+    SPRITE_MAX_ROWS,
+    check,
+    render,
+)
 
 
 def _sprite_doc(**op_extra):
@@ -233,3 +243,128 @@ def test_sprite_thin_mix_check_only_fires_for_characters_a_row_actually_uses(fon
     }
     problems = check(doc, font_dir)
     assert not any("too thin to carry the density" in p for p in problems)
+
+
+# --------------------------------------------------------------------------
+# Grid bounds (docs/plans/firmware-bounds.md D7): cols, rows, palette size,
+# each independent of `cell` and each its own warn-and-skip.
+# --------------------------------------------------------------------------
+
+
+def test_sprite_at_the_cols_bound_is_accepted(font_dir):
+    doc = _sprite_doc(cell=1, rows=["K" * SPRITE_MAX_COLS], palette={"K": "black"})
+    problems = check(doc, font_dir)
+    assert not any("columns wide" in p for p in problems)
+
+
+def test_sprite_past_the_cols_bound_is_rejected_and_fast(font_dir):
+    doc = _sprite_doc(cell=1, rows=["K" * (SPRITE_MAX_COLS + 1)], palette={"K": "black"})
+    t0 = time.monotonic()
+    problems = check(doc, font_dir)
+    elapsed = time.monotonic() - t0
+    assert elapsed < 1.0, elapsed
+    assert problems == [
+        f"ops[0] sprite: sprite is {SPRITE_MAX_COLS + 1} columns wide, more than "
+        f"{SPRITE_MAX_COLS}; skipped"
+    ]
+
+
+def test_sprite_at_the_rows_bound_is_accepted(font_dir):
+    doc = _sprite_doc(cell=1, rows=["K"] * SPRITE_MAX_ROWS, palette={"K": "black"})
+    problems = check(doc, font_dir)
+    assert not any("rows, more than" in p for p in problems)
+
+
+def test_sprite_past_the_rows_bound_is_rejected_and_fast(font_dir):
+    """The ragged case from the plan: one long row near the column bound
+    plus thousands of empty rows past the row bound -- the row-count check
+    must run before the widest-row scan, so this rejects fast rather than
+    walking every one of those rows first."""
+    rows = ["K" * SPRITE_MAX_COLS] + [""] * (SPRITE_MAX_ROWS + 5000)
+    doc = _sprite_doc(cell=1, rows=rows, palette={"K": "black"})
+    t0 = time.monotonic()
+    problems = check(doc, font_dir)
+    elapsed = time.monotonic() - t0
+    assert elapsed < 1.0, elapsed
+    n_rows = len(rows)
+    assert problems == [
+        f"ops[0] sprite: sprite has {n_rows} rows, more than {SPRITE_MAX_ROWS}; skipped"
+    ]
+
+
+def test_sprite_at_the_palette_bound_is_accepted(font_dir):
+    palette = {chr(ord("a") + i): "black" for i in range(SPRITE_MAX_PALETTE)}
+    doc = _sprite_doc(cell=1, rows=["a"], palette=palette)
+    problems = check(doc, font_dir)
+    assert not any("palette has" in p for p in problems)
+
+
+def test_sprite_past_the_palette_bound_is_rejected(font_dir):
+    palette = {chr(ord("一") + i): "black" for i in range(SPRITE_MAX_PALETTE + 1)}
+    doc = _sprite_doc(cell=1, rows=["a"], palette=palette)
+    problems = check(doc, font_dir)
+    n_entries = SPRITE_MAX_PALETTE + 1
+    assert problems == [
+        f"ops[0] sprite: sprite palette has {n_entries} entries, more than "
+        f"{SPRITE_MAX_PALETTE}; skipped"
+    ]
+
+
+def test_sprite_at_the_pixel_box_bound_is_accepted(font_dir):
+    """x + cols*cell == MAX_COORD exactly is legal (docs/plans/
+    firmware-bounds.md D4/D7): x itself is well within MAX_COORD, but the
+    box's far edge lands exactly on the bound."""
+    doc = _sprite_doc(x=MAX_COORD - 10, y=0, cell=1, rows=["K" * 10], palette={"K": "black"})
+    problems = check(doc, font_dir)
+    assert not any("pixel box" in p for p in problems)
+
+
+def test_sprite_past_the_pixel_box_bound_is_rejected(font_dir):
+    doc = _sprite_doc(x=MAX_COORD - 9, y=0, cell=1, rows=["K" * 10], palette={"K": "black"})
+    problems = check(doc, font_dir)
+    assert problems == [
+        f"ops[0] sprite: sprite pixel box out of range (|v| <= {MAX_COORD}); skipped"
+    ]
+
+
+def test_sprite_no_palette_entry_warning_is_capped(font_dir):
+    """docs/plans/firmware-bounds.md D7: eight distinct offending
+    characters, each its own line, plus one "...and more" line -- not one
+    line per distinct character, however many there are. Also proof the
+    *set* tracking which characters have already been warned about stays
+    at 8 (the review amendment this pins), not just the printed lines:
+    each of the 8 own_lines names a genuinely distinct character -- if the
+    cap only throttled logging while still inserting into the set, this
+    would still pass, but a repeat of an already-seen character past the
+    cap would not silently re-check membership against an ever-growing
+    set (exercised by using more than twice the cap's worth of distinct
+    input characters, all of which must still route to the single
+    overflow line rather than any of them getting their own)."""
+    n_distinct = 20
+    row = "".join(chr(ord("一") + i) for i in range(n_distinct))
+    doc = _sprite_doc(cell=1, rows=[row], palette={})
+    problems = check(doc, font_dir)
+    own_lines = [p for p in problems if "no palette entry for" in p]
+    overflow_lines = [p for p in problems if "...and more" in p]
+    assert len(own_lines) == 8
+    assert len(overflow_lines) == 1
+    # Each individual line names a distinct character -- the cap didn't
+    # just stop printing while quietly re-warning the same one repeatedly.
+    warned_reprs = {p.split("no palette entry for ")[1].split(";")[0] for p in own_lines}
+    assert len(warned_reprs) == 8
+
+
+def test_sprite_repeated_character_after_the_cap_is_not_an_overflow(font_dir):
+    """docs/plans/firmware-bounds.md's review amendment: exactly eight
+    distinct characters (A-H), the first (A) repeated once more at the
+    end -- once the set holds eight entries, a *repeat* of an
+    already-warned character must not fall into the "...and more" branch
+    just because the set happens to be full by then. There is no ninth
+    distinct character here at all, so no overflow line should ever
+    appear."""
+    doc = _sprite_doc(cell=1, rows=["ABCDEFGHA"], palette={})
+    problems = check(doc, font_dir)
+    own_lines = [p for p in problems if "no palette entry for" in p]
+    overflow_lines = [p for p in problems if "...and more" in p]
+    assert len(own_lines) == 8
+    assert overflow_lines == []

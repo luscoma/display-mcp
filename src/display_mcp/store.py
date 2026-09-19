@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 
 NAME_RE = re.compile(r"^[a-z0-9-]{1,32}$")
 DEFAULT_NAME = "default"
-MAX_DOC_BYTES = 256 * 1024
+MAX_DOC_BYTES = 64 * 1024
 
 
 class DisplayError(ValueError):

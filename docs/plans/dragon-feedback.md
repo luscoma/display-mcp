@@ -135,7 +135,7 @@ icons       {name: [size classes]}, icon_sizes {class: px}
 anchors     [left, center, right]                 the values text.a/fmt.a accept
 ops         {name: {required: [...], optional: {field: default}}}   the D1 table
 fmt_fields  [hash, hash16, time, time24, battery, battv]
-limits      {max_bytes: 262144}
+limits      {max_bytes: 65536}
 ```
 
 The `tier` (dark / light / mid, the SPEC.md "named palette" headings) is a
@@ -165,11 +165,12 @@ Two new fields in `validate`'s return, beside `hash`/`ops`/`bytes`/`warnings`:
   {"recipe": "ink", "hex": "#9C2E2A"}`. Unknown names are absent here and
   present in `warnings`, as now. This is `Ctx.ink()` + `Ink.avg`, which the
   contrast check already computes and throws away.
-- `max_bytes`: `MAX_DOC_BYTES`, 262144.
+- `max_bytes`: `MAX_DOC_BYTES`, 65536 (64 KB; lowered from the 256 KB this
+  entry originally recorded -- see docs/plans/firmware-bounds.md D9).
 
 The report also asked for "what the panel considers large". That number is
-not known: the store's 256 KB limit and the firmware's
-`max_response_buffer_size: 256kB` are ceilings, not a measured parse limit
+not known: the store's 64 KB limit and the firmware's
+`max_response_buffer_size: 65536B` are ceilings, not a measured parse limit
 on the ESP32-S3, and the largest document verified on the glass is the
 fills coupon from `ink-mixing-coupon.py`, 169 ops and 15.6 KB. A soft
 threshold above that would be invented, so there is none until it is
@@ -417,6 +418,11 @@ is in doubt — decided in 2026-09-18. Sprite covers the report's own
 motivating case (stair-stepped wings at 40 px cells); `poly` earns its
 place for UI shapes — chevrons, arrows, a timeline pointer — as much as for
 the dragon.
+
+Superseded 2026-09-19: the per-point coordinate bound this decision's
+implementation carried (`kPolyMaxCoord` / `POLY_MAX_COORD`, `1 << 20`) is
+now `kMaxCoord` / `MAX_COORD` (4096), one bound shared by every op's
+coordinate and size fields — see `docs/plans/firmware-bounds.md` D4.
 
 ### D13. Declined: `group` with origin, scale and mirror
 

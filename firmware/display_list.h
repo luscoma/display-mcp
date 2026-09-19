@@ -34,6 +34,7 @@
 #include "esphome/components/image/image.h"
 #include "esphome/components/json/json_util.h"
 #include "esphome/core/color.h"
+#include "esphome/core/hal.h"
 #include "esphome/core/log.h"
 
 namespace dl {
@@ -49,31 +50,83 @@ static const char *const TAG = "display_list";
 // draw_display_list).
 static const int DOCUMENT_VERSION = 1;
 
-// Three device-safety bounds, together: a document field the firmware
-// trusts directly as a loop count or a coordinate magnitude must never
-// let an adversarial, or merely wrong, document turn one op into a
-// multi-second loop or an out-of-range accumulation, on a panel with no
-// watchdog to save it.
+// Device-safety bounds, together: a document field the firmware trusts
+// directly as a loop count, a coordinate magnitude or a string length must
+// never let an adversarial, or merely wrong, document turn one op into a
+// multi-second loop, an out-of-range accumulation or a failed allocation,
+// on a panel with no heap to spare and (at kThickMax's original writing) no
+// watchdog margin to lose. docs/plans/firmware-bounds.md (D1-D9) is the
+// decision record for everything below; docs/plans/wake-sleep-flow.md is
+// the sprite-allocation crash that started the audit. Content past any of
+// these bounds is skipped with a warning, never drawn wrong and never
+// allowed to run long -- CLAUDE.md's "warnings never block a publish" rule
+// is what makes skip-not-reject safe here.
+//
+// Each bound here is mirrored by the same name (kFoo -> FOO) in
+// display_mcp.render (mostly render/shapes.py); tests/parity/
+// test_limits_and_dispatch.py extracts and diffs every one of them by name.
 //
 // kThickMax bounds an outline's `t` (line, rect/circle/poly outline):
 // thick_line()'s and the rect outline loop's `for (int i = 0; i < t;
 // i++)` clamp to it silently; a bad `t` is authoring feedback and stays
 // on the Python side (D1).
-// kSpriteMaxCell bounds `sprite`'s `cell` (D9) so c0*cell/row*cell
-// arithmetic can never approach INT32_MAX even for the largest document
+// kSpriteMaxCell bounds `sprite`'s `cell` so c0*cell/row*cell arithmetic
+// can never approach INT32_MAX even for the largest document
 // MAX_DOC_BYTES allows; past this bound there is nothing sensible to
 // draw, so draw_sprite() rejects the whole op rather than clamping it.
-// kPolyMaxCoord bounds a `poly` point's magnitude (D12) so
-// poly_spans()'s scanline walk and crossing arithmetic never has to
-// reconcile a coordinate this large; draw_poly() rejects it outright too.
-//
-// 64 / 1600 / 1 << 20 are each generous for anything actually drawn on a
-// 1200x1600 canvas. Mirrors THICK_MAX/SPRITE_MAX_CELL/POLY_MAX_COORD in
-// display_mcp.render; tests/parity/test_limits_and_dispatch.py extracts
-// and diffs all three.
+// kMaxCoord (D4) bounds every coordinate and size field of every op --
+// x, y, w, h, x2, y2, r, `text`'s `lh`, each poly point, and a sprite's
+// pixel box (x + cols*cell, y + rows*cell) -- more than twice the
+// 1200x1600 canvas on either axis. It does NOT make every op's cost the
+// same: a plain rect fill is clipped to the canvas (D5,
+// clipped_filled_rectangle()) and so costs at most the canvas itself
+// (~1.92M px); an unclipped filled circle at r == kMaxCoord costs
+// ~pi*r^2, ~52.7M px (~2.6s); a rounded rect's four corner circles are
+// the same shape at a smaller radius (r <= (min(w,h)-1)/2 <=~2047); a
+// sprite whose pixel box spans the full -kMaxCoord..kMaxCoord range on
+// both axes costs up to ~8192x8192, ~67M px (~3.4s); a poly outline (D8,
+// see thick_line()'s own clip_line_cs()) is clipped to the canvas plus a
+// kThickMax margin per segment -- up to kPolyMaxPts edges * kThickMax
+// parallel copies * that clipped diagonal (~2000px on the real 1200x1600
+// canvas) -- costs the most of any of them, ~87M px (~4.35s); docs/plans/
+// firmware-bounds.md's "Review amendments" section has the fuller
+// numbers, including how that estimate was checked. The actual safety
+// argument is the 20s draw budget (D3) plus every single op finishing
+// well under the 30s watchdog (D2), not a
+// single uniform per-op ceiling. Supersedes the old `kPolyMaxCoord`
+// (1 << 20), which existed only to keep poly_spans()'s int64 crossing
+// arithmetic away from overflow -- trivially true at this much smaller
+// value, so one name now does both jobs.
+// kTextMaxLen bounds `text.s` and `fmt.s` (the template, before expansion):
+// past it the whole op is skipped, which is what keeps fit_line()'s
+// quadratic cost (~7ms at the bound) and wrap()'s word vector (~6KB at the
+// bound) bounded. kTextMaxLines bounds wrapped `lines` the way kThickMax
+// bounds `t` -- clamped, not skipped.
+// kSpriteMaxCols/kSpriteMaxRows/kSpriteMaxPalette bound the grid a sprite
+// can describe; together with kMaxCoord on its pixel box, draw_sprite()'s
+// ragged-row walk can never visit more than kSpriteMaxCols * kSpriteMaxRows
+// cells.
+// kPolyMaxPts bounds how many points a poly's `pts` can push into its own
+// vector -- enforced while parsing, so the vector itself never grows past
+// it.
 static const int kThickMax = 64;
 static const int kSpriteMaxCell = 1600;
-static const int32_t kPolyMaxCoord = 1 << 20;
+static const int32_t kMaxCoord = 4096;
+static const int kTextMaxLen = 512;
+static const int kTextMaxLines = 64;
+static const int kSpriteMaxCols = 1200;
+static const int kSpriteMaxRows = 1600;
+static const int kSpriteMaxPalette = 64;
+static const int kPolyMaxPts = 1024;
+
+// D3's backstop: draw_display_list() reads millis() once at entry and
+// checks it at the top of every op, stopping (not aborting) the loop once
+// this many milliseconds have passed. This is the safety net under the
+// per-op bounds above, not a substitute for them -- it protects against
+// a *legal* document with simply too many ops, the one shape of slowness
+// the per-op bounds can't see. No Python mirror -- there is no device
+// clock to mirror against -- see docs/SPEC.md's note on it instead.
+static const uint32_t kDrawBudgetMs = 20000;
 
 struct DisplayListAssets {
   // Type scale, keyed by the name the JSON uses: xl, lg, md, sm, xs, mono.
@@ -421,23 +474,148 @@ inline esphome::display::TextAlign align_of(const char *a) {
   return esphome::display::TextAlign::TOP_LEFT;
 }
 
+// Sign-correct floor division: C++'s `/` truncates toward zero, but both
+// clip_line_cs() below and the even-odd scanline fill further down
+// (poly_spans(), docs/plans/dragon-feedback.md D12) need a genuine floor
+// so an intersection with a negative numerator or denominator lands on
+// the integer both sides agree on. Python's `//` is already floor
+// division, so display_mcp.render's mirrors (_clip_line_cs(),
+// _poly_spans()) need no helper of their own to match this. Defined here,
+// ahead of its first use, rather than left where poly_spans() alone
+// needed it.
+inline int64_t floor_div(int64_t a, int64_t b) {
+  const int64_t q = a / b;
+  const int64_t r = a % b;
+  return (r != 0 && ((r < 0) != (b < 0))) ? q - 1 : q;
+}
+
+// Cohen-Sutherland outcodes for clip_line_cs() below -- which side(s) of
+// [xmin,xmax] x [ymin,ymax] a point falls outside on, ORed together (a
+// corner point carries two bits).
+enum { kCsInside = 0, kCsLeft = 1, kCsRight = 2, kCsBottom = 4, kCsTop = 8 };
+
+inline int cs_outcode(int x, int y, int xmin, int ymin, int xmax, int ymax) {
+  int code = kCsInside;
+  if (x < xmin)
+    code |= kCsLeft;
+  else if (x > xmax)
+    code |= kCsRight;
+  if (y < ymin)
+    code |= kCsBottom;
+  else if (y > ymax)
+    code |= kCsTop;
+  return code;
+}
+
+/// Cohen-Sutherland line clipping: `(x1,y1)-(x2,y2)` clipped in place to
+/// `[xmin,xmax] x [ymin,ymax]` (inclusive). Returns false when the segment
+/// misses the rectangle entirely -- draw nothing -- true otherwise, with
+/// the endpoints updated to the clipped segment (docs/plans/
+/// firmware-bounds.md D4's review amendment).
+///
+/// This is what keeps thick_line() -- and through it, `line` and `poly`'s
+/// outline -- from ever walking a Bresenham line longer than the clip
+/// rectangle's own diagonal, however far apart its true endpoints are (up
+/// to `2 * kMaxCoord` on a side): without it, a `poly` outline alone could
+/// reach `kPolyMaxPts` edges * `kThickMax` parallel copies * a diagonal of
+/// millions of pixels, hundreds of millions of pixel writes, well past the
+/// watchdog on its own. `line`/`rect` outlines are already documented as
+/// eyeball, not pixel, parity with the Python (docs/SPEC.md); moving a
+/// clipped endpoint onto the rectangle's own boundary can shift a
+/// boundary pixel by one from what an *unclipped* walk would have drawn,
+/// which is within that same accepted tolerance -- the two only ever draw
+/// the identical segment to the unclipped walk when it doesn't reach the
+/// clip rectangle at all, which is the common case for anything actually
+/// meant to land on the panel.
+///
+/// The four intersection expressions use floor_div(), not `/` -- `/`
+/// truncates toward zero, and for an edge crossing the clip boundary with
+/// a negative numerator or denominator that can round to a different
+/// integer than a true floor, which is what `_clip_line_cs()`'s Python
+/// mirror already computes (its `//` is a genuine floor). Without
+/// floor_div() here, the two implementations disagreed on which pixel a
+/// clipped endpoint lands on for a real fraction of off-canvas edges --
+/// confirmed by brute force, not assumed -- which would have made
+/// `poly`'s outline, the one shape in this file held to pixel-exact
+/// parity rather than eyeball parity, wrong exactly where this clip
+/// engages.
+inline bool clip_line_cs(int &x1, int &y1, int &x2, int &y2, int xmin, int ymin, int xmax,
+                         int ymax) {
+  int code1 = cs_outcode(x1, y1, xmin, ymin, xmax, ymax);
+  int code2 = cs_outcode(x2, y2, xmin, ymin, xmax, ymax);
+  while (true) {
+    if (!(code1 | code2))
+      return true;  // both endpoints inside
+    if (code1 & code2)
+      return false;  // both outside on the same side -- trivially rejected
+    const int code_out = code1 ? code1 : code2;
+    int x = 0, y = 0;
+    // floor_div(), not `/`: `/` truncates toward zero, and for an edge
+    // that crosses the clip boundary with a negative numerator or
+    // denominator that lands the intersection on a different integer
+    // than a genuine floor would -- confirmed by brute force over legal
+    // edges against the production clip box, ~11.5% of off-canvas edges
+    // clipped to an endpoint one row/column away from a floor-consistent
+    // clip, 369 of them drawing a visibly different pixel set from the
+    // Python mirror (docs/plans/firmware-bounds.md's review amendments).
+    // int64_t throughout since the products can exceed INT32_MAX even at
+    // this clip box's modest size.
+    if (code_out & kCsTop) {
+      x = x1 + static_cast<int>(floor_div(static_cast<int64_t>(x2 - x1) * (ymax - y1), y2 - y1));
+      y = ymax;
+    } else if (code_out & kCsBottom) {
+      x = x1 + static_cast<int>(floor_div(static_cast<int64_t>(x2 - x1) * (ymin - y1), y2 - y1));
+      y = ymin;
+    } else if (code_out & kCsRight) {
+      y = y1 + static_cast<int>(floor_div(static_cast<int64_t>(y2 - y1) * (xmax - x1), x2 - x1));
+      x = xmax;
+    } else {  // kCsLeft
+      y = y1 + static_cast<int>(floor_div(static_cast<int64_t>(y2 - y1) * (xmin - x1), x2 - x1));
+      x = xmin;
+    }
+    if (code_out == code1) {
+      x1 = x;
+      y1 = y;
+      code1 = cs_outcode(x1, y1, xmin, ymin, xmax, ymax);
+    } else {
+      x2 = x;
+      y2 = y;
+      code2 = cs_outcode(x2, y2, xmin, ymin, xmax, ymax);
+    }
+  }
+}
+
 inline void thick_line(esphome::display::Display &it, int x1, int y1, int x2, int y2, int t,
                        esphome::Color c) {
   if (t > kThickMax)
     t = kThickMax;
+  // Every segment drawn below is clipped to the canvas expanded by
+  // kThickMax on every side before it reaches Bresenham (docs/plans/
+  // firmware-bounds.md D4's review amendment; see clip_line_cs() for why
+  // this is safe under the existing eyeball-parity rule for line
+  // outlines). The margin, not a flush clip to the canvas itself, is what
+  // keeps a thick line's parallel copies -- each shifted by up to t-1 px
+  // -- from coming up short right at the edge after their own shift.
+  const int margin = kThickMax;
+  const int xmin = -margin, ymin = -margin;
+  const int xmax = it.get_width() - 1 + margin, ymax = it.get_height() - 1 + margin;
+  auto clipped_line = [&](int lx1, int ly1, int lx2, int ly2) {
+    if (clip_line_cs(lx1, ly1, lx2, ly2, xmin, ymin, xmax, ymax))
+      it.line(lx1, ly1, lx2, ly2, c);
+  };
   if (t <= 1) {
-    it.line(x1, y1, x2, y2, c);
+    clipped_line(x1, y1, x2, y2);
     return;
   }
   const bool vertical = (x1 == x2);
   const bool horizontal = (y1 == y2);
   for (int i = 0; i < t; i++) {
     if (vertical)
-      it.line(x1 + i, y1, x2 + i, y2, c);
+      clipped_line(x1 + i, y1, x2 + i, y2);
     else if (horizontal)
-      it.line(x1, y1 + i, x2, y2 + i, c);
+      clipped_line(x1, y1 + i, x2, y2 + i);
     else
-      it.line(x1, y1 + i, x2, y2 + i, c);  // diagonals thicken vertically only
+      clipped_line(x1, y1 + i, x2, y2 + i);  // diagonals thicken vertically only
   }
 }
 
@@ -483,9 +661,17 @@ inline void circle_half_widths(int radius, std::vector<int> &half) {
 /// job, not this function's -- see the `circle` branch below, which keeps
 /// calling circle() directly for `t == 1` rather than routing a one-row
 /// annulus through here. `r < 0` draws nothing.
+///
+/// `r` is bound-checked here too (docs/plans/firmware-bounds.md D4's
+/// review amendment), not only relied on from the op loop's own `circle: r
+/// out of range` check: this function has its own harness
+/// (tests/parity/test_rect_circle.py) that calls it directly, bypassing
+/// the loop entirely, and circle_half_widths() below allocates two
+/// `(radius + 1)`-int vectors -- unbounded, that is two vectors sized to
+/// whatever `r` a caller hands it, not merely slow.
 inline void draw_circle_ring(esphome::display::Display &it, int cx, int cy, int r, int t,
                              esphome::Color c) {
-  if (r < 0)
+  if (r < 0 || r > kMaxCoord)
     return;
   std::vector<int> outer;
   circle_half_widths(r, outer);
@@ -512,6 +698,35 @@ inline void draw_circle_ring(esphome::display::Display &it, int cx, int cy, int 
   }
 }
 
+/// Clip a span `[x, x+w)` to `[0, bound)` (docs/plans/firmware-bounds.md
+/// D5): `x`/`w` are updated in place; `w` comes back `<= 0` when the span
+/// does not intersect `[0, bound)` at all, which the caller treats as
+/// "draw nothing on this axis".
+inline void clip_span(int &x, int &w, int bound) {
+  if (x < 0) {
+    w += x;
+    x = 0;
+  }
+  if (x + w > bound)
+    w = bound - x;
+}
+
+/// `filled_rectangle()`, clipped to `it`'s own canvas first (D5): a fill
+/// (and the Bayer mix a mixed one dithers through) is purely position-based,
+/// so painting only the box's intersection with `[0, width) x [0, height)`
+/// draws pixel-identical output to painting the whole box and letting
+/// draw_pixel_at's own bounds check silently drop what falls outside -- just
+/// far cheaper once a box reaches well off canvas, which D4 alone still
+/// allows up to kMaxCoord on a side. Draws nothing if the box misses the
+/// canvas entirely on either axis.
+inline void clipped_filled_rectangle(esphome::display::Display &it, int x, int y, int w, int h,
+                                     esphome::Color c) {
+  clip_span(x, w, it.get_width());
+  clip_span(y, h, it.get_height());
+  if (w > 0 && h > 0)
+    it.filled_rectangle(x, y, w, h, c);
+}
+
 /// A filled rect, rounded at the corners when `r > 0`
 /// (docs/plans/dragon-feedback.md D10): the middle band, the two side
 /// bands and four filled circles, all through the caller's own `mix` (the
@@ -522,6 +737,13 @@ inline void draw_circle_ring(esphome::display::Display &it, int cx, int cy, int 
 /// parity with the Python's PIL ellipse -- see render/shapes.py's
 /// `_draw_rounded_rect()` for which pixels may differ.
 ///
+/// The plain fill (`r <= 0`) and each of the rounded fill's straight bands
+/// go through `clipped_filled_rectangle()` (D5), so a box that straddles
+/// or sits well off the canvas costs no more than the visible canvas
+/// itself. The four corner circles are left as plain `filled_circle()`
+/// calls -- D4 alone already bounds a filled circle's cost to `O(r^2) <=
+/// kMaxCoord^2`, which is fine on its own (docs/plans/firmware-bounds.md).
+///
 /// `r <= 0` draws a plain fill and nothing else. The caller is expected to
 /// have already clamped `r` to `(min(w, h) - 1) / 2` -- this function
 /// trusts that bound rather than re-deriving it, since the op loop is the
@@ -529,14 +751,14 @@ inline void draw_circle_ring(esphome::display::Display &it, int cx, int cy, int 
 inline void draw_rounded_rect(esphome::display::Display &mix, int x, int y, int w, int h, int r,
                                esphome::Color c) {
   if (r <= 0) {
-    mix.filled_rectangle(x, y, w, h, c);
+    clipped_filled_rectangle(mix, x, y, w, h, c);
     return;
   }
   if (w - 2 * r > 0)
-    mix.filled_rectangle(x + r, y, w - 2 * r, h, c);
+    clipped_filled_rectangle(mix, x + r, y, w - 2 * r, h, c);
   if (h - 2 * r > 0) {
-    mix.filled_rectangle(x, y + r, r, h - 2 * r, c);
-    mix.filled_rectangle(x + w - r, y + r, r, h - 2 * r, c);
+    clipped_filled_rectangle(mix, x, y + r, r, h - 2 * r, c);
+    clipped_filled_rectangle(mix, x + w - r, y + r, r, h - 2 * r, c);
   }
   mix.filled_circle(x + r, y + r, r, c);
   mix.filled_circle(x + w - 1 - r, y + r, r, c);
@@ -634,7 +856,25 @@ class MixDisplay : public esphome::display::Display {
 /// wrong, mirroring the Python and logging why. Nothing is drawn before
 /// this check passes.
 inline bool draw_sprite(esphome::display::Display &it, JsonObject o, JsonObject palette) {
-  const int x = o["x"] | 0, y = o["y"] | 0;
+  // Read as double, not `o["x"] | 0` (docs/plans/firmware-bounds.md D4's
+  // review amendment): ArduinoJson's typed default operator returns the
+  // default for ANY value that isn't exactly an in-range JSON integer --
+  // a JSON float included -- so `"x": 1e10` would silently read as 0
+  // rather than being rejected. Checked here, not only relied on from the
+  // op loop's own x/y bound, so draw_sprite() stays a self-contained parse
+  // the same way draw_poly() is -- this function has its own harness
+  // (tests/parity/test_sprite.py) that calls it directly, bypassing the
+  // loop entirely.
+  const double x_d = o["x"] | 0.0, y_d = o["y"] | 0.0;
+  if (x_d < -kMaxCoord || x_d > kMaxCoord) {
+    ESP_LOGW(TAG, "sprite: x=%g out of range (|v| <= %d); skipped", x_d, kMaxCoord);
+    return false;
+  }
+  if (y_d < -kMaxCoord || y_d > kMaxCoord) {
+    ESP_LOGW(TAG, "sprite: y=%g out of range (|v| <= %d); skipped", y_d, kMaxCoord);
+    return false;
+  }
+  const int x = static_cast<int>(x_d), y = static_cast<int>(y_d);
   const int cell = o["cell"] | 0;
   JsonArray sprite_rows = o["rows"];
   JsonObject sprite_palette = o["palette"];
@@ -654,6 +894,23 @@ inline bool draw_sprite(esphome::display::Display &it, JsonObject o, JsonObject 
              "sprite needs an integer cell >= 1 and <= %d, rows (a list of "
              "strings) and palette (an object); skipped",
              kSpriteMaxCell);
+    return false;
+  }
+
+  // Grid dimensions and palette size, bounded independently of `cell`
+  // (docs/plans/firmware-bounds.md D7): together with kMaxCoord on the
+  // pixel box below, these keep the ragged-row walk further down to at
+  // most kSpriteMaxCols * kSpriteMaxRows cell visits, however small `cell`
+  // itself is.
+  const int n_rows = static_cast<int>(sprite_rows.size());
+  if (n_rows > kSpriteMaxRows) {
+    ESP_LOGW(TAG, "sprite has %d rows, more than %d; skipped", n_rows, kSpriteMaxRows);
+    return false;
+  }
+  const int n_palette = static_cast<int>(sprite_palette.size());
+  if (n_palette > kSpriteMaxPalette) {
+    ESP_LOGW(TAG, "sprite palette has %d entries, more than %d; skipped", n_palette,
+             kSpriteMaxPalette);
     return false;
   }
 
@@ -678,6 +935,23 @@ inline bool draw_sprite(esphome::display::Display &it, JsonObject o, JsonObject 
     for (size_t i = 0; i < row.size(); i = utf8_next(row, i))
       n_cp++;
     cols = std::max(cols, n_cp);
+  }
+  if (static_cast<int>(cols) > kSpriteMaxCols) {
+    ESP_LOGW(TAG, "sprite is %d columns wide, more than %d; skipped", static_cast<int>(cols),
+             kSpriteMaxCols);
+    return false;
+  }
+
+  // The far edge of the pixel box this sprite would actually occupy
+  // (docs/plans/firmware-bounds.md D4) -- `x`/`y` themselves are already
+  // bound-checked above; this is the sprite-specific arithmetic no other
+  // op does. int64_t so cols/rows * cell can never overflow before the
+  // comparison runs.
+  const int64_t x_edge = static_cast<int64_t>(x) + static_cast<int64_t>(cols) * cell;
+  const int64_t y_edge = static_cast<int64_t>(y) + static_cast<int64_t>(n_rows) * cell;
+  if (std::abs(x_edge) > kMaxCoord || std::abs(y_edge) > kMaxCoord) {
+    ESP_LOGW(TAG, "sprite pixel box out of range (|v| <= %d); skipped", kMaxCoord);
+    return false;
   }
 
   const bool mirror = !strcmp(o["mirror"] | "", "x");
@@ -711,6 +985,13 @@ inline bool draw_sprite(esphome::display::Display &it, JsonObject o, JsonObject 
 
   const Ink black_ink{esphome::Color(0, 0, 0), esphome::Color(0, 0, 0), 100};
   std::set<std::string> warned;
+  // The "no palette entry" warning set is capped (docs/plans/
+  // firmware-bounds.md D7): eight distinct offending characters get their
+  // own line, a ninth gets one more "...and more" line, and nothing after
+  // that logs at all -- a sprite with hundreds of stray characters must not
+  // turn a single wake's log into hundreds of ESP_LOGW calls.
+  static const size_t kMaxWarnedChars = 8;
+  bool warned_overflow = false;
   size_t r = 0;
   for (JsonVariant rv : sprite_rows) {
     const char *s = rv;
@@ -723,29 +1004,59 @@ inline bool draw_sprite(esphome::display::Display &it, JsonObject o, JsonObject 
       cps.emplace_back(i, j - i);
       i = j;
     }
-    // Grid column -> the codepoint drawn there, "." past the row's own
-    // length; a mirrored row reads its codepoints from the far end, which
-    // is where the padding then lands.
-    auto cell_at = [&](size_t c) -> std::string {
+    // Grid column -> the (offset, length) span of the codepoint drawn
+    // there in `row`, or `npos` past the row's own length (transparent); a
+    // mirrored row reads its codepoints from the far end, which is where
+    // the padding then lands. Returning a span instead of a std::string
+    // means the run-merge loop below can walk a whole row without
+    // allocating one string per cell -- the hot loop this file's crash was
+    // in (docs/plans/wake-sleep-flow.md) -- and only ever builds a string
+    // for the single winning span of each run.
+    auto span_at = [&](size_t c) -> std::pair<size_t, size_t> {
       const size_t idx = mirror ? cols - 1 - c : c;
-      return idx < cps.size() ? row.substr(cps[idx].first, cps[idx].second) : std::string(".");
+      return idx < cps.size() ? cps[idx] : std::pair<size_t, size_t>(std::string::npos, 0);
+    };
+    auto span_eq = [&](const std::pair<size_t, size_t> &a, const std::pair<size_t, size_t> &b) {
+      if (a.first == std::string::npos || b.first == std::string::npos)
+        return a.first == b.first;  // both "past the row" -- the same transparent cell
+      return a.second == b.second && !row.compare(a.first, a.second, row, b.first, b.second);
     };
     size_t c0 = 0;
     while (c0 < cols) {
-      const std::string ch = cell_at(c0);
+      const auto sp0 = span_at(c0);
       size_t c1 = c0 + 1;
-      while (c1 < cols && cell_at(c1) == ch)
+      while (c1 < cols && span_eq(span_at(c1), sp0))
         c1++;
       const size_t run = c1 - c0;
+      const std::string ch =
+          sp0.first == std::string::npos ? "." : row.substr(sp0.first, sp0.second);
       if (ch != "." && ch != " ") {
         Ink cell_ink = black_ink;
         auto entry = char_ink.find(ch);
         if (entry != char_ink.end()) {
           cell_ink = entry->second;
-        } else if (warned.insert(ch).second) {
+        } else if (warned.count(ch)) {
+          // Already reported -- a repeat of a character that made the
+          // first eight must not fall into the overflow branch below just
+          // because the set happens to be full by now (review amendment
+          // to docs/plans/firmware-bounds.md D7: without this check first,
+          // e.g. rows ["ABCDEFGHA"] with an empty palette logged "A" as
+          // the overflow line on its second occurrence instead of nothing
+          // at all, disagreeing with the Python mirror).
+        } else if (warned.size() < kMaxWarnedChars) {
+          // Checked, then inserted -- not the other way around: inserting
+          // first and capping only the LOG lines left `warned` itself
+          // unbounded, so a sprite with thousands of distinct offending
+          // characters would still grow the set (and heap-allocate one
+          // std::string per entry) without limit, even though only eight
+          // lines were ever printed.
+          warned.insert(ch);
           // The UTF-8 sequence, printed with %s -- %c would only show its
           // first byte.
           ESP_LOGW(TAG, "sprite: no palette entry for '%s'; drawing black", ch.c_str());
+        } else if (!warned_overflow) {
+          warned_overflow = true;
+          ESP_LOGW(TAG, "sprite: ...and more characters with no palette entry");
         }
         MixDisplay smix(it);
         smix.add_ink(cell_ink.a, cell_ink);
@@ -757,18 +1068,6 @@ inline bool draw_sprite(esphome::display::Display &it, JsonObject o, JsonObject 
     r++;
   }
   return true;
-}
-
-// Sign-correct floor division: C++'s `/` truncates toward zero, but the
-// even-odd scanline fill below (docs/plans/dragon-feedback.md D12) needs a
-// genuine floor so a crossing with a negative numerator or denominator
-// lands on the integer both sides agree on. Python's `//` is already floor
-// division, so display_mcp.render's mirror (_poly_spans()) needs no helper
-// of its own to match this.
-inline int64_t floor_div(int64_t a, int64_t b) {
-  const int64_t q = a / b;
-  const int64_t r = a % b;
-  return (r != 0 && ((r < 0) != (b < 0))) ? q - 1 : q;
 }
 
 /// Even-odd scanline fill (D12): for each integer scanline `y` from `ymin`
@@ -788,13 +1087,21 @@ inline int64_t floor_div(int64_t a, int64_t b) {
 /// (tests/parity/test_poly.py) can extract and diff it on its own
 /// against display_mcp.render's `_poly_spans()` -- the one place the two
 /// renderers could genuinely disagree, per D12. Products go through
-/// `int64_t`: `kPolyMaxCoord` bounds each coordinate, but
-/// `(y - y0) * (x1 - x0)` can still exceed INT32_MAX at that bound.
+/// `int64_t` even though `kMaxCoord` (docs/plans/firmware-bounds.md D4) is
+/// now small enough that `(y - y0) * (x1 - x0)` fits comfortably in an
+/// int32 -- there is no cost to keeping the wider type, and it stays
+/// correct if the bound ever moves.
+///
+/// `xs` is declared once, outside the scanline loop, and `clear()`ed at the
+/// top of each iteration (docs/plans/firmware-bounds.md D8) rather than
+/// redeclared per `y` -- one heap allocation reused `ymax - ymin + 1`
+/// times instead of that many fresh ones.
 inline void poly_spans(const std::vector<std::pair<int, int>> &pts, int ymin, int ymax, int width,
                        const std::function<void(int, int, int)> &emit) {
   const int n = static_cast<int>(pts.size());
+  std::vector<int64_t> xs;
   for (int y = ymin; y <= ymax; y++) {
-    std::vector<int64_t> xs;
+    xs.clear();
     for (int i = 0; i < n; i++) {
       const int64_t x0 = pts[i].first, y0 = pts[i].second;
       const int64_t x1 = pts[(i + 1) % n].first, y1 = pts[(i + 1) % n].second;
@@ -821,12 +1128,16 @@ inline void poly_spans(const std::vector<std::pair<int, int>> &pts, int ymin, in
 /// unlike draw_sprite() this needs no palette of its own: a poly has one
 /// colour for the whole shape, not one per character.
 ///
-/// `pts` must be a JsonArray of at least three `[x, y]` integer pairs, each
-/// within `kPolyMaxCoord` of the origin; anything else -- too few points,
-/// an element that isn't exactly a two-number pair, a coordinate past the
-/// bound -- is malformed and the whole op is abandoned before anything is
-/// drawn, mirroring draw_sprite()'s all-or-nothing parse. `pair.size()`
-/// proves a JsonArray has exactly two elements.
+/// `pts` must be a JsonArray of at least three, and at most `kPolyMaxPts`,
+/// `[x, y]` integer pairs, each within `kMaxCoord` of the origin; anything
+/// else -- too few points, too many, an element that isn't exactly a
+/// two-number pair, a coordinate past the bound -- is malformed and the
+/// whole op is abandoned before anything is drawn, mirroring
+/// draw_sprite()'s all-or-nothing parse. `pair.size()` proves a JsonArray
+/// has exactly two elements. The `kPolyMaxPts` check runs *while* parsing
+/// (docs/plans/firmware-bounds.md D8), so `pts` itself never grows past
+/// it -- a document with a million-point array costs one bounded parse,
+/// not a bounded parse plus an unbounded vector.
 ///
 /// Filled: every span poly_spans() finds, each one `filled_rectangle` of
 /// height 1 through `it`, so a mixed fill dithers with absolute phase
@@ -843,8 +1154,15 @@ inline bool draw_poly(esphome::display::Display &it, JsonObject o, const Ink &c)
   JsonArray raw_pts = o["pts"];
   std::vector<std::pair<int, int>> pts;
   bool ok = !raw_pts.isNull();
+  bool too_many = false;
   if (ok) {
     for (JsonVariant pv : raw_pts) {
+      if (pts.size() >= static_cast<size_t>(kPolyMaxPts)) {
+        // Checked before parsing the next element, not after -- pts itself
+        // never grows past kPolyMaxPts (D8).
+        too_many = true;
+        break;
+      }
       JsonArray pair = pv;
       if (pair.isNull() || pair.size() != 2) {
         ok = false;
@@ -858,14 +1176,18 @@ inline bool draw_poly(esphome::display::Display &it, JsonObject o, const Ink &c)
       pts.emplace_back(xv.template as<int>(), yv.template as<int>());
     }
   }
+  if (too_many) {
+    ESP_LOGW(TAG, "poly has more than %d points; nothing to draw, skipped", kPolyMaxPts);
+    return false;
+  }
   if (!ok || pts.size() < 3) {
     ESP_LOGW(TAG, "poly needs at least three [x, y] points; nothing to draw, skipped");
     return false;
   }
   for (const auto &p : pts) {
-    if (std::abs(p.first) > kPolyMaxCoord || std::abs(p.second) > kPolyMaxCoord) {
+    if (std::abs(p.first) > kMaxCoord || std::abs(p.second) > kMaxCoord) {
       ESP_LOGW(TAG, "poly point out of range (|x|,|y| <= %d); nothing to draw, skipped",
-               kPolyMaxCoord);
+               kMaxCoord);
       return false;
     }
   }
@@ -942,6 +1264,21 @@ inline std::string document_id(const std::string &body) {
   return out;
 }
 
+// D4's bound, applied uniformly in the op loop below: every coordinate and
+// size field the loop itself reads (as opposed to the ones draw_sprite()/
+// draw_poly() already bound on their own, being self-contained parses with
+// their own harnesses) goes through this one check.
+//
+// Takes a double, not an int: `o["x"] | 0` (ArduinoJson's typed default
+// operator) returns the default for ANY value that isn't exactly an
+// in-range JSON integer -- including a JSON float, and including an
+// integer literal too large for int32 -- so `"x": 1e10` would silently
+// read as 0 and draw at the origin instead of being rejected. Reading
+// every such field as `o["field"] | 0.0` instead accepts any JSON number
+// (int or float) as its true value, bound-checked here before the caller
+// truncates it (review amendment to docs/plans/firmware-bounds.md D4).
+inline bool coord_ok(double v) { return v >= -static_cast<double>(kMaxCoord) && v <= static_cast<double>(kMaxCoord); }
+
 /// Execute a display list against `it`. Returns false if the JSON did not parse
 /// or carried no ops — the caller should then draw its own fallback.
 inline bool draw_display_list(esphome::display::Display &it, const std::string &body,
@@ -989,9 +1326,47 @@ inline bool draw_display_list(esphome::display::Display &it, const std::string &
       return false;
     }
 
+    // D3's backstop, read once here: a legal document with too many ops
+    // must not run the loop task past the watchdog, however far under
+    // budget each individual op is. Checked at the top of every iteration,
+    // not just once, so the budget is what actually stops the loop.
+    const uint32_t t0 = esphome::millis();
     int n = 0, skipped = 0;
     for (JsonObject o : ops) {
+      if (esphome::millis() - t0 > kDrawBudgetMs) {
+        const int remaining = static_cast<int>(ops.size()) - n - skipped;
+        ESP_LOGW(TAG, "draw budget exceeded after %d ops; %d skipped", n, remaining);
+        skipped += remaining;
+        break;
+      }
+
       const char *kind = o["op"] | "";
+      // D4's coordinate bound, applied to every op's x/y up front: poly has
+      // no x/y field of its own, so `o["x"] | 0.0` here is always 0.0 and
+      // the check always passes for it, same as omitting x/y from any op
+      // that doesn't use them. sprite double-checks this itself (see
+      // draw_sprite()'s own x/y and pixel-box bounds), since it has its own
+      // harness that calls it directly, bypassing this loop entirely.
+      //
+      // Read as double, not `o["x"] | 0` (review amendment): ArduinoJson's
+      // typed default operator returns the default for ANY value that
+      // isn't exactly an in-range JSON integer -- a JSON float included --
+      // so `"x": 1e10` would silently read as 0 and draw at the origin
+      // instead of being rejected. `coord_ok()` runs on the double, before
+      // truncation, so a huge value is caught rather than laundered into a
+      // small in-range one first.
+      const double ox_d = o["x"] | 0.0, oy_d = o["y"] | 0.0;
+      if (!coord_ok(ox_d)) {
+        ESP_LOGW(TAG, "%s: x=%g out of range (|v| <= %d); skipped", kind, ox_d, kMaxCoord);
+        skipped++;
+        continue;
+      }
+      if (!coord_ok(oy_d)) {
+        ESP_LOGW(TAG, "%s: y=%g out of range (|v| <= %d); skipped", kind, oy_d, kMaxCoord);
+        skipped++;
+        continue;
+      }
+      const int ox = static_cast<int>(ox_d), oy = static_cast<int>(oy_d);
       const Ink c = resolve_ink(o["c"] | "black", palette);
       // Every shape and glyph op below draws through this proxy instead of
       // `it` directly, which is what makes a mixed `c` dither (decision 6);
@@ -1000,7 +1375,18 @@ inline bool draw_display_list(esphome::display::Display &it, const std::string &
       mix.add_ink(c.a, c);
 
       if (!strcmp(kind, "rect")) {
-        const int x = o["x"] | 0, y = o["y"] | 0, w = o["w"] | 0, h = o["h"] | 0;
+        const double w_d = o["w"] | 0.0, h_d = o["h"] | 0.0;
+        if (!coord_ok(w_d)) {
+          ESP_LOGW(TAG, "rect: w=%g out of range (|v| <= %d); skipped", w_d, kMaxCoord);
+          skipped++;
+          continue;
+        }
+        if (!coord_ok(h_d)) {
+          ESP_LOGW(TAG, "rect: h=%g out of range (|v| <= %d); skipped", h_d, kMaxCoord);
+          skipped++;
+          continue;
+        }
+        const int x = ox, y = oy, w = static_cast<int>(w_d), h = static_cast<int>(h_d);
         if (o["fill"] | true) {
           // Corner radius (docs/plans/dragon-feedback.md D10). Clamped to
           // (min(w, h) - 1) / 2 the same way the Python is -- silently
@@ -1022,10 +1408,28 @@ inline bool draw_display_list(esphome::display::Display &it, const std::string &
         }
 
       } else if (!strcmp(kind, "line")) {
-        thick_line(mix, o["x"] | 0, o["y"] | 0, o["x2"] | 0, o["y2"] | 0, o["t"] | 1, c.a);
+        const double x2_d = o["x2"] | 0.0, y2_d = o["y2"] | 0.0;
+        if (!coord_ok(x2_d)) {
+          ESP_LOGW(TAG, "line: x2=%g out of range (|v| <= %d); skipped", x2_d, kMaxCoord);
+          skipped++;
+          continue;
+        }
+        if (!coord_ok(y2_d)) {
+          ESP_LOGW(TAG, "line: y2=%g out of range (|v| <= %d); skipped", y2_d, kMaxCoord);
+          skipped++;
+          continue;
+        }
+        const int x2 = static_cast<int>(x2_d), y2 = static_cast<int>(y2_d);
+        thick_line(mix, ox, oy, x2, y2, o["t"] | 1, c.a);
 
       } else if (!strcmp(kind, "circle")) {
-        const int x = o["x"] | 0, y = o["y"] | 0, r = o["r"] | 0;
+        const double r_d = o["r"] | 0.0;
+        if (!coord_ok(r_d)) {
+          ESP_LOGW(TAG, "circle: r=%g out of range (|v| <= %d); skipped", r_d, kMaxCoord);
+          skipped++;
+          continue;
+        }
+        const int x = ox, y = oy, r = static_cast<int>(r_d);
         if (o["fill"] | true) {
           mix.filled_circle(x, y, r, c.a);
         } else {
@@ -1051,14 +1455,47 @@ inline bool draw_display_list(esphome::display::Display &it, const std::string &
           continue;
         }
         esphome::display::BaseFont *font = fit->second;
-        const std::string s = o["s"] | "";
-        const int x = o["x"] | 0, y = o["y"] | 0;
+        // Length checked on the raw C string, before a std::string copies
+        // it -- `o["s"] | ""` on a field the document controls can be up
+        // to MAX_DOC_BYTES itself; constructing the std::string first
+        // would already have paid the copy this check exists to avoid
+        // (docs/plans/firmware-bounds.md D6).
+        const char *s_ptr = o["s"] | "";
+        const size_t s_len = strlen(s_ptr);
+        if (s_len > static_cast<size_t>(kTextMaxLen)) {
+          // The quadratic fit_line()/wrap() cost this protects: ~7ms and a
+          // ~6KB word vector at the bound.
+          ESP_LOGW(TAG, "text: s is %d bytes, more than %d; skipped",
+                   static_cast<int>(s_len), kTextMaxLen);
+          skipped++;
+          continue;
+        }
+        const std::string s(s_ptr, s_len);
+        const int x = ox, y = oy;
         const int max_w = o["w"] | 0;
         const auto align = align_of(o["a"] | "left");
 
         if ((o["wrap"] | false) && max_w > 0) {
-          const int lines = o["lines"] | 2;
-          const int lh = o["lh"] | static_cast<int>(font_height(font) * 1.24f);
+          int lines = o["lines"] | 2;
+          if (lines > kTextMaxLines)
+            lines = kTextMaxLines;
+          // lh joins the bound too (review amendment to D4/D6): with
+          // `lines` up to kTextMaxLines, `y + i * lh` in the print loop
+          // below is exactly the kind of size-field arithmetic D4 already
+          // covers for every other op -- a `lh` of, say, 2e9 would
+          // overflow that multiply long before it ever reached a sane
+          // print() call. Same double-read-then-bound-check shape as
+          // every other coordinate field; the default is itself a double
+          // so a document that omits `lh` never has to pass through this
+          // check at all in spirit, only in code shape.
+          const double lh_default = font_height(font) * 1.24;
+          const double lh_d = o["lh"] | lh_default;
+          if (!coord_ok(lh_d)) {
+            ESP_LOGW(TAG, "text: lh=%g out of range (|v| <= %d); skipped", lh_d, kMaxCoord);
+            skipped++;
+            continue;
+          }
+          const int lh = static_cast<int>(lh_d);
           auto out = wrap(font, s, max_w, lines);
           for (size_t i = 0; i < out.size(); i++) {
             const int ly = y + static_cast<int>(i) * lh;
@@ -1081,8 +1518,19 @@ inline bool draw_display_list(esphome::display::Display &it, const std::string &
           continue;
         }
         esphome::display::BaseFont *font = fit->second;
-        const std::string s = expand_fmt(o["s"] | "", doc_hash, assets);
-        const int x = o["x"] | 0, y = o["y"] | 0;
+        // Same as `text`: length checked on the raw C string before a
+        // std::string copies it (docs/plans/firmware-bounds.md D6).
+        const char *s_raw_ptr = o["s"] | "";
+        const size_t s_raw_len = strlen(s_raw_ptr);
+        if (s_raw_len > static_cast<size_t>(kTextMaxLen)) {
+          ESP_LOGW(TAG, "fmt: s is %d bytes, more than %d; skipped",
+                   static_cast<int>(s_raw_len), kTextMaxLen);
+          skipped++;
+          continue;
+        }
+        const std::string s_raw(s_raw_ptr, s_raw_len);
+        const std::string s = expand_fmt(s_raw, doc_hash, assets);
+        const int x = ox, y = oy;
         const auto align = align_of(o["a"] | "left");
         mix.print(x, y, font, c.a, align, s.c_str());
 
@@ -1098,7 +1546,7 @@ inline bool draw_display_list(esphome::display::Display &it, const std::string &
         // transparency: chroma_key the off pixels are skipped entirely.
         const Ink off = resolve_ink(o["bgc"] | bg_name, palette);
         mix.add_ink(off.a, off);
-        const int ix = o["x"] | 0, iy = o["y"] | 0;
+        const int ix = ox, iy = oy;
         iit->second->draw(ix, iy, &mix, c.a, off.a);
 
       } else if (!strcmp(kind, "sprite")) {

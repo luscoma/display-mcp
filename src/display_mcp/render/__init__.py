@@ -111,8 +111,14 @@ from .fonts import (
     load_font,
 )
 from .shapes import (
-    POLY_MAX_COORD,
+    MAX_COORD,
+    POLY_MAX_PTS,
     SPRITE_MAX_CELL,
+    SPRITE_MAX_COLS,
+    SPRITE_MAX_PALETTE,
+    SPRITE_MAX_ROWS,
+    TEXT_MAX_LEN,
+    TEXT_MAX_LINES,
     THICK_MAX,
     _draw_rounded_rect,
     _off_canvas,
@@ -142,6 +148,7 @@ __all__ = [
     "_op_field_problems",
     "_op_required_field_problem",
     "_op_optional_field_type_problem",
+    "_coord_bound_problem",
     "vocabulary",
     "text_width",
     "fit_line",
@@ -193,8 +200,14 @@ __all__ = [
     "fonts_available",
     "load_font",
     # shapes.py
-    "POLY_MAX_COORD",
+    "MAX_COORD",
+    "POLY_MAX_PTS",
     "SPRITE_MAX_CELL",
+    "SPRITE_MAX_COLS",
+    "SPRITE_MAX_PALETTE",
+    "SPRITE_MAX_ROWS",
+    "TEXT_MAX_LEN",
+    "TEXT_MAX_LINES",
     "THICK_MAX",
     "_draw_rounded_rect",
     "_off_canvas",
@@ -450,6 +463,81 @@ def _op_optional_field_type_problem(op: dict[str, Any], kind: str | None, where:
         if not isinstance(value, str):
             return f"{where}: {field}={value!r} is not a string; skipped"
     return None
+
+
+# The extra fields, beyond x/y, each op's own coordinate bound covers
+# (docs/plans/firmware-bounds.md D4) -- rect's w/h, line's x2/y2, circle's
+# r. poly has no x/y of its own and is judged by its own point-wise bound
+# in its own branch instead, so it is absent here rather than mapped to [].
+_COORD_BOUND_EXTRA_FIELDS = {"rect": ("w", "h"), "line": ("x2", "y2"), "circle": ("r",)}
+
+
+def _coord_bound_problem(op: dict[str, Any], kind: str | None, where: str) -> str | None:
+    """D4: `|v| <= MAX_COORD` for every coordinate and size field of every
+    op -- mirrors the firmware's blanket check at the top of its op loop,
+    which is what keeps a single op's drawing cost bounded regardless of
+    what the rest of this file's per-op checks allow through.
+
+    By the time this runs, `_op_required_field_problem()` has already
+    guaranteed every field checked here is a real number for any op that
+    requires it (x/y on every op but poly; w/h, x2/y2, r on rect/line/circle
+    respectively) -- the `isinstance` guard below only matters for a field
+    an op does not itself require (rect/line/circle's `x`/`y`, still
+    required, are covered either way), mirroring ArduinoJson's `o[field] |
+    0` for a present-but-wrong-typed one.
+
+    `poly` has no `x`/`y` field of its own; returning `None` for it here
+    leaves it to its own point-wise bound (the `poly` branch), the same
+    division of labour the firmware has between this blanket check and
+    draw_poly()'s own. `kind` comes straight from JSON and may not even be
+    a string (let alone a known op) -- unhashable there is exactly the
+    case `_op_field_problems()` already guards the same way.
+    """
+    if not isinstance(kind, str) or kind == "poly":
+        return None
+    for field in ("x", "y") + _COORD_BOUND_EXTRA_FIELDS.get(kind, ()):
+        value = op.get(field, 0)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            value = 0
+        if abs(value) > MAX_COORD:
+            # Text matches display_list.h's own ESP_LOGW wording verbatim
+            # (modulo the "{where}: " prefix every message here carries) --
+            # the repo convention every other shared warning already
+            # follows (see poly's "out of range" message). `_g()`, not
+            # `!r`: the firmware prints this value with `%g`.
+            return f"{where}: {field}={_g(value)} out of range (|v| <= {MAX_COORD}); skipped"
+    return None
+
+
+def _int_coord(value: Any) -> int:
+    """Truncate a coordinate/size field toward zero -- the Python mirror of
+    the firmware's `static_cast<int>(double)` (docs/plans/firmware-bounds.md
+    D4's review amendment): ArduinoJson's `o["x"] | 0` silently reads 0 for
+    ANY float rather than truncating it, so the firmware now reads every
+    such field as a `double`, bound-checks that, and only then casts to
+    `int` -- `_coord_bound_problem()` above is this file's version of the
+    bound check, run on the same untouched value; this is the cast that
+    runs after it passes, so a legal fractional coordinate (`"x": 100.5`)
+    lands on the same pixel column on both sides instead of Python handing
+    it to Pillow as-is and the firmware never seeing anything but a whole
+    number to begin with. `int()` on a `float` already truncates toward
+    zero in Python, matching C++ -- unlike `math.floor()`, the two only
+    disagree on a negative fraction (`-1.5` truncates to `-1`, floors to
+    `-2`)."""
+    return int(value)
+
+
+def _g(value: int | float) -> str:
+    """Format a bounded value the way the firmware's `ESP_LOGW(..., "%g",
+    ...)` does, not Python's own `repr()` (docs/plans/firmware-bounds.md's
+    review amendment): `%g` and Python's `'g'` format spec agree exactly
+    for these magnitudes (`1e10` -> `"1e+10"`, `123456.789` -> `"123457"`),
+    but `repr()` doesn't (`"10000000000.0"`, `"123456.789"`) -- every
+    message here that names a document-supplied bounded value uses this,
+    not an f-string's default `!r`, so the two sides print the identical
+    warning text. `float()` first: `'g'` is a floating-point presentation
+    type and raises on a plain `int`."""
+    return format(float(value), "g")
 
 
 def vocabulary(max_bytes: int) -> dict[str, Any]:
@@ -812,6 +900,10 @@ def render(
         if optional_problem is not None:
             ctx.problems.append(optional_problem)
             continue
+        coord_problem = _coord_bound_problem(op, kind, where)
+        if coord_problem is not None:
+            ctx.problems.append(coord_problem)
+            continue
         ink = ctx.ink(op.get("c", "black"), where)
 
         try:
@@ -820,7 +912,12 @@ def render(
             # anticipate (docs/plans/dragon-feedback.md D1) must still warn
             # and move on, never take the whole render() down with it.
             if kind == "rect":
-                x, y, w, h = op["x"], op["y"], op["w"], op["h"]
+                x, y, w, h = (
+                    _int_coord(op["x"]),
+                    _int_coord(op["y"]),
+                    _int_coord(op["w"]),
+                    _int_coord(op["h"]),
+                )
                 if w <= 0 or h <= 0:
                     field, value = ("w", w) if w <= 0 else ("h", h)
                     ctx.problems.append(f"{where}: {field}={value!r} must be positive; skipped")
@@ -850,18 +947,18 @@ def render(
                     ctx.problems.append(f"{where}: y+h={yr} is off-canvas")
 
             elif kind == "line":
+                x, y = _int_coord(op["x"]), _int_coord(op["y"])
+                x2, y2 = _int_coord(op["x2"]), _int_coord(op["y2"])
                 t = _resolved_thickness(op.get("t", 1), where, ctx)
                 _check_thin_mix(ctx, ink, where, "line", t=t)
-                paint_op(ink, lambda dr, col: dr.line(
-                    [op["x"], op["y"], op["x2"], op["y2"]], fill=col, width=t))
-                x2, y2 = op.get("x2"), op.get("y2")
-                if isinstance(x2, (int, float)) and _off_canvas(x2, WIDTH):
+                paint_op(ink, lambda dr, col: dr.line([x, y, x2, y2], fill=col, width=t))
+                if _off_canvas(x2, WIDTH):
                     ctx.problems.append(f"{where}: x2={x2} is off-canvas")
-                if isinstance(y2, (int, float)) and _off_canvas(y2, HEIGHT):
+                if _off_canvas(y2, HEIGHT):
                     ctx.problems.append(f"{where}: y2={y2} is off-canvas")
 
             elif kind == "circle":
-                x, y, r = op["x"], op["y"], op["r"]
+                x, y, r = _int_coord(op["x"]), _int_coord(op["y"]), _int_coord(op["r"])
                 box = [x - r, y - r, x + r, y + r]
                 if _resolved_fill(op, where, ctx):
                     paint_op(ink, lambda dr, col: dr.ellipse(box, fill=col))
@@ -885,6 +982,17 @@ def render(
                     # Matches the firmware's `skipped++; continue`: abandon the
                     # op cleanly, nothing drawn, no tone/contrast checks run.
                     continue
+                # docs/plans/firmware-bounds.md D6: past this length, whole
+                # op skips rather than paying fit_line()'s/wrap()'s quadratic
+                # cost (~7ms and a ~6KB word vector at the bound). Measured
+                # in bytes, matching the firmware's std::string::size().
+                s_bytes = len(op["s"].encode("utf-8"))
+                if s_bytes > TEXT_MAX_LEN:
+                    ctx.problems.append(
+                        f"{where}: s is {s_bytes} bytes, more than {TEXT_MAX_LEN}; skipped"
+                    )
+                    continue
+                x, y = _int_coord(op["x"]), _int_coord(op["y"])
                 anchor = _anchor_of(op, ctx, where)
                 # `w`/`lh`/`lines` mirror the firmware's `o["field"] | default`:
                 # `describe()` advertises `null` as each one's default, so a
@@ -907,11 +1015,34 @@ def render(
                             f"{where}: lines={lines_n!r} must be >= 1; using 1"
                         )
                         n_lines = 1
+                    elif n_lines > TEXT_MAX_LINES:
+                        # Clamped, not skipped -- the same warn-and-clamp
+                        # THICK_MAX gives `t` (docs/plans/firmware-bounds.md
+                        # D6), since a too-large `lines` is bounded by
+                        # trimming it, not by abandoning the whole op.
+                        ctx.problems.append(
+                            f"{where}: lines={n_lines} is larger than "
+                            f"{TEXT_MAX_LINES}; clamped to {TEXT_MAX_LINES}"
+                        )
+                        n_lines = TEXT_MAX_LINES
                     lines = wrap_lines(f, op["s"], max_w, n_lines)
                     lh = _optional_number(op.get("lh"))
                     if lh is None:
                         lh = FONTS.get(font_name, FONTS["md"]).line_height
-                    positions = [(op["x"], op["y"] + n * lh, line) for n, line in enumerate(lines)]
+                    # lh joins the bound too (docs/plans/firmware-bounds.md
+                    # D4/D6 review amendment): with `lines` up to
+                    # TEXT_MAX_LINES, `y + n * lh` below is exactly the
+                    # size-field arithmetic D4 already covers for every
+                    # other op -- an lh of, say, 2e9 would put positions
+                    # far outside anything sane long before Pillow ever
+                    # saw them.
+                    if abs(lh) > MAX_COORD:
+                        ctx.problems.append(
+                            f"{where}: lh={_g(lh)} out of range (|v| <= {MAX_COORD}); skipped"
+                        )
+                        continue
+                    lh = _int_coord(lh)
+                    positions = [(x, y + n * lh, line) for n, line in enumerate(lines)]
                     boxes = [
                         d.textbbox((px, py), line, font=f, anchor=anchor)
                         for px, py, line in positions
@@ -930,9 +1061,9 @@ def render(
                     )
                 else:
                     text = fit_line(f, op["s"], max_w)
-                    box = d.textbbox((op["x"], op["y"]), text, font=f, anchor=anchor)
+                    box = d.textbbox((x, y), text, font=f, anchor=anchor)
                     draw_fn = lambda dr, col: dr.text(  # noqa: E731
-                        (op["x"], op["y"]), text, font=f, fill=col, anchor=anchor)
+                        (x, y), text, font=f, fill=col, anchor=anchor)
 
                     def check_glyphs(font_name=font_name, text=text, where=where):
                         _check_uncompiled_glyphs(ctx, font_name, text, where)
@@ -964,13 +1095,24 @@ def render(
                     # expand_fmt(), so an unknown-field warning never fires
                     # either when the font is also bad.
                     continue
+                # D6, same as `text`: measured on the template itself,
+                # before expansion -- a short template that only expands to
+                # something long (unlikely, since every system field is
+                # short) is not what this bound is for.
+                s_bytes = len(s.encode("utf-8"))
+                if s_bytes > TEXT_MAX_LEN:
+                    ctx.problems.append(
+                        f"{where}: s is {s_bytes} bytes, more than {TEXT_MAX_LEN}; skipped"
+                    )
+                    continue
+                x, y = _int_coord(op["x"]), _int_coord(op["y"])
                 anchor = _anchor_of(op, ctx, where)
                 text, unknown = expand_fields(s, fields)
                 for field_name in unknown:
                     ctx.problems.append(f"{where}: unknown field {{{field_name}}} (left literal)")
-                box = d.textbbox((op["x"], op["y"]), text, font=f, anchor=anchor)
+                box = d.textbbox((x, y), text, font=f, anchor=anchor)
                 draw_fn = lambda dr, col: dr.text(  # noqa: E731
-                    (op["x"], op["y"]), text, font=f, fill=col, anchor=anchor)
+                    (x, y), text, font=f, fill=col, anchor=anchor)
 
                 def check_glyphs(font_name=font_name, text=text, where=where):
                     _check_uncompiled_glyphs(ctx, font_name, text, where)
@@ -988,9 +1130,9 @@ def render(
                 if name not in ICONS or z not in ICONS[name]:
                     ctx.problems.append(f"{where}: {key!r} is not compiled in")
                 size = ICON_SIZES.get(z, 36)
-                x, y = op["x"], op["y"]
+                x, y = _int_coord(op["x"]), _int_coord(op["y"])
                 box = (x, y, x + size, y + size)
-                draw_fn = lambda dr, col: draw_icon(dr, name, op["x"], op["y"], size, col)  # noqa: E731
+                draw_fn = lambda dr, col: draw_icon(dr, name, x, y, size, col)  # noqa: E731
                 _paint_glyph_op(img, ctx, ink, c_name, where, [box], draw_fn, dithered_colors)
 
             elif kind == "sprite":
@@ -1001,7 +1143,7 @@ def render(
                 # drawing something wrong — the one place a skip is allowed,
                 # mirroring the firmware, which cannot draw a grid it cannot
                 # parse either.
-                x, y = op["x"], op["y"]
+                x, y = _int_coord(op["x"]), _int_coord(op["y"])
                 cell = op.get("cell")
                 raw_rows = op.get("rows")
                 raw_palette = op.get("palette")
@@ -1030,8 +1172,52 @@ def render(
                     )
                     continue
 
+                # The grid's own dimensions, bounded independently of `cell`
+                # (docs/plans/firmware-bounds.md D7): together with MAX_COORD
+                # on the pixel box below, these keep the ragged-row walk to
+                # at most SPRITE_MAX_COLS * SPRITE_MAX_ROWS cell visits,
+                # however small `cell` itself is.
+                # Message text below matches display_list.h's own ESP_LOGW
+                # calls verbatim (modulo the "{where}: " prefix every
+                # message here carries) -- the repo convention every other
+                # shared warning already follows (see poly's "out of range"
+                # message), and what lets a parity test assert full text
+                # equality rather than a substring.
+                if len(raw_rows) > SPRITE_MAX_ROWS:
+                    ctx.problems.append(
+                        f"{where}: sprite has {len(raw_rows)} rows, more than "
+                        f"{SPRITE_MAX_ROWS}; skipped"
+                    )
+                    continue
+                if len(raw_palette) > SPRITE_MAX_PALETTE:
+                    ctx.problems.append(
+                        f"{where}: sprite palette has {len(raw_palette)} entries, "
+                        f"more than {SPRITE_MAX_PALETTE}; skipped"
+                    )
+                    continue
+
                 widths = [len(r) for r in raw_rows]
                 cols = max(widths, default=0)
+                if cols > SPRITE_MAX_COLS:
+                    ctx.problems.append(
+                        f"{where}: sprite is {cols} columns wide, more than "
+                        f"{SPRITE_MAX_COLS}; skipped"
+                    )
+                    continue
+
+                # The pixel box this sprite would actually occupy
+                # (docs/plans/firmware-bounds.md D4), checked here rather
+                # than only relied on from the generic x/y bound every op
+                # gets: `x`/`y` themselves are already covered by
+                # `_coord_bound_problem()`, but the box's far edge is
+                # sprite-specific arithmetic no other op does.
+                x_edge, y_edge = x + cols * cell, y + len(raw_rows) * cell
+                if abs(x_edge) > MAX_COORD or abs(y_edge) > MAX_COORD:
+                    ctx.problems.append(
+                        f"{where}: sprite pixel box out of range (|v| <= {MAX_COORD}); skipped"
+                    )
+                    continue
+
                 if widths and min(widths) != cols:
                     ctx.problems.append(
                         f"{where}: rows are ragged (widths {min(widths)}.."
@@ -1083,6 +1269,14 @@ def render(
 
                 black_ink = Ink(ctx.table["black"], ctx.table["black"], 100)
                 warned_chars: set[str] = set()
+                # Capped the same way the firmware caps it (docs/plans/
+                # firmware-bounds.md D7): eight distinct offending
+                # characters get their own line, a ninth gets one more
+                # "...and more" line, and nothing after that adds to
+                # `problems` -- a sprite with hundreds of stray characters
+                # must not turn a single check() into hundreds of warnings.
+                _MAX_WARNED_CHARS = 8
+                warned_overflow = False
                 box = (x, y, x + cols * cell, y + len(grid) * cell)
                 snap = _snapshot(img, box)
                 for r, row in enumerate(grid):
@@ -1097,11 +1291,29 @@ def render(
                             if ch in char_ink:
                                 run_ink = char_ink[ch]
                             else:
-                                if ch not in warned_chars:
+                                # Checked, then added -- not the other way
+                                # around (review amendment to docs/plans/
+                                # firmware-bounds.md D7): adding first and
+                                # capping only the appended *problems* left
+                                # `warned_chars` itself unbounded, so a
+                                # sprite with thousands of distinct
+                                # offending characters would still grow the
+                                # set without limit even though only eight
+                                # lines were ever reported. Mirrors the
+                                # same restructuring in draw_sprite().
+                                if ch in warned_chars:
+                                    pass
+                                elif len(warned_chars) < _MAX_WARNED_CHARS:
                                     warned_chars.add(ch)
                                     ctx.problems.append(
                                         f"{where}: no palette entry for {ch!r}; "
                                         "drawing black"
+                                    )
+                                elif not warned_overflow:
+                                    warned_overflow = True
+                                    ctx.problems.append(
+                                        f"{where}: ...and more characters with "
+                                        "no palette entry"
                                     )
                                 run_ink = black_ink
                             rx, ry = x + c0 * cell, y + r * cell
@@ -1126,7 +1338,22 @@ def render(
                 # edge. Like sprite, a malformed `pts` skips the whole op —
                 # there's nothing sensible to draw from fewer than three
                 # points, and the firmware bails the same way.
-                pts = _valid_poly_points(op.get("pts"))
+                raw_pts = op.get("pts")
+                # docs/plans/firmware-bounds.md D8: too many points is its
+                # own message, checked before `_valid_poly_points()` even
+                # looks at them -- the firmware's mirror enforces this while
+                # *parsing* pts, so its own vector never grows past
+                # POLY_MAX_PTS; here the list already exists (ArduinoJson's
+                # parser has no such equivalent to protect on this side),
+                # but the same document is rejected the same way.
+                if isinstance(raw_pts, list) and len(raw_pts) > POLY_MAX_PTS:
+                    ctx.problems.append(
+                        f"{where}: poly has more than {POLY_MAX_PTS} points; "
+                        "nothing to draw, skipped"
+                    )
+                    continue
+
+                pts = _valid_poly_points(raw_pts)
                 if pts is None:
                     ctx.problems.append(
                         f"{where}: poly needs at least three [x, y] points; "
@@ -1137,11 +1364,11 @@ def render(
                 # A coordinate this far out is malformed, not merely
                 # off-canvas: reject it before the bounding box or the
                 # scanline fill below ever has to reconcile a magnitude this
-                # large. See POLY_MAX_COORD's own comment for why.
-                if any(abs(px) > POLY_MAX_COORD or abs(py) > POLY_MAX_COORD for px, py in pts):
+                # large. See MAX_COORD's own comment for why.
+                if any(abs(px) > MAX_COORD or abs(py) > MAX_COORD for px, py in pts):
                     ctx.problems.append(
                         f"{where}: poly point out of range "
-                        f"(|x|,|y| <= {POLY_MAX_COORD}); nothing to draw, skipped"
+                        f"(|x|,|y| <= {MAX_COORD}); nothing to draw, skipped"
                     )
                     continue
 
@@ -1211,8 +1438,11 @@ def render(
 
         for k in ("x", "y"):
             v = op.get(k)
+            if isinstance(v, bool) or not isinstance(v, (int, float)):
+                continue
+            v = _int_coord(v)
             bound = WIDTH if k == "x" else HEIGHT
-            if isinstance(v, (int, float)) and _off_canvas(v, bound):
+            if _off_canvas(v, bound):
                 ctx.problems.append(f"{where}: {k}={v} is off-canvas")
 
     return img, ctx.problems

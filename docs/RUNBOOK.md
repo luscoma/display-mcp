@@ -380,8 +380,8 @@ this order:
    the thing being verified.
 7. Publish the real document.
 
-Optional: to learn the real byte ceiling (`docs/plans/dragon-feedback.md`
-D4 — the store's 256 KB limit is a ceiling, not a measured parse time),
+Optional: to learn the real byte ceiling (`docs/plans/firmware-bounds.md`
+D9 — the store's 64 KB limit is a ceiling, not a measured parse time),
 publish the swatch sheet — the largest document this project ships,
 `swatches(include_document=true)` from Claude or `display-mcp-cli swatches
 --json swatches.json` from the shell — and watch the panel's own serial/log output for

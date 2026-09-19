@@ -12,8 +12,9 @@ Two implementations must agree:
 | `display_list.h` | runs on the panel. **Authoritative.** |
 | `display_mcp.render` (`display-mcp-cli`) | renders a PNG so you can look before flashing |
 
-The wrap and truncate logic is differentially tested between them (see
-*Testing* below). Everything else is eyeball parity.
+The wrap and truncate logic, and `poly`'s fill and outline (the "poly"
+section below), are differentially tested between them. Everything else
+is eyeball parity.
 
 ## Document
 
@@ -243,6 +244,78 @@ poly has no single anchor of its own to check.
 (`poly_spans()`) and the outline's own line-walking primitive, compiles
 them, and diffs both the fill and the outline pixel-for-pixel against
 `display_mcp.render` over convex, concave and self-touching shapes.
+
+## Device-safety bounds
+
+Decided in `docs/plans/firmware-bounds.md`, after a sprite whose grid
+exceeded internal SRAM crashed the panel on every wake
+(`docs/plans/wake-sleep-flow.md`). Over-limit content is skipped with a
+warning, never rejected at publish time (warnings never block a publish)
+and never drawn wrong — the panel only ever skips, it never reboots.
+`display_mcp.render.check()` warns identically, so the author sees it at
+`validate`/`set_display` time, before the panel ever fetches the document.
+
+- **Coordinate bound.** Every coordinate and size field of every op — `x`,
+  `y`, `w`, `h`, `x2`, `y2`, `r`, `text`'s `lh`, each `poly` point, and a
+  `sprite`'s pixel box (`x + cols*cell`, `y + rows*cell`) — must satisfy
+  `|v| <= 4096`, more than twice the canvas on either axis; read as a
+  64-bit float and bound-checked before it's ever narrowed to an integer,
+  so a value too large (or non-integral) for a 32-bit int can't quietly
+  read as zero and draw somewhere unintended. Past the bound, the op is
+  skipped; a legal fractional value truncates toward zero. This one bound
+  does *not* make every op's worst-case cost the same — see "what 4096
+  actually costs" below.
+- **Text length.** `text.s` and `fmt.s` (the template, before expansion)
+  longer than 512 bytes skips the op. Wrapped `lines` past 64 is clamped
+  to 64, not skipped.
+- **Sprite grid.** At most 1200 columns, 1600 rows, and 64 distinct
+  palette entries; past any of the three, the whole op is skipped. The
+  "no palette entry for X" warning is itself capped at eight distinct
+  characters plus one "...and more" line, so a sprite with many stray
+  characters can't flood the warning list — nor the underlying set that
+  tracks which characters have already been warned about.
+- **Poly points.** At most 1024 points in `pts`; past it, the whole op is
+  skipped (a distinct message from "fewer than three points").
+- **Rect clipping.** A filled rect's fill, and each of a rounded rect's
+  straight bands, are clipped to the canvas before drawing — the output is
+  unchanged (a fill is purely position-based) but a rect that reaches well
+  off canvas costs no more than the visible canvas itself. The four corner
+  circles of a rounded rect are not separately clipped.
+- **Line clipping.** Every segment `line` and `poly`'s outline draw is
+  clipped (Cohen-Sutherland) to the canvas expanded by the thickness bound
+  before it's walked — without it, an outline built from many long edges
+  at heavy thickness could walk a diagonal millions of pixels long, per
+  edge. Moving a clipped endpoint onto the boundary can shift a boundary
+  pixel by one from what an *unclipped* walk would have drawn, which is
+  within the existing eyeball-parity tolerance `line`/`rect` outlines
+  already have with the preview — but the clip's own intersection math
+  uses the same sign-correct floor division as the poly fill's own
+  scanline (`floor_div()`/`//`, not `/`), on both sides, precisely so
+  `poly`'s outline — the one draw here held to pixel-exact parity, not
+  eyeball — stays exact through the clip too, not just up to it.
+- **What 4096 actually costs.** The coordinate bound alone does not put
+  every op's worst case in the same ballpark: a clipped rect fill costs at
+  most the canvas itself (~1.92M px); an unclipped filled circle at
+  `r == 4096` costs ~52.7M px (~2.6s); a rounded rect's corner circles are
+  the same shape at a smaller radius; a sprite whose pixel box spans the
+  full range on both axes costs up to ~67M px (~3.4s); a poly outline at
+  the legal worst case (1024 edges, thickness 64), clipped to the real
+  1200x1600 canvas, is the largest of the lot at ~87.0M px (~4.35s). The
+  real safety argument is the draw budget and watchdog below, not a
+  single per-op ceiling — 20s plus the ~4.4s worst single op still lands
+  well inside the 30s watchdog.
+- **Draw budget.** The panel's op loop reads its own clock once at entry
+  and again before every op; past 20 seconds elapsed it logs a warning,
+  stops, and draws whatever it already has. This is the backstop under a
+  30 second task-watchdog timeout, not a substitute for the per-op bounds
+  above — those are what keep any *single* op far under either number.
+  There is no Python mirror: the preview has no device clock to measure
+  against.
+- **Document size.** 64 KB, enforced by the server at publish time and by
+  the panel's own HTTP response buffer — see *Server* and the YAML's
+  `max_response_buffer_size`, which a parity test asserts equals the
+  server's own ceiling (parsed with ESPHome's own decimal, not binary,
+  metric prefixes — "64kB" would silently mean 64000 bytes, not 65536).
 
 ## Vocabulary
 

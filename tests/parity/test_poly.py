@@ -13,7 +13,9 @@ Needs a host C++ compiler; skips cleanly without one (see conftest.py).
 
 from __future__ import annotations
 
-from display_mcp.render import check, render
+import time
+
+from display_mcp.render import HEIGHT, MAX_COORD, POLY_MAX_PTS, WIDTH, check, render
 
 from .conftest import _diff
 
@@ -132,8 +134,8 @@ def test_poly_two_point_pts_warns_and_skips_on_both_sides(poly_harness, font_dir
 
 
 def test_poly_point_out_of_range_warns_and_skips_on_both_sides(poly_harness, font_dir):
-    """A point past `kPolyMaxCoord` / `POLY_MAX_COORD`
-    (docs/plans/dragon-feedback.md D12) is malformed on both sides, not
+    """A point past `kMaxCoord` / `MAX_COORD`
+    (docs/plans/firmware-bounds.md D4) is malformed on both sides, not
     merely off-canvas, so a point millions of units away is rejected
     outright rather than making poly_spans() walk millions of scanlines."""
     op = {"op": "poly", "pts": [[10, -5000000], [20, 5000000], [0, 0]], "c": "black"}
@@ -144,19 +146,41 @@ def test_poly_point_out_of_range_warns_and_skips_on_both_sides(poly_harness, fon
     assert any("out of range" in p for p in problems)
 
 
+def test_poly_past_the_point_count_bound_is_malformed_on_both_sides_and_fast(
+    poly_harness, font_dir
+):
+    """docs/plans/firmware-bounds.md D8: `pts` past `kPolyMaxPts` /
+    `POLY_MAX_PTS` is its own message on both sides, checked well under a
+    second even for a `pts` well past the bound -- the firmware's own
+    check runs while parsing, before the vector itself grows that large."""
+    pts = [[i % 1000, (i * 7) % 1000] for i in range(POLY_MAX_PTS + 1)]
+    op = {"op": "poly", "pts": pts, "c": "black"}
+    t0 = time.monotonic()
+    drew, _px, logs = poly_harness.run(op, 10, 10)
+    cpp_elapsed = time.monotonic() - t0
+    assert cpp_elapsed < 1.0, cpp_elapsed
+    assert not drew
+    assert any("more than" in log and "points" in log for log in logs)
+    t0 = time.monotonic()
+    problems = check({"v": 1, "bg": "white", "ops": [op]}, font_dir)
+    py_elapsed = time.monotonic() - t0
+    assert py_elapsed < 1.0, py_elapsed
+    assert any("more than" in p and "points" in p for p in problems)
+
+
 def test_poly_canvas_spanning_pts_matches_the_firmware(poly_harness, font_dir):
     """The scanline-range and span-x clamp -- to `[0, height)` and
     `[0, width)`, applied *before* the loop on both sides -- must land on
     exactly the same visible pixels a naive, unclamped fill would have.
     Points well outside the harness's own small canvas (but inside
-    `kPolyMaxCoord`) exercise the clamp on both sides identically: the
+    `kMaxCoord`) exercise the clamp on both sides identically: the
     firmware's `it.get_width()`/`get_height()` here is the harness's own
     small canvas, while the Python's clamp is always the real 1200x1600 --
     but since the fill is solid well past this window in every direction,
     the two must still agree on every sampled pixel."""
     op = {
         "op": "poly",
-        "pts": [[-9000, -9000], [9000, -9000], [9000, 9000], [-9000, 9000]],
+        "pts": [[-4000, -4000], [4000, -4000], [4000, 4000], [-4000, 4000]],
         "c": "black",
     }
     diffs, problems = _diff(poly_harness, font_dir, op, 80, 80)
@@ -176,4 +200,56 @@ def test_poly_fill_false_0_matches_the_firmware(poly_harness, font_dir):
     }
     diffs, problems = _diff(poly_harness, font_dir, op, 60, 50)
     assert any("fill=0" in p and "using true" in p for p in problems)
+    assert not diffs, diffs[:5]
+
+
+def test_poly_outline_many_long_edges_is_fast_through_the_harness(poly_harness):
+    """docs/plans/firmware-bounds.md's review amendment to D4: thick_line()
+    is extractable (poly_harness already extracts it, along with the new
+    clip_line_cs()/cs_outcode() it now calls), so the real worst case --
+    POLY_MAX_PTS edges, each spanning the full legal diagonal, at
+    THICK_MAX -- is exercised here, compiled, rather than only estimated.
+
+    Run at the real 1200x1600 canvas, not a small harness canvas: a small
+    canvas clips every segment much sooner (the clip box is the canvas
+    plus THICK_MAX on every side), understating the real per-op cost --
+    the earlier version of this test, at 80x80, measured ~1.2s where the
+    real canvas measures ~2.6s here (this host; the panel's own ~4.35s
+    estimate in docs/plans/firmware-bounds.md's "Review amendments"
+    accounts for the ESP32-S3 being slower per pixel write, not a
+    different pixel count). Most of that is the C++ draw itself, not
+    _OpHarness.run()'s raster decode -- the 1200x1600x3-byte read-back
+    adds only a fraction of a second on top. Kept at the real canvas size
+    (rather than reverting to the faster small one) because this is the
+    one test that would have caught fix A (clip_line_cs()'s `/` vs
+    `floor_div()`) actually mattering at the scale that motivated this
+    whole amendment; this just proves the real cost stays well under the
+    30s watchdog even starting cold."""
+    pts = [[-MAX_COORD, -MAX_COORD], [MAX_COORD, MAX_COORD]] * (POLY_MAX_PTS // 2)
+    op = {"op": "poly", "pts": pts, "c": "black", "fill": False, "t": 64}
+    t0 = time.monotonic()
+    drew, _px, _logs = poly_harness.run(op, WIDTH, HEIGHT)
+    elapsed = time.monotonic() - t0
+    assert drew
+    assert elapsed < 10.0, elapsed
+
+
+def test_poly_outline_edge_bleeding_off_canvas_matches_the_firmware(poly_harness, font_dir):
+    """The exact edge the review's brute force found disagreeing before
+    fix A: `(-1000,800)->(600,799)` clipped to `(-64,800)` in C++ (`/`,
+    truncating toward zero) but `(-64,799)` in Python (`//`, flooring) --
+    a real, not hypothetical, off-by-one that made a poly outline whose
+    edges reach more than THICK_MAX past the canvas edge draw a visibly
+    different pixel at the clip boundary. Run at the real 1200x1600
+    canvas -- a small harness canvas wouldn't even engage this clip
+    boundary the same way, since the clip box is the canvas plus
+    THICK_MAX. `t: 3` so each of the three parallel copies thick_line()
+    draws is independently clipped and checked, not just one."""
+    op = {
+        "op": "poly",
+        "pts": [[-1000, 800], [600, 799], [600, 900]],
+        "c": "black", "fill": False, "t": 3,
+    }
+    diffs, problems = _diff(poly_harness, font_dir, op, WIDTH, HEIGHT)
+    assert any("off-canvas" in p for p in problems)
     assert not diffs, diffs[:5]

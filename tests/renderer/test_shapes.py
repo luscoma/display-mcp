@@ -13,7 +13,16 @@ import copy
 import pytest
 from PIL import Image, ImageDraw
 
-from display_mcp.render import ICON_SIZES, ICONS, INK, bezel_problems, check, draw_icon, render
+from display_mcp.render import (
+    ICON_SIZES,
+    ICONS,
+    INK,
+    MAX_COORD,
+    bezel_problems,
+    check,
+    draw_icon,
+    render,
+)
 
 from .conftest import _icon_doc
 
@@ -176,6 +185,63 @@ def test_rect_mixed_rounded_fill_dithers_with_absolute_phase(font_dir):
     )
 
 
+@pytest.mark.parametrize("field", ["x", "y", "w", "h"])
+def test_rect_past_the_coordinate_bound_is_skipped(font_dir, field):
+    """Full message text, matching display_list.h's own ESP_LOGW verbatim
+    (docs/plans/firmware-bounds.md's review amendment) -- the repo
+    convention every other shared warning already follows."""
+    op = {"op": "rect", "x": 10, "y": 10, "w": 20, "h": 20, "c": "black"}
+    op[field] = MAX_COORD + 1
+    _, problems = render({"bg": "white", "ops": [op]}, font_dir)
+    assert problems == [
+        f"ops[0] rect: {field}={MAX_COORD + 1} out of range (|v| <= {MAX_COORD}); skipped"
+    ]
+
+
+def test_rect_at_the_coordinate_bound_is_accepted(font_dir):
+    op = {"op": "rect", "x": MAX_COORD, "y": 10, "w": 20, "h": 20, "c": "black"}
+    _, problems = render({"bg": "white", "ops": [op]}, font_dir)
+    assert not any("out of range" in p for p in problems)
+
+
+def test_rect_huge_float_coordinate_is_rejected(font_dir):
+    """docs/plans/firmware-bounds.md D4's review amendment: ArduinoJson's
+    `o["x"] | 0` would silently read 0 for a float like 1e10 -- any JSON
+    float fails its `is<int>()` check -- drawing a full-bleed rect at the
+    origin on the panel instead of being rejected. The firmware now reads
+    every such field as a `double` and bound-checks that; this pins the
+    Python mirror (`_coord_bound_problem()`, which already worked directly
+    off the raw value) agrees and nothing is drawn."""
+    op = {"op": "rect", "x": 1e10, "y": 10, "w": 20, "h": 20, "c": "black"}
+    img, problems = render({"bg": "white", "ops": [op]}, font_dir)
+    # "1e+10", matching the firmware's own %g -- not repr()'s "10000000000.0"
+    # (docs/plans/firmware-bounds.md's review amendment).
+    assert problems == [f"ops[0] rect: x=1e+10 out of range (|v| <= {MAX_COORD}); skipped"]
+    blank, _ = render({"bg": "white", "ops": []}, font_dir)
+    assert img.tobytes() == blank.tobytes()
+
+
+def test_rect_fractional_coordinate_truncates_toward_zero(font_dir):
+    """A legal fractional coordinate lands on the same pixel both sides
+    now agree on (docs/plans/firmware-bounds.md D4's review amendment):
+    100.5 truncates to 100 and 10.9 to 10, matching C++'s
+    `static_cast<int>(double)` -- not Pillow's own (different) rounding
+    if the float were handed to it as-is, which is what happened before
+    `_int_coord()` existed."""
+    frac_doc = {
+        "bg": "white",
+        "ops": [{"op": "rect", "x": 100.5, "y": 10.9, "w": 20, "h": 20, "c": "black"}],
+    }
+    int_doc = {
+        "bg": "white",
+        "ops": [{"op": "rect", "x": 100, "y": 10, "w": 20, "h": 20, "c": "black"}],
+    }
+    frac_img, frac_problems = render(frac_doc, font_dir)
+    int_img, int_problems = render(int_doc, font_dir)
+    assert frac_problems == [] and int_problems == []
+    assert frac_img.tobytes() == int_img.tobytes()
+
+
 def test_line_off_canvas_x2(sample_doc, font_dir):
     doc = copy.deepcopy(sample_doc)
     doc["ops"].append({"op": "line", "x": 0, "y": 0, "x2": 1300, "y2": 10, "c": "black"})
@@ -188,6 +254,30 @@ def test_line_off_canvas_y2(sample_doc, font_dir):
     doc["ops"].append({"op": "line", "x": 0, "y": 0, "x2": 10, "y2": 1700, "c": "black"})
     _, problems = render(doc, font_dir)
     assert any("y2=1700" in p and "off-canvas" in p for p in problems)
+
+
+@pytest.mark.parametrize("field", ["x", "y", "x2", "y2"])
+def test_line_past_the_coordinate_bound_is_skipped(font_dir, field):
+    op = {"op": "line", "x": 0, "y": 0, "x2": 10, "y2": 10, "c": "black"}
+    op[field] = MAX_COORD + 1
+    _, problems = render({"bg": "white", "ops": [op]}, font_dir)
+    assert problems == [
+        f"ops[0] line: {field}={MAX_COORD + 1} out of range (|v| <= {MAX_COORD}); skipped"
+    ]
+
+
+def test_circle_past_the_coordinate_bound_is_skipped(font_dir):
+    op = {"op": "circle", "x": 0, "y": 0, "r": MAX_COORD + 1, "c": "black"}
+    _, problems = render({"bg": "white", "ops": [op]}, font_dir)
+    assert problems == [
+        f"ops[0] circle: r={MAX_COORD + 1} out of range (|v| <= {MAX_COORD}); skipped"
+    ]
+
+
+def test_circle_at_the_coordinate_bound_is_accepted(font_dir):
+    op = {"op": "circle", "x": 0, "y": 0, "r": MAX_COORD, "c": "black"}
+    _, problems = render({"bg": "white", "ops": [op]}, font_dir)
+    assert not any("out of range" in p for p in problems)
 
 
 def test_text_inside_bezel_margin_is_flagged(sample_doc, font_dir):

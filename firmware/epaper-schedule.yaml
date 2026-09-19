@@ -75,6 +75,12 @@ esp32:
   flash_size: 16MB
   framework:
     type: esp-idf
+  # A full-page draw at the per-op bounds in display_list.h can legally run
+  # 20-30s (docs/plans/firmware-bounds.md D2/D3); the default 5s watchdog
+  # would panic well before draw_display_list() itself ever calls back into
+  # the loop task. draw_display_list() still doesn't feed the watchdog, so
+  # this is the only thing between a legal slow draw and a reboot.
+  watchdog_timeout: 30s
 
 # Still needed: the panel framebuffer is 960 KB.
 psram:
@@ -461,9 +467,16 @@ script:
           url: ${dl_url}
           capture_response: true
           # ESPHome caps captured bodies at 1 kB by default and silently
-          # truncates; a display list is a few KB, so raise it well past
-          # the server's 256 KB hard limit on a document.
-          max_response_buffer_size: 256kB
+          # truncates; a display list is a few KB, so raise it to exactly
+          # the server's own hard limit on a document (store.MAX_DOC_BYTES;
+          # docs/plans/firmware-bounds.md D9) -- tests/parity/
+          # test_limits_and_dispatch.py asserts the two numbers match.
+          # Spelled as a byte count, not "64kB": ESPHome's validate_bytes
+          # treats metric suffixes decimally (k = 1000, from
+          # config_validation.py's METRIC_SUFFIXES), so "64kB" parses as
+          # 64000 -- 1536 bytes short of MAX_DOC_BYTES (64 * 1024), enough
+          # to silently truncate a document right at the ceiling.
+          max_response_buffer_size: 65536B
           # Empty on first boot, which simply means "no match" and gets a 200.
           #
           # The X-Panel-* headers are the panel's half of the diagnostics: the
@@ -530,16 +543,23 @@ script:
                   // stands only for a 200 whose body was empty or unusable,
                   // which would otherwise be logged as "no response".
                   id(diag_result) = "200 received";
-                  id(dl_body) = body;
+                  // document_id() reads `body` before it's moved from --
+                  // order matters here (docs/plans/firmware-bounds.md D9):
+                  // the trigger hands this lambda a mutable `std::string &`,
+                  // so moving it into dl_body leaves the body in internal
+                  // SRAM exactly once instead of copied into a second
+                  // std::string first.
                   id(dl_new_id) = dl::document_id(body);
+                  id(dl_body) = std::move(body);
                   if (id(dl_new_id).empty()) {
                     ESP_LOGE("dl", "BUG: document has no meta.hash. Every wake will "
                                    "now do a full 30 s refresh — about 36 mAh/day, "
                                    "which roughly halves battery life. Fix the "
                                    "generator: display-mcp-cli stamp display.json");
                   }
+                  // body was moved from above; dl_body is the same bytes now.
                   ESP_LOGI("dl", "%u bytes, id '%s' (shown '%s')",
-                           (unsigned) body.size(), id(dl_new_id).c_str(),
+                           (unsigned) id(dl_body).size(), id(dl_new_id).c_str(),
                            id(dl_shown_id).c_str());
           on_error:
             # No response at all: DNS, routing, a server that is not up. Without

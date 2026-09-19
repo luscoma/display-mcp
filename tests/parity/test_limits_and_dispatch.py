@@ -7,19 +7,82 @@ from __future__ import annotations
 
 import re
 
-from display_mcp.render import FONTS, POLY_MAX_COORD, SPRITE_MAX_CELL, THICK_MAX
+import pytest
+
+from display_mcp.render import (
+    FONTS,
+    MAX_COORD,
+    POLY_MAX_PTS,
+    SPRITE_MAX_CELL,
+    SPRITE_MAX_COLS,
+    SPRITE_MAX_PALETTE,
+    SPRITE_MAX_ROWS,
+    TEXT_MAX_LEN,
+    TEXT_MAX_LINES,
+    THICK_MAX,
+)
+from display_mcp.store import MAX_DOC_BYTES
 
 from .conftest import HEADER, YAML, _branch, _firmware_const_value
 
 
 def test_device_safety_limits_match_the_firmware():
-    """THICK_MAX/SPRITE_MAX_CELL/POLY_MAX_COORD (docs/plans/dragon-feedback.md
-    D9/D12) are the same bound on both sides -- kThickMax, kSpriteMaxCell and
-    kPolyMaxCoord sit together at namespace scope in the header the same way
-    these three do here. Pure data, no compiler needed."""
+    """Every device-safety bound (docs/plans/firmware-bounds.md D4/D6/D7/D8,
+    docs/plans/dragon-feedback.md D9) is the same value on both sides --
+    each `kFoo` sits at namespace scope in the header the same way its
+    Python name does here. Pure data, no compiler needed."""
     assert _firmware_const_value("kThickMax") == THICK_MAX
     assert _firmware_const_value("kSpriteMaxCell") == SPRITE_MAX_CELL
-    assert _firmware_const_value("kPolyMaxCoord") == POLY_MAX_COORD
+    assert _firmware_const_value("kMaxCoord") == MAX_COORD
+    assert _firmware_const_value("kTextMaxLen") == TEXT_MAX_LEN
+    assert _firmware_const_value("kTextMaxLines") == TEXT_MAX_LINES
+    assert _firmware_const_value("kSpriteMaxCols") == SPRITE_MAX_COLS
+    assert _firmware_const_value("kSpriteMaxRows") == SPRITE_MAX_ROWS
+    assert _firmware_const_value("kSpriteMaxPalette") == SPRITE_MAX_PALETTE
+    assert _firmware_const_value("kPolyMaxPts") == POLY_MAX_PTS
+
+
+# ESPHome's own metric prefixes (config_validation.py's METRIC_SUFFIXES) are
+# decimal, not binary -- "k" is 1000, not 1024, which is exactly the bug a
+# literal "64kB" in the YAML would have (64000, 1536 bytes short of 64 KiB).
+# Narrowed to the prefixes this file could plausibly use, rather than
+# importing esphome itself, which this package has no other reason to
+# depend on.
+_ESPHOME_METRIC_SUFFIXES = {"": 1, "k": 1_000, "M": 1_000_000, "G": 1_000_000_000}
+
+
+def _parse_esphome_bytes(value: str) -> int:
+    """A byte-count literal the way ESPHome's own `validate_bytes()` reads
+    it: `<digits><optional decimal prefix><optional B/b>`."""
+    m = re.match(r"^(\d+)\s*([kMG]?)B?$", value)
+    assert m, f"could not parse byte literal {value!r} the way ESPHome does"
+    return int(m.group(1)) * _ESPHOME_METRIC_SUFFIXES[m.group(2)]
+
+
+def test_parse_esphome_bytes_matches_the_validator():
+    """Pins this test file's own reimplementation against the real
+    validator it stands in for, at exactly the case that motivated D9's
+    fix -- skips cleanly if the `esphome` Python package (a separate CLI
+    install, not a dependency of this project) isn't importable here."""
+    cv = pytest.importorskip("esphome.config_validation")
+
+    for literal in ("64kB", "65536B", "65536", "1kB", "2MB"):
+        assert _parse_esphome_bytes(literal) == cv.validate_bytes(literal), literal
+
+
+def test_yaml_response_buffer_matches_the_store_ceiling():
+    """docs/plans/firmware-bounds.md D9: the YAML's
+    `max_response_buffer_size` and `store.MAX_DOC_BYTES` are one number
+    stated twice, and this is what keeps them from drifting apart -- read
+    with ESPHome's own (decimal) unit rules, not a binary-KB assumption
+    that a literal like "64kB" would get wrong by 1536 bytes. Parsed from
+    the YAML text directly, the same way `_yaml_font_entries()` below reads
+    it, rather than loading the file through a full ESPHome/YAML parse this
+    package has no other reason to depend on."""
+    src = YAML.read_text()
+    m = re.search(r"max_response_buffer_size:\s*(\S+)", src)
+    assert m, "could not find max_response_buffer_size in the YAML"
+    assert _parse_esphome_bytes(m.group(1)) == MAX_DOC_BYTES
 
 
 # --------------------------------------------------------------------------

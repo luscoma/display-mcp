@@ -119,7 +119,7 @@ backward-compatible. Both are reloaded on start. One lock per display.
 `Store.publish(name, doc)` is the only code path that stamps `meta.hash`
 and `meta.generated`; the spec's "one identity, stamped in one place" rule.
 Validation warnings never block a publish. Hard errors (not an object, no
-`ops` list, unknown display name, body over 256 KB) raise and become tool
+`ops` list, unknown display name, body over 64 KB) raise and become tool
 errors.
 
 ## Renderer (`display_mcp.render`)

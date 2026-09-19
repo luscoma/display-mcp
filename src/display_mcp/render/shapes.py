@@ -1,8 +1,17 @@
 """Shapes: the rounded rect (D10), the icon stencil, the poly scanline fill
-and outline walk (D12), the device-safety limits (THICK_MAX/SPRITE_MAX_CELL/
-POLY_MAX_COORD) and the off-canvas check every op's bounding box goes
-through (`OFF_CANVAS_TOLERANCE` itself lives in `canvas.py`, since it's a
-canvas constant, not a shape one -- this module is just its one reader).
+and outline walk (D12), the device-safety limits (THICK_MAX, SPRITE_MAX_CELL,
+MAX_COORD, TEXT_MAX_LEN, TEXT_MAX_LINES, SPRITE_MAX_COLS, SPRITE_MAX_ROWS,
+SPRITE_MAX_PALETTE, POLY_MAX_PTS -- docs/plans/firmware-bounds.md D4/D6/D7/D8)
+and the off-canvas check every op's bounding box goes through
+(`OFF_CANVAS_TOLERANCE` itself lives in `canvas.py`, since it's a canvas
+constant, not a shape one -- this module is just its one reader).
+
+Every constant here is mirrored by the same name (FOO -> kFoo) in
+firmware/display_list.h; tests/parity/test_limits_and_dispatch.py extracts
+and diffs each one by name. Content past one of these bounds is skipped
+with a warning on this side too -- CLAUDE.md's "warnings never block a
+publish" rule is what makes skip-not-reject safe here, the same as on the
+panel.
 """
 
 from __future__ import annotations
@@ -23,7 +32,34 @@ THICK_MAX = 64
 SPRITE_MAX_CELL = max(WIDTH, HEIGHT)
 
 
-POLY_MAX_COORD = 1 << 20
+# D4: one coordinate/size bound for every op -- x, y, w, h, x2, y2, r, each
+# poly point, and a sprite's pixel box. More than twice the canvas on either
+# axis, so full-bleed overhang and the existing off-canvas *warning* are
+# unaffected; the worst single op (a 4096x4096 fill) costs about 0.8s on the
+# panel. Supersedes the old POLY_MAX_COORD (1 << 20), which existed only to
+# keep the poly scanline's crossing arithmetic away from overflow -- trivially
+# true at this much smaller value.
+MAX_COORD = 4096
+
+
+# D6: `text.s` / `fmt.s` (the template, before expansion) longer than this
+# skips the op -- the quadratic fit_line()/wrap() cost this protects is
+# ~7ms and a ~6KB word vector at the bound. TEXT_MAX_LINES bounds wrapped
+# `lines` the way THICK_MAX bounds `t`: clamped, not skipped.
+TEXT_MAX_LEN = 512
+TEXT_MAX_LINES = 64
+
+
+# D7: the grid a sprite can describe. Together with MAX_COORD on its pixel
+# box, the ragged-row walk can never visit more than
+# SPRITE_MAX_COLS * SPRITE_MAX_ROWS cells.
+SPRITE_MAX_COLS = 1200
+SPRITE_MAX_ROWS = 1600
+SPRITE_MAX_PALETTE = 64
+
+
+# D8: how many points a poly's `pts` can hold.
+POLY_MAX_PTS = 1024
 
 
 def _off_canvas(v: float, bound: int) -> bool:
@@ -317,7 +353,7 @@ def _poly_spans(pts: list[tuple[int, int]]) -> list[tuple[int, int, int]]:
     The scanline range is clamped to `[0, HEIGHT)` and each span's x to
     `[0, WIDTH)` **before** anything is appended
     (docs/plans/dragon-feedback.md D12): a polygon whose points sit far
-    outside the canvas — but inside `POLY_MAX_COORD` — must not make this
+    outside the canvas — but inside `MAX_COORD` — must not make this
     loop, or its output, scale with how far outside it they are. A span
     that clamps to nothing
     (`xa > xb` after clamping) is dropped rather than appended empty or
@@ -381,21 +417,106 @@ def _bresenham_points(x1: int, y1: int, x2: int, y2: int):
             y += sy
 
 
+def _cs_outcode(x: int, y: int, xmin: int, ymin: int, xmax: int, ymax: int) -> int:
+    """Cohen-Sutherland outcode: which side(s) of `[xmin,xmax] x
+    [ymin,ymax]` `(x, y)` falls outside on. Mirrors `cs_outcode()` in
+    display_list.h bit for bit (docs/plans/firmware-bounds.md D4's review
+    amendment)."""
+    code = 0
+    if x < xmin:
+        code |= 1  # left
+    elif x > xmax:
+        code |= 2  # right
+    if y < ymin:
+        code |= 4  # bottom
+    elif y > ymax:
+        code |= 8  # top
+    return code
+
+
+def _clip_line_cs(
+    x1: int, y1: int, x2: int, y2: int, xmin: int, ymin: int, xmax: int, ymax: int
+) -> tuple[int, int, int, int] | None:
+    """Cohen-Sutherland line clip, mirroring `clip_line_cs()` in
+    display_list.h (docs/plans/firmware-bounds.md D4's review amendment):
+    `None` when the segment misses `[xmin,xmax] x [ymin,ymax]` entirely,
+    else the clipped `(x1, y1, x2, y2)`. Without this, `poly`'s outline
+    (up to `POLY_MAX_PTS` edges, each as long as `2 * MAX_COORD`, `t` up
+    to `THICK_MAX`) would walk a Bresenham line, one Python-level
+    `dr.point()` call per pixel, of a length bounded only by the
+    coordinate limit rather than the canvas -- hundreds of millions of
+    calls in the worst case.
+
+    Integer division here is Python's own `//`, which is already a
+    genuine floor -- the same floor `clip_line_cs()` gets in C++ by
+    calling the header's own `floor_div()` rather than `/` (which
+    truncates toward zero) for these same four expressions. The two
+    disagreed on which pixel a clipped endpoint lands on before that fix:
+    confirmed by brute force over legal edges against the production clip
+    box -- the canvas expanded by `THICK_MAX`, not `MAX_COORD` -- roughly
+    11.5% of off-canvas edges clipped to an endpoint one row or column
+    apart, some of them drawing a visibly different pixel set on the two
+    sides. `poly`'s outline is the one shape in this file held to
+    pixel-exact parity rather than the eyeball parity `line`/`rect`
+    outlines get (docs/SPEC.md), so this had to be exact, not merely close.
+    """
+    code1 = _cs_outcode(x1, y1, xmin, ymin, xmax, ymax)
+    code2 = _cs_outcode(x2, y2, xmin, ymin, xmax, ymax)
+    while True:
+        if not (code1 | code2):
+            return x1, y1, x2, y2
+        if code1 & code2:
+            return None
+        code_out = code1 or code2
+        if code_out & 8:  # top
+            x = x1 + (x2 - x1) * (ymax - y1) // (y2 - y1)
+            y = ymax
+        elif code_out & 4:  # bottom
+            x = x1 + (x2 - x1) * (ymin - y1) // (y2 - y1)
+            y = ymin
+        elif code_out & 2:  # right
+            y = y1 + (y2 - y1) * (xmax - x1) // (x2 - x1)
+            x = xmax
+        else:  # left
+            y = y1 + (y2 - y1) * (xmin - x1) // (x2 - x1)
+            x = xmin
+        if code_out == code1:
+            x1, y1 = x, y
+            code1 = _cs_outcode(x1, y1, xmin, ymin, xmax, ymax)
+        else:
+            x2, y2 = x, y
+            code2 = _cs_outcode(x2, y2, xmin, ymin, xmax, ymax)
+
+
 def _thick_line_points(x1: int, y1: int, x2: int, y2: int, t: int):
     """Mirrors `thick_line()` in display_list.h: `t` parallel 1px runs of
     `_bresenham_points`, offset the same way the firmware offsets
     `it.line()` calls — vertical thickens in x, horizontal in y, anything
     else (a genuine diagonal) thickens in y only. `t <= 1` is a single
-    plain line, same as the firmware's early return."""
+    plain line, same as the firmware's early return.
+
+    Every segment is clipped to the canvas expanded by `THICK_MAX` on
+    every side before it's walked (docs/plans/firmware-bounds.md D4's
+    review amendment; see `_clip_line_cs()`'s own docstring for why this
+    stays within poly's existing pixel-parity contract with the firmware).
+    """
+    xmin, ymin = -THICK_MAX, -THICK_MAX
+    xmax, ymax = WIDTH - 1 + THICK_MAX, HEIGHT - 1 + THICK_MAX
+
+    def _clipped(lx1: int, ly1: int, lx2: int, ly2: int):
+        clipped = _clip_line_cs(lx1, ly1, lx2, ly2, xmin, ymin, xmax, ymax)
+        if clipped is not None:
+            yield from _bresenham_points(*clipped)
+
     if t <= 1:
-        yield from _bresenham_points(x1, y1, x2, y2)
+        yield from _clipped(x1, y1, x2, y2)
         return
     vertical = x1 == x2
     horizontal = y1 == y2
     for i in range(t):
         if vertical:
-            yield from _bresenham_points(x1 + i, y1, x2 + i, y2)
+            yield from _clipped(x1 + i, y1, x2 + i, y2)
         elif horizontal:
-            yield from _bresenham_points(x1, y1 + i, x2, y2 + i)
+            yield from _clipped(x1, y1 + i, x2, y2 + i)
         else:
-            yield from _bresenham_points(x1, y1 + i, x2, y2 + i)
+            yield from _clipped(x1, y1 + i, x2, y2 + i)

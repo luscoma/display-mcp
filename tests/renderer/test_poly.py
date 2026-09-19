@@ -14,7 +14,7 @@ import time
 
 import pytest
 
-from display_mcp.render import INK, POLY_MAX_COORD, bezel_problems, check, render
+from display_mcp.render import INK, MAX_COORD, POLY_MAX_PTS, bezel_problems, check, render
 
 from .conftest import _thin_mix_msgs
 
@@ -217,7 +217,7 @@ def test_bezel_problems_ignores_poly():
 
 
 def test_poly_extreme_coordinate_is_rejected_and_fast(font_dir):
-    """A point past `POLY_MAX_COORD` is malformed and the whole op is
+    """A point past `MAX_COORD` is malformed and the whole op is
     skipped, rather than the scanline fill walking every row between two
     far-apart y coordinates — e.g. `[[10, -5000000], [20, 5000000], [0, 0]]`
     would otherwise walk five million rows, checked in well under a
@@ -231,7 +231,7 @@ def test_poly_extreme_coordinate_is_rejected_and_fast(font_dir):
     elapsed = time.monotonic() - t0
     assert elapsed < 1.0, elapsed
     assert problems == [
-        f"ops[0] poly: poly point out of range (|x|,|y| <= {POLY_MAX_COORD}); "
+        f"ops[0] poly: poly point out of range (|x|,|y| <= {MAX_COORD}); "
         "nothing to draw, skipped"
     ]
 
@@ -239,14 +239,14 @@ def test_poly_extreme_coordinate_is_rejected_and_fast(font_dir):
 @pytest.mark.parametrize(
     ("coord", "should_warn"),
     [
-        (POLY_MAX_COORD, False),
-        (-POLY_MAX_COORD, False),
-        (POLY_MAX_COORD + 1, True),
-        (-POLY_MAX_COORD - 1, True),
+        (MAX_COORD, False),
+        (-MAX_COORD, False),
+        (MAX_COORD + 1, True),
+        (-MAX_COORD - 1, True),
     ],
 )
 def test_poly_point_at_the_coordinate_bound(font_dir, coord, should_warn):
-    """A point at exactly +/-`POLY_MAX_COORD` is accepted; one past it
+    """A point at exactly +/-`MAX_COORD` is accepted; one past it
     is skipped."""
     doc = {
         "bg": "white",
@@ -254,6 +254,60 @@ def test_poly_point_at_the_coordinate_bound(font_dir, coord, should_warn):
     }
     problems = check(doc, font_dir)
     assert any("out of range" in p for p in problems) == should_warn
+
+
+def test_poly_at_the_point_count_bound_is_accepted(font_dir):
+    """Exactly `POLY_MAX_PTS` points (a fan of tiny triangles sharing the
+    origin, well within the canvas) draws cleanly -- proof the bound
+    itself, not just "more than the bound", is exercised."""
+    pts = [[0, 0]] + [[1 + i, 100] for i in range(POLY_MAX_PTS - 1)]
+    doc = {"bg": "white", "ops": [{"op": "poly", "pts": pts, "c": "black"}]}
+    problems = check(doc, font_dir)
+    assert not any("more than" in p and "points" in p for p in problems)
+
+
+def test_poly_past_the_point_count_bound_is_rejected_and_fast(font_dir):
+    """docs/plans/firmware-bounds.md D8: more than `POLY_MAX_PTS` points is
+    its own malformed-input message, distinct from "fewer than three", and
+    is checked well under a second even for a very large `pts`."""
+    pts = [[i % 1000, (i * 7) % 1000] for i in range(POLY_MAX_PTS + 1)]
+    doc = {"bg": "white", "ops": [{"op": "poly", "pts": pts, "c": "black"}]}
+    t0 = time.monotonic()
+    problems = check(doc, font_dir)
+    elapsed = time.monotonic() - t0
+    assert elapsed < 1.0, elapsed
+    assert problems == [
+        f"ops[0] poly: poly has more than {POLY_MAX_PTS} points; nothing to draw, skipped"
+    ]
+
+
+def test_poly_outline_many_long_edges_is_fast(font_dir):
+    """docs/plans/firmware-bounds.md's review amendment to D4: many edges,
+    each spanning the full legal diagonal (-MAX_COORD to MAX_COORD), at
+    t=64 -- close to the worst case an outline op can legally describe.
+    Before the outline's underlying Bresenham walk was clipped to the
+    canvas (`_thick_line_points`/`_clip_line_cs`, mirroring `thick_line()`'s
+    own `clip_line_cs()` in the header), the walk length was bounded only
+    by `MAX_COORD` (a diagonal of ~11585 px per edge); clipped, it's
+    bounded by the canvas plus a `THICK_MAX` margin (~2179 px).
+
+    64 edges, not the 512 `POLY_MAX_PTS` legally allows: even clipped, each
+    edge here is still ~2179 px walked one Python-level point() call at a
+    time (unlike the firmware, which does the equivalent in compiled code)
+    -- 512 edges is documented as the real, considerably slower worst case
+    in the "Review amendments" section of docs/plans/firmware-bounds.md
+    rather than asserted here as a fast unit test, which it genuinely
+    isn't in pure Python at that scale."""
+    pts = [[-MAX_COORD, -MAX_COORD], [MAX_COORD, MAX_COORD]] * 32
+    doc = {
+        "bg": "white",
+        "ops": [{"op": "poly", "pts": pts, "c": "black", "fill": False, "t": 64}],
+    }
+    t0 = time.monotonic()
+    problems = check(doc, font_dir)
+    elapsed = time.monotonic() - t0
+    assert elapsed < 5.0, elapsed
+    assert any("off-canvas" in p for p in problems)
 
 
 def test_thin_mix_warns_a_poly_fill_sliver(font_dir):

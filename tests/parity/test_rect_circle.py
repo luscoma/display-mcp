@@ -20,7 +20,7 @@ import math
 import pytest
 from PIL import Image, ImageDraw
 
-from display_mcp.render import _draw_rounded_rect
+from display_mcp.render import MAX_COORD, _draw_rounded_rect
 
 from .conftest import WHITE
 
@@ -85,6 +85,42 @@ def test_rounded_rect_straight_bands_match_the_python_exactly(rect_harness, w, h
         for yy in range(by0 + pad, by1 + pad):
             for xx in range(bx0 + pad, bx1 + pad):
                 assert cpp[yy][xx] == py[yy][xx], (xx - pad, yy - pad)
+
+
+# --------------------------------------------------------------------------
+# rect clipping (docs/plans/firmware-bounds.md D5) -- a plain fill (r == 0,
+# draw_rounded_rect()'s early-return branch) that straddles the harness's
+# own small canvas must land on exactly the pixels PIL's own rectangle draw
+# does, which clips to the image for free; the firmware now clips
+# explicitly through clipped_filled_rectangle() instead of relying on
+# draw_pixel_at() to drop the off-canvas ones one at a time.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("x", "y", "w", "h"),
+    [
+        (-5, -5, 15, 15),  # straddles the top-left corner
+        (10, 10, 15, 15),  # straddles the bottom-right corner
+        (-5, 8, 30, 4),  # straddles the left and right edges
+        (8, -5, 4, 30),  # straddles the top and bottom edges
+    ],
+)
+def test_rect_straddling_the_canvas_edge_matches_python_after_clipping(rect_harness, x, y, w, h):
+    cw, ch = 20, 20
+    op = {"x": x, "y": y, "w": w, "h": h, "r": 0, "c": "black"}
+    _drew, cpp_px, _logs = rect_harness.run(op, cw, ch)
+    img = Image.new("L", (cw, ch), 0)
+    dr = ImageDraw.Draw(img)
+    dr.rectangle([x, y, x + w - 1, y + h - 1], fill=1)
+    px = img.load()
+    diffs = [
+        (xx, yy)
+        for yy in range(ch)
+        for xx in range(cw)
+        if (cpp_px[yy][xx] != WHITE) != bool(px[xx, yy])
+    ]
+    assert not diffs, diffs[:5]
 
 
 # --------------------------------------------------------------------------
@@ -171,3 +207,36 @@ def test_circle_ring_has_no_diagonal_holes(circle_ring_harness, r, t):
         if outer[y][x] and not ring[y][x]:
             holes.append((deg, x, y))
     assert not holes, holes[:8]
+
+
+def test_circle_ring_past_the_coordinate_bound_draws_nothing(circle_ring_harness):
+    """docs/plans/firmware-bounds.md D4's review amendment: draw_circle_ring()
+    now bounds `r` itself, rather than only relying on the op loop's own
+    `circle: r out of range` skip -- this function has its own harness that
+    calls it directly, bypassing the loop entirely, and
+    circle_half_widths() allocates two `(r + 1)`-int vectors that were
+    unbounded before this fix (fine on a host with effectively unlimited
+    RAM, which is exactly why a wall-clock timing assertion here would
+    prove nothing -- the real ESP32-S3 is not that host). A radius one
+    past the bound draws nothing at all."""
+    n = 20
+    _drew, px, _logs = circle_ring_harness.run(
+        {"x": 10, "y": 10, "r": MAX_COORD + 1, "t": 2, "c": "black"}, n, n
+    )
+    assert all(px[y][x] == WHITE for y in range(n) for x in range(n))
+
+
+def test_circle_ring_at_the_coordinate_bound_still_draws(circle_ring_harness):
+    """The bound is inclusive, matching every other `|v| <= MAX_COORD`
+    check in this file -- `r == MAX_COORD` is legal and still draws,
+    proving the fix above didn't just make every ring silently vanish.
+    Centred well off the small canvas (`cx = 10 - MAX_COORD`) so the
+    circle's own *right* edge -- not its centre -- lands inside the
+    window at x=10, the same trick D4's own off-canvas poly tests use to
+    exercise a huge shape through a small visible slice of it."""
+    n = 20
+    cx, cy = 10 - MAX_COORD, 10
+    _drew, px, _logs = circle_ring_harness.run(
+        {"x": cx, "y": cy, "r": MAX_COORD, "t": 2, "c": "black"}, n, n
+    )
+    assert any(px[y][x] != WHITE for y in range(n) for x in range(n))

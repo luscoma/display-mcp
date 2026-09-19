@@ -11,12 +11,16 @@ pair.
 from __future__ import annotations
 
 import shutil
+import time
 
 import pytest
 
 from display_mcp.render import (
     FONTS,
     INK,
+    MAX_COORD,
+    TEXT_MAX_LEN,
+    TEXT_MAX_LINES,
     check,
     fit_line,
     fonts_available,
@@ -433,6 +437,74 @@ def test_fmt_unknown_font_skips_before_field_expansion(font_dir):
     doc = {"bg": "white", "ops": [{"op": "fmt", "x": 20, "y": 1550, "s": "{nope}", "f": "huge"}]}
     _, problems = render(doc, font_dir)
     assert problems == ["ops[0] fmt: unknown font 'huge'"]
+
+
+# --------------------------------------------------------------------------
+# Length and line-count bounds (docs/plans/firmware-bounds.md D6).
+# --------------------------------------------------------------------------
+
+
+def test_text_at_the_length_bound_is_accepted(font_dir):
+    s = "a" * TEXT_MAX_LEN
+    doc = {"bg": "white", "ops": [{"op": "text", "x": 10, "y": 10, "s": s, "f": "sm", "w": 100}]}
+    _, problems = render(doc, font_dir)
+    assert not any("bytes" in p and "skipped" in p for p in problems)
+
+
+def test_text_past_the_length_bound_is_skipped_and_fast(font_dir):
+    """A 200 KB `s`, the kind that would make fit_line()'s quadratic cost
+    actually hurt, is skipped in well under a second."""
+    s = "a" * (200 * 1024)
+    doc = {"bg": "white", "ops": [{"op": "text", "x": 10, "y": 10, "s": s, "f": "sm", "w": 100}]}
+    t0 = time.monotonic()
+    img, problems = render(doc, font_dir)
+    elapsed = time.monotonic() - t0
+    assert elapsed < 1.0, elapsed
+    assert problems == [f"ops[0] text: s is {len(s)} bytes, more than {TEXT_MAX_LEN}; skipped"]
+    blank, _ = render({"bg": "white", "ops": []}, font_dir)
+    assert img.tobytes() == blank.tobytes()
+
+
+def test_fmt_past_the_length_bound_is_skipped(font_dir):
+    """Measured on the template itself, before expansion -- {time} et al.
+    are always short, so this is about the literal text an author wrote,
+    not what it might expand to."""
+    s = "{time}" + ("x" * (TEXT_MAX_LEN + 10))
+    doc = {"bg": "white", "ops": [{"op": "fmt", "x": 10, "y": 10, "s": s, "f": "xs"}]}
+    _, problems = render(doc, font_dir)
+    assert problems == [f"ops[0] fmt: s is {len(s)} bytes, more than {TEXT_MAX_LEN}; skipped"]
+
+
+def test_text_wrap_lines_past_the_bound_is_clamped_not_skipped(font_dir):
+    """`lines` past `TEXT_MAX_LINES` is bounded the way `t` is bounded by
+    `THICK_MAX` -- clamped with a warning, the op still draws."""
+    doc_over = {"bg": "white", "ops": [
+        {"op": "text", "x": 10, "y": 10, "s": "word " * 50, "f": "sm",
+         "wrap": True, "w": 100, "lines": TEXT_MAX_LINES + 10}]}
+    doc_clamped = {"bg": "white", "ops": [
+        {"op": "text", "x": 10, "y": 10, "s": "word " * 50, "f": "sm",
+         "wrap": True, "w": 100, "lines": TEXT_MAX_LINES}]}
+    img_over, problems = render(doc_over, font_dir)
+    img_clamped, _ = render(doc_clamped, font_dir)
+    assert any(f"clamped to {TEXT_MAX_LINES}" in p for p in problems)
+    assert img_over.tobytes() == img_clamped.tobytes()
+
+
+def test_text_wrap_huge_lh_is_rejected(font_dir):
+    """docs/plans/firmware-bounds.md's review amendment: `lh` joins the
+    coordinate bound too -- with `lines` up to TEXT_MAX_LINES, `y + n * lh`
+    is exactly the size-field arithmetic D4 already covers for every other
+    op, and a `lh` like 2e9 would overflow that multiply in the firmware
+    long before any print() call saw it."""
+    doc = {"bg": "white", "ops": [
+        {"op": "text", "x": 10, "y": 10, "s": "word " * 5, "f": "sm",
+         "wrap": True, "w": 100, "lines": TEXT_MAX_LINES, "lh": 2e9}]}
+    img, problems = render(doc, font_dir)
+    # "2e+09", matching the firmware's own %g -- not repr()'s
+    # "2000000000.0" (docs/plans/firmware-bounds.md's review amendment).
+    assert problems == [f"ops[0] text: lh=2e+09 out of range (|v| <= {MAX_COORD}); skipped"]
+    blank, _ = render({"bg": "white", "ops": []}, font_dir)
+    assert img.tobytes() == blank.tobytes()
 
 
 def test_uncompiled_glyphs_warn_on_a_proportional_face(font_dir):

@@ -266,6 +266,9 @@ class JsonObject {
   JsonObject() = default;
   explicit JsonObject(NodePtr p) : n(p) {}
   bool isNull() const { return !n || n->t != Node::OBJ; }
+  // Real ArduinoJson's JsonObject has this too; draw_sprite() uses it for
+  // the palette-size bound (docs/plans/firmware-bounds.md D7).
+  size_t size() const { return n ? n->obj.size() : 0; }
   JsonVariant operator[](const char *k) const {
     if (n && n->t == Node::OBJ)
       for (auto &kv : n->obj)
@@ -295,15 +298,28 @@ template <> inline bool JsonVariant::is<int>() const {
 template <> inline bool JsonVariant::is<float>() const {
   return n && (n->t == Node::FLT || n->t == Node::INT);
 }
+// display_list.h's D4 review amendment reads every coordinate/size field
+// as a double (`o["field"] | 0.0`), not an int, so a JSON float is no
+// longer silently laundered into the default -- same idea as is<float>()
+// above, one type wider.
+template <> inline bool JsonVariant::is<double>() const {
+  return n && (n->t == Node::FLT || n->t == Node::INT);
+}
 template <> inline bool JsonVariant::is<const char *>() const { return n && n->t == Node::STR; }
 template <> inline bool JsonVariant::is<JsonObject>() const { return n && n->t == Node::OBJ; }
 template <> inline int JsonVariant::as<int>() const { return n ? (int) n->i : 0; }
 template <> inline float JsonVariant::as<float>() const {
   return n ? (n->t == Node::FLT ? (float) n->f : (float) n->i) : 0;
 }
+template <> inline double JsonVariant::as<double>() const {
+  return n ? (n->t == Node::FLT ? n->f : (double) n->i) : 0;
+}
 template <> inline JsonObject JsonVariant::as<JsonObject>() const { return JsonObject(n); }
 template <> inline int JsonVariant::operator|<int>(int def) const {
   return is<int>() ? as<int>() : def;
+}
+template <> inline double JsonVariant::operator|<double>(double def) const {
+  return is<double>() ? as<double>() : def;
 }
 template <> inline const char *JsonVariant::operator|<const char *>(const char *def) const {
   const char *s = *this;
@@ -662,6 +678,10 @@ def sprite_harness(tmp_path_factory) -> _OpHarness:
         _extract(r"^static const uint8_t B\[2\]\[2\].*;$", "the Bayer matrix"),
         _extract(r"^inline bool mix_on\(.*$", "mix_on()"),
         _extract(r"^static const int kSpriteMaxCell = \d+;$", "kSpriteMaxCell"),
+        _extract(r"^static const int32_t kMaxCoord = \d+;$", "kMaxCoord"),
+        _extract(r"^static const int kSpriteMaxCols = \d+;$", "kSpriteMaxCols"),
+        _extract(r"^static const int kSpriteMaxRows = \d+;$", "kSpriteMaxRows"),
+        _extract(r"^static const int kSpriteMaxPalette = \d+;$", "kSpriteMaxPalette"),
         _extract_block(r"^inline size_t utf8_prev\(", "utf8_prev()"),
         _extract_block(r"^inline size_t utf8_next\(", "utf8_next()"),
         _extract_block(r"^struct Ink \{", "struct Ink"),
@@ -698,10 +718,14 @@ def poly_harness(tmp_path_factory) -> _OpHarness:
             r"^class MixDisplay : public esphome::display::Display \{", "MixDisplay"
         ),
         _extract(r"^static const int kThickMax = \d+;$", "kThickMax"),
+        _extract_block(r"^inline int64_t floor_div\(", "floor_div()"),
+        _extract(r"^enum \{ kCsInside.*;$", "the Cohen-Sutherland outcodes"),
+        _extract_block(r"^inline int cs_outcode\(", "cs_outcode()"),
+        _extract_block(r"^inline bool clip_line_cs\(", "clip_line_cs()"),
         _extract_block(r"^inline void thick_line\(", "thick_line()"),
         _RESOLVE_INK,
-        _extract_block(r"^inline int64_t floor_div\(", "floor_div()"),
-        _extract(r"^static const int32_t kPolyMaxCoord = .*;$", "kPolyMaxCoord"),
+        _extract(r"^static const int32_t kMaxCoord = \d+;$", "kMaxCoord"),
+        _extract(r"^static const int kPolyMaxPts = \d+;$", "kPolyMaxPts"),
         _extract_block(r"^inline void poly_spans\(", "poly_spans()"),
         _extract_block(r"^inline bool draw_poly\(", "draw_poly()"),
     ])
@@ -731,6 +755,8 @@ def rect_harness(tmp_path_factory) -> _OpHarness:
     parts = "\n".join([
         _extract_block(r"^struct Ink \{", "struct Ink"),
         _RESOLVE_INK,
+        _extract_block(r"^inline void clip_span\(", "clip_span()"),
+        _extract_block(r"^inline void clipped_filled_rectangle\(", "clipped_filled_rectangle()"),
         _extract_block(r"^inline void draw_rounded_rect\(", "draw_rounded_rect()"),
     ])
     main_src = r"""
@@ -763,6 +789,7 @@ def circle_ring_harness(tmp_path_factory) -> _OpHarness:
     parts = "\n".join([
         _extract_block(r"^struct Ink \{", "struct Ink"),
         _RESOLVE_INK,
+        _extract(r"^static const int32_t kMaxCoord = \d+;$", "kMaxCoord"),
         _extract_block(r"^inline void circle_half_widths\(", "circle_half_widths()"),
         _extract_block(r"^inline void draw_circle_ring\(", "draw_circle_ring()"),
     ])
