@@ -127,7 +127,15 @@ Fixes carried in during the port:
   preview flags a valid icon as unknown. Add it.
 - Icons become `{name: {size classes}}` so `z` is validated too; the firmware
   keys icons as `name/z` and `check/lg` does not exist on the panel.
-- Off-canvas check also covers `x+w` / `y+h` for rects.
+- The off-canvas check also covers `x+w`/`y+h` for rects and `x2`/`y2` for
+  lines, with the same +/-64px tolerance already applied to every op's
+  `x`/`y`.
+- Circles are off-canvas-checked on `x+r`/`x-r`/`y+r`/`y-r`, the same
+  tolerance.
+- An op with a missing or mistyped required field is warned about and
+  skipped, where the firmware's `o["x"] | 0` would draw it at 0 -- the
+  preview refuses to show a wall the author did not ask for, and the
+  warning is how they find out before the panel does.
 
 `display-mcp-cli check|stamp|render` keeps `dlpreview.py`'s flags and
 output, since `setup.sh` and the runbook use `--check` as a gate.

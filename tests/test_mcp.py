@@ -452,6 +452,16 @@ async def test_describe_ops_equals_op_fields_modulo_tuple_to_list(mcp):
         }
 
 
+async def test_describe_icon_required_includes_n(mcp):
+    """`n` moved from optional to required (docs/plans/dragon-feedback.md
+    D1 follow-up): a missing one is now caught, and the op skipped, before
+    dispatch rather than reaching render() as `None`."""
+    async with Client(mcp) as c:
+        result = await c.call_tool("describe", {})
+    assert "n" in result.structured_content["ops"]["icon"]["required"]
+    assert "n" not in result.structured_content["ops"]["icon"]["optional"]
+
+
 async def test_describe_fonts_table(mcp):
     """All six faces, spelled out literally (not `round(size * 1.24)`
     re-derived from the table under test): `mono`'s wrap-default
@@ -531,6 +541,7 @@ async def test_swatches_with_no_document_has_no_document_palette_group(mcp):
     async with Client(mcp) as c:
         result = await c.call_tool("swatches", {})
     assert "document palette:" not in result.content[1].text
+    assert "include_document=true" in result.content[1].text
 
 
 async def test_swatches_appends_a_documents_own_palette(mcp):
@@ -560,7 +571,8 @@ async def test_swatches_include_document_adds_the_sheet_as_a_third_block(mcp, st
     async with Client(mcp) as c:
         result = await c.call_tool("swatches", {"include_document": True})
         assert [b.type for b in result.content] == ["image", "text", "text"]
-        assert "include_document=true" in result.content[1].text
+        assert "the third block is the document" in result.content[1].text
+        assert "include_document=true" not in result.content[1].text
         sheet = json.loads(result.content[2].text)
         assert render.render_hash(sheet) == render.render_hash(render.swatch_document())
 

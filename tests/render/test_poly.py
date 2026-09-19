@@ -110,8 +110,6 @@ def test_poly_fill_even_odd_star_leaves_the_centre_empty(font_dir):
         ([[1, 1], [2, 2]], "two points"),
         ([[1, 1], [2, 2], [3, "x"]], "a non-pair (bad value)"),
         ([[1, 1], [2, 2], [3, 4, 5]], "a non-pair (wrong length)"),
-        ("not a list", "pts a string"),
-        (None, "pts missing"),
     ],
 )
 def test_poly_malformed_pts_warns_once_and_draws_nothing(font_dir, pts, label):
@@ -120,6 +118,23 @@ def test_poly_malformed_pts_warns_once_and_draws_nothing(font_dir, pts, label):
     assert problems == [
         "ops[0] poly: poly needs at least three [x, y] points; nothing to draw, skipped"
     ], label
+    blank, _ = render({"bg": "white", "ops": []}, font_dir)
+    assert img.tobytes() == blank.tobytes(), label
+
+
+@pytest.mark.parametrize(
+    ("pts", "label"),
+    [("not a list", "pts a string"), (None, "pts missing")],
+)
+def test_poly_pts_wrong_type_gets_the_generic_required_field_message(font_dir, pts, label):
+    """A `pts` that isn't even a list is caught by the generic
+    required-field check (docs/plans/dragon-feedback.md D1 follow-up)
+    before poly's own, more specific "needs at least three points" check
+    ever runs -- one warning, not two."""
+    doc = {"bg": "white", "ops": [{"op": "poly", "pts": pts, "c": "black"}]}
+    img, problems = render(doc, font_dir)
+    assert len(problems) == 1, label
+    assert "poly needs pts" in problems[0] and "skipped" in problems[0], label
     blank, _ = render({"bg": "white", "ops": []}, font_dir)
     assert img.tobytes() == blank.tobytes(), label
 

@@ -14,6 +14,7 @@ import copy
 import time
 
 import pytest
+from PIL import ImageDraw
 
 from display_mcp.render import (
     HEIGHT,
@@ -184,6 +185,148 @@ def test_op_field_table_covers_every_op_the_renderer_handles():
     }
 
 
+# ---- required fields: missing or mistyped, warn and skip -----------------
+
+
+def test_missing_required_field_text_warns_and_skips(font_dir):
+    """{"op": "text", "x": 100, "y": 100} with no `s` used to raise a bare
+    KeyError out of render() (the dragon session's report); it now warns
+    and the op is skipped, like an unknown font (docs/plans/
+    dragon-feedback.md D1 follow-up)."""
+    doc = {"bg": "white", "ops": [{"op": "text", "x": 100, "y": 100, "f": "xs"}]}
+    img, problems = render(doc, font_dir)
+    assert problems == [
+        "ops[0] text: missing field 's' (text needs x, y, s); skipped"
+    ]
+    blank, _ = render({"bg": "white", "ops": []}, font_dir)
+    assert img.tobytes() == blank.tobytes()
+
+
+def test_mistyped_required_field_string_x_warns_and_skips(font_dir):
+    doc = {"bg": "white", "ops": [{"op": "text", "x": "100", "y": 100, "s": "hi"}]}
+    img, problems = render(doc, font_dir)
+    assert problems == [
+        "ops[0] text: x='100' is not a number (text needs x, y, s); skipped"
+    ]
+    blank, _ = render({"bg": "white", "ops": []}, font_dir)
+    assert img.tobytes() == blank.tobytes()
+
+
+def test_missing_required_field_rect_w_warns_and_skips(font_dir):
+    doc = {"bg": "white", "ops": [{"op": "rect", "x": 0, "y": 0, "h": 10}]}
+    img, problems = render(doc, font_dir)
+    assert problems == [
+        "ops[0] rect: missing field 'w' (rect needs x, y, w, h); skipped"
+    ]
+    blank, _ = render({"bg": "white", "ops": []}, font_dir)
+    assert img.tobytes() == blank.tobytes()
+
+
+def test_bool_required_field_rect_w_warns_and_skips(font_dir):
+    """A JSON bool is not the number it subclasses in Python -- `w: true`
+    must not be silently read as `1`."""
+    doc = {"bg": "white", "ops": [{"op": "rect", "x": 0, "y": 0, "w": True, "h": 10}]}
+    img, problems = render(doc, font_dir)
+    assert problems == [
+        "ops[0] rect: w=True is not a number (rect needs x, y, w, h); skipped"
+    ]
+    blank, _ = render({"bg": "white", "ops": []}, font_dir)
+    assert img.tobytes() == blank.tobytes()
+
+
+def test_missing_required_field_icon_n_warns_and_skips(font_dir):
+    """`n` moved from optional to required (docs/plans/dragon-feedback.md
+    D1 follow-up): a missing one no longer reaches render() as `None` and
+    warns "'None/sm' is not compiled in" -- it is caught, and the op
+    skipped, before dispatch."""
+    doc = {"bg": "white", "ops": [{"op": "icon", "x": 0, "y": 0, "z": "sm"}]}
+    img, problems = render(doc, font_dir)
+    assert problems == [
+        "ops[0] icon: missing field 'n' (icon needs x, y, n); skipped"
+    ]
+    blank, _ = render({"bg": "white", "ops": []}, font_dir)
+    assert img.tobytes() == blank.tobytes()
+
+
+def test_poly_pts_not_a_list_warns_and_skips(font_dir):
+    doc = {"bg": "white", "ops": [{"op": "poly", "pts": "nope", "c": "black"}]}
+    img, problems = render(doc, font_dir)
+    assert problems == [
+        "ops[0] poly: pts='nope' is not a list (poly needs pts); skipped"
+    ]
+    blank, _ = render({"bg": "white", "ops": []}, font_dir)
+    assert img.tobytes() == blank.tobytes()
+
+
+def test_fmt_with_no_s_warns_and_skips(font_dir):
+    """`s` stays optional in OP_FIELDS -- a `fmt` legitimately has nothing
+    else it must carry -- but an empty or missing template has nothing to
+    draw, so it gets its own message and the same skip a missing required
+    field gets."""
+    doc = {"bg": "white", "ops": [{"op": "fmt", "x": 0, "y": 0}]}
+    img, problems = render(doc, font_dir)
+    assert problems == ["ops[0] fmt: fmt has no 's' template; nothing to draw"]
+    blank, _ = render({"bg": "white", "ops": []}, font_dir)
+    assert img.tobytes() == blank.tobytes()
+
+
+def test_fmt_with_empty_s_warns_and_skips(font_dir):
+    doc = {"bg": "white", "ops": [{"op": "fmt", "x": 0, "y": 0, "s": ""}]}
+    img, problems = render(doc, font_dir)
+    assert problems == ["ops[0] fmt: fmt has no 's' template; nothing to draw"]
+    blank, _ = render({"bg": "white", "ops": []}, font_dir)
+    assert img.tobytes() == blank.tobytes()
+
+
+def test_required_field_check_never_raises_through_check(font_dir):
+    """The whole family of malformed-required-field docs above, run
+    through check() (what `validate` calls) rather than render() directly
+    -- must never raise, only warn."""
+    docs = [
+        {"bg": "white", "ops": [{"op": "text", "x": 100, "y": 100}]},
+        {"bg": "white", "ops": [{"op": "rect", "x": 100, "y": 100, "h": 10}]},
+        {"bg": "white", "ops": [{"op": "icon", "x": 100, "y": 100}]},
+        {"bg": "white", "ops": [{"op": "poly", "pts": "nope"}]},
+        {"bg": "white", "ops": [{"op": "fmt", "x": 100, "y": 100}]},
+    ]
+    for doc in docs:
+        problems = check(doc, font_dir)
+        assert len(problems) == 1, doc
+
+
+# ---- circle off-canvas -----------------------------------------------
+
+
+def test_circle_off_canvas_x_plus_r(font_dir):
+    doc = {"bg": "white", "ops": [{"op": "circle", "x": 1250, "y": 100, "r": 30, "c": "black"}]}
+    _, problems = render(doc, font_dir)
+    assert any("x+r=1280" in p and "off-canvas" in p for p in problems)
+
+
+def test_circle_off_canvas_x_minus_r(font_dir):
+    doc = {"bg": "white", "ops": [{"op": "circle", "x": -80, "y": 100, "r": 10, "c": "black"}]}
+    _, problems = render(doc, font_dir)
+    assert any("x-r=-90" in p and "off-canvas" in p for p in problems)
+
+
+def test_circle_off_canvas_y_plus_r(font_dir):
+    doc = {"bg": "white", "ops": [{"op": "circle", "x": 100, "y": 1650, "r": 30, "c": "black"}]}
+    _, problems = render(doc, font_dir)
+    assert any("y+r=1680" in p and "off-canvas" in p for p in problems)
+
+
+def test_circle_off_canvas_y_minus_r(font_dir):
+    doc = {"bg": "white", "ops": [{"op": "circle", "x": 100, "y": -80, "r": 10, "c": "black"}]}
+    _, problems = render(doc, font_dir)
+    assert any("y-r=-90" in p and "off-canvas" in p for p in problems)
+
+
+def test_circle_within_tolerance_does_not_warn(font_dir):
+    doc = {"bg": "white", "ops": [{"op": "circle", "x": -20, "y": 100, "r": 30, "c": "black"}]}
+    _, problems = render(doc, font_dir)
+    assert not any("off-canvas" in p for p in problems)
+
+
 @pytest.mark.parametrize(
     "kind",
     [{"c": "red", "c2": "yellow", "mix": 50}, ["rect"], 7, None],
@@ -291,3 +434,106 @@ class TestThicknessIsBoundedAndValidated:
         elapsed = time.monotonic() - t0
         assert elapsed < 2.0, elapsed
         assert any(f"larger than {THICK_MAX}" in p and "clamped" in p for p in problems)
+
+
+# ---- F1 fuzz: every JSON-legal shape that used to raise out of check() ---
+#
+# The dragon session's fuzzing turned up a handful of shapes the specific
+# per-field checks above didn't cover: a rect with a zero/negative w or h
+# (PIL's own ValueError), f/a/z holding an unhashable value like a list or
+# object (TypeError out of a dict/set lookup), wrap:true with lines:0
+# (wrap_lines() indexing an empty list) and meta not being an object
+# (AttributeError). Each now warns exactly once through check() and never
+# raises; coordinates are chosen clear of the 24px bezel margin so the
+# warning pinned is the *only* one -- bezel_problems() reads an op's x/y
+# straight off the document regardless of whether render() went on to skip
+# that op.
+
+
+@pytest.mark.parametrize(
+    ("op", "expect_substrings"),
+    [
+        ({"op": "rect", "x": 100, "y": 100, "w": 0, "h": 10}, ["w=0", "must be positive"]),
+        ({"op": "rect", "x": 100, "y": 100, "w": 10, "h": 0}, ["h=0", "must be positive"]),
+        ({"op": "rect", "x": 100, "y": 100, "w": -5, "h": 10}, ["w=-5", "must be positive"]),
+        (
+            {"op": "text", "x": 100, "y": 100, "s": "hi", "f": []},
+            ["f=[]", "is not a string"],
+        ),
+        (
+            {"op": "text", "x": 100, "y": 100, "s": "hi", "a": []},
+            ["a=[]", "is not a string"],
+        ),
+        (
+            {"op": "icon", "x": 100, "y": 100, "n": "check", "z": []},
+            ["z=[]", "is not a string"],
+        ),
+        (
+            {"op": "text", "x": 100, "y": 100, "s": "hi", "w": 100, "wrap": True, "lines": 0},
+            ["lines=0", "using 1"],
+        ),
+    ],
+    ids=[
+        "rect-w-zero",
+        "rect-h-zero",
+        "rect-w-negative",
+        "text-f-list",
+        "text-a-list",
+        "icon-z-list",
+        "text-wrap-lines-zero",
+    ],
+)
+def test_fuzz_shape_yields_exactly_one_warning_through_check(font_dir, op, expect_substrings):
+    """Each of these used to raise a bare exception out of check() (a PIL
+    `ValueError`, a `TypeError: unhashable type`, or an `IndexError`); each
+    now produces exactly one warning, naming the actual field and value,
+    and never raises."""
+    doc = {"bg": "white", "ops": [op]}
+    problems = check(doc, font_dir)
+    assert len(problems) == 1, problems
+    for s in expect_substrings:
+        assert s in problems[0], problems[0]
+
+
+def test_fuzz_meta_not_an_object_warns_once_and_is_ignored(font_dir):
+    """`meta: "x"` used to raise `AttributeError` out of check()'s own
+    `(doc.get("meta") or {}).get("hash")` -- a non-empty string is
+    truthy, so the `or {}` fallback never ran, and `str` has no `.get()`.
+    Mirrors the same "never raise from a shape the JSON allows" rule
+    `Ctx.__init__` already holds `palette` to."""
+    doc = {"bg": "white", "meta": "x", "ops": []}
+    problems = check(doc, font_dir)
+    assert problems == ["meta: must be an object; ignored"]
+
+
+def test_meta_missing_is_still_not_reported(font_dir):
+    """The new `meta` guard must not disturb check()'s existing rule that
+    a draft with no `meta` at all -- not present, not malformed -- gets no
+    complaint about it."""
+    doc = {"bg": "white", "ops": []}
+    assert check(doc, font_dir) == []
+
+
+def test_arbitrary_drawing_exception_gets_the_catchall_message_and_next_op_still_draws(
+    font_dir, monkeypatch
+):
+    """The last line of defence, for a shape none of the specific checks
+    above anticipated: an exception raised from deep inside PIL's own
+    drawing code (simulated here) is still caught, reported with the op's
+    own type and message, and the op after it draws exactly as if the
+    first had never been there."""
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(ImageDraw.ImageDraw, "ellipse", boom)
+    doc = {
+        "bg": "white",
+        "ops": [
+            {"op": "circle", "x": 100, "y": 100, "r": 20, "c": "black"},
+            {"op": "rect", "x": 10, "y": 10, "w": 20, "h": 20, "c": "red"},
+        ],
+    }
+    img, problems = render(doc, font_dir)
+    assert problems == ["ops[0] circle: could not be drawn (RuntimeError: boom); skipped"]
+    assert img.getpixel((15, 15)) == INK["red"]

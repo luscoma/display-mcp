@@ -1,7 +1,7 @@
 """Renderer: draws a display list the way firmware/display_list.h does.
 
 Port of epaper-display/server/dlpreview.py. The C++ in the firmware is
-authoritative; where they differ, this is the bug -- except for the three
+authoritative; where they differ, this is the bug -- except for the five
 deliberate fixes called out in docs/PLAN.md ("Renderer"):
 
 1. ``weather-snowy`` is a valid, compiled-in icon (dlpreview.py was missing
@@ -12,6 +12,12 @@ deliberate fixes called out in docs/PLAN.md ("Renderer"):
 3. The off-canvas check also covers ``x+w``/``y+h`` for rects and
    ``x2``/``y2`` for lines, with the same +/-64px tolerance already applied
    to every op's ``x``/``y``.
+4. Circles are off-canvas-checked on ``x+r``/``x-r``/``y+r``/``y-r``, the
+   same tolerance.
+5. An op with a missing or mistyped required field is warned about and
+   skipped, where the firmware's ``o["x"] | 0`` would draw it at 0 -- the
+   preview refuses to show a wall the author did not ask for, and the
+   warning is how they find out before the panel does.
 
 This package is split by concern -- ``colour.py`` (inks, mixes, Ctx,
 document_colors, the ink-mixing authoring warnings), ``fonts.py`` (the Face
@@ -134,6 +140,8 @@ __all__ = [
     "OP_FIELDS",
     "_MIX_HINT",
     "_op_field_problems",
+    "_op_required_field_problem",
+    "_op_optional_field_type_problem",
     "vocabulary",
     "text_width",
     "fit_line",
@@ -257,18 +265,25 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
     },
     "fmt": {
         "required": ("x", "y"),
-        "optional": {"c": "black", "f": "xs", "a": "left", "s": ""},
+        # `s` carries no default -- `None` here, like `text`'s `w`/`lh` --
+        # but unlike those it is required *in practice*: an empty or
+        # missing template has nothing to draw and is its own warning
+        # (see the `fmt` branch below), not a silent no-op. It stays out
+        # of `required` itself so that warning can name the real problem
+        # rather than the generic "missing field" one every other required
+        # field gets.
+        "optional": {"c": "black", "f": "xs", "a": "left", "s": None},
     },
     "icon": {
-        "required": ("x", "y"),
-        # `n` has no real default — an absent one already warns "'None/sm'
-        # is not compiled in" — but render() reads it with `.get()`, not a
-        # subscript, so it lists here rather than in `required`. `bgc` is
-        # the one field listed that render() never reads: docs/SPEC.md says
-        # it is accepted and ignored (every compiled icon is chroma-keyed,
-        # so its off pixels are skipped), and a caller who writes it must
-        # not be told it is unknown.
-        "optional": {"c": "black", "n": None, "z": "sm", "bgc": None},
+        # `n` is required: `_op_required_field_problem()` catches a missing
+        # or non-string `n` before dispatch, the same abandonment a missing
+        # `s` on `text` gets. `bgc` is the one field listed that
+        # render() never reads: docs/SPEC.md says it is accepted and
+        # ignored (every compiled icon is chroma-keyed, so its off pixels
+        # are skipped), and a caller who writes it must not be told it is
+        # unknown.
+        "required": ("x", "y", "n"),
+        "optional": {"c": "black", "z": "sm", "bgc": None},
     },
     "sprite": {
         # `c` is deliberately absent: colour comes from `palette`, one
@@ -333,6 +348,111 @@ def _op_field_problems(op: dict[str, Any], kind: str | None, where: str) -> list
     return problems
 
 
+# The JSON type each required field must have to be usable at all, checked
+# by `_op_required_field_problem()` before dispatch. Not every field an op
+# can carry is listed — only the ones some op's `required` tuple names —
+# and a field's presence here says nothing about which op(s) require it;
+# OP_FIELDS is still the one table naming that. `t` is never in any op's
+# `required` tuple, so it has no entry here -- `_resolved_thickness()` is
+# its own, optional-field check, with a clamp rather than a skip.
+_REQUIRED_NUMERIC_FIELDS = {"x", "y", "w", "h", "r", "x2", "y2", "cell"}
+_REQUIRED_STRING_FIELDS = {"s", "n"}
+_REQUIRED_LIST_FIELDS = {"rows", "pts"}
+_REQUIRED_DICT_FIELDS = {"palette"}
+
+
+def _op_required_field_problem(op: dict[str, Any], kind: str | None, where: str) -> str | None:
+    """The one warning that abandons an op outright: a field in
+    `OP_FIELDS[kind]["required"]` missing, or present with the wrong JSON
+    type. Checked before dispatch, so render() never reads `op["x"]` (or a
+    `.get()`d field it then assumes is usable) on an op that cannot supply
+    what its own kind demands. The firmware's `o["x"] | 0` would draw at 0
+    for a missing field — a silent wrong wall, not a loud one — and D1's
+    rule for a thing that cannot draw as asked is warn and skip, the same
+    abandonment an unknown font or icon already gets.
+
+    Numeric fields (`x y w h r x2 y2 cell t`) must be an `int`/`float` and
+    not a `bool` (JSON's `true`/`false` are not the number they happen to
+    subclass in Python); string fields (`s`, `n`) an actual `str`; `rows`/
+    `pts` a `list`; `palette` a `dict`. Only the *first* bad field is
+    reported, in the table's own order, naming every required field the op
+    takes so the fix is in the warning itself rather than a second trip to
+    `describe()`.
+
+    `sprite`/`poly`'s own, more specific required-field checks (an integer
+    `cell` in range, three or more well-formed `pts`, ...) still run after
+    this one, but only ever see a document that already passed this
+    generic pass — a `sprite` missing `cell` entirely gets this message
+    alone, not both.
+
+    Returns `None` for an op this check doesn't apply to — an unknown
+    `kind`, or one whose required fields are all present and well-typed —
+    not a promise that the op will draw cleanly; `_op_field_problems()` and
+    each op's own dispatch code still have their own checks to run.
+    """
+    spec = OP_FIELDS.get(kind) if isinstance(kind, str) else None
+    if spec is None:
+        return None
+    required = list(spec["required"])
+    needs = ", ".join(required)
+    for field in required:
+        if field not in op:
+            return f"{where}: missing field {field!r} ({kind} needs {needs}); skipped"
+        value = op[field]
+        if field in _REQUIRED_NUMERIC_FIELDS:
+            ok, noun = not isinstance(value, bool) and isinstance(value, (int, float)), "a number"
+        elif field in _REQUIRED_STRING_FIELDS:
+            ok, noun = isinstance(value, str), "a string"
+        elif field in _REQUIRED_LIST_FIELDS:
+            ok, noun = isinstance(value, list), "a list"
+        elif field in _REQUIRED_DICT_FIELDS:
+            ok, noun = isinstance(value, dict), "an object"
+        else:  # pragma: no cover - every required field today is one of the above
+            ok, noun = True, ""
+        if not ok:
+            return f"{where}: {field}={value!r} is not {noun} ({kind} needs {needs}); skipped"
+    return None
+
+
+# `f`/`a`/`z` are optional, but a value of the wrong JSON type there doesn't
+# fail softly the way an unknown *value* does -- an unknown font name,
+# alignment or icon size class each warn and either fall back or abandon the
+# op through their own lookup. The lookup itself is what breaks first: `f`
+# and `z` end up as a dict/set key (`ctx.fonts`, `ICONS[name]`/`ICON_SIZES`)
+# and `a` as a dict-membership test (`ANCHOR`), and an unhashable value (a
+# `list` or `dict`) raises `TypeError` out of `in`/`.get()` before any of
+# those checks run. `n` needs no entry here — it is already a *required*
+# field, covered above; sprite's `mirror` compares with `==`, never `in`, so
+# it never hits this either.
+_OPTIONAL_STRING_FIELDS = {"f", "a", "z"}
+
+
+def _op_optional_field_type_problem(op: dict[str, Any], kind: str | None, where: str) -> str | None:
+    """A present-but-wrong-typed `f`/`a`/`z` (`_OPTIONAL_STRING_FIELDS`):
+    warn and abandon the op, the same way a missing or mistyped *required*
+    field does. There's no "needs" clause here — the op still carries
+    everything render() strictly requires, only this one optional field
+    can't be used as given — so the message is plainer than
+    `_op_required_field_problem()`'s.
+
+    Only checked when `OP_FIELDS[kind]["optional"]` actually lists the
+    field: an op that doesn't take `z` at all still gets its ordinary "no
+    such field" warning from `_op_field_problems()`, not this one. Fields
+    are checked in the op's own table order, so a `text` with both `f` and
+    `a` wrong always reports `f` first.
+    """
+    spec = OP_FIELDS.get(kind) if isinstance(kind, str) else None
+    if spec is None:
+        return None
+    for field in spec["optional"]:
+        if field not in _OPTIONAL_STRING_FIELDS or field not in op:
+            continue
+        value = op[field]
+        if not isinstance(value, str):
+            return f"{where}: {field}={value!r} is not a string; skipped"
+    return None
+
+
 def vocabulary(max_bytes: int) -> dict[str, Any]:
     """The whole document vocabulary as one JSON-safe object: canvas size,
     the six inks and the built-in mixes with their hexes and tiers, the
@@ -361,8 +481,8 @@ def vocabulary(max_bytes: int) -> dict[str, Any]:
 
     In `ops`, an optional field whose default is `null` has no fixed
     default and may simply be omitted — `lh` is computed from the font
-    size, `w` means no width limit, `n` has no default, and `sprite`'s
-    `mirror` means no mirroring (its only other legal value is `"x"`).
+    size, `w` means no width limit, and `sprite`'s `mirror` means no
+    mirroring (its only other legal value is `"x"`).
     """
     mixes = {
         name: {
@@ -680,94 +800,170 @@ def render(
         where = f"ops[{i}] {op.get('op', '?')}"
         kind = op.get("op")
         ctx.problems.extend(_op_field_problems(op, kind, where))
+        required_problem = _op_required_field_problem(op, kind, where)
+        if required_problem is not None:
+            ctx.problems.append(required_problem)
+            continue
+        optional_problem = _op_optional_field_type_problem(op, kind, where)
+        if optional_problem is not None:
+            ctx.problems.append(optional_problem)
+            continue
         ink = ctx.ink(op.get("c", "black"), where)
 
-        if kind == "rect":
-            x, y, w, h = op["x"], op["y"], op["w"], op["h"]
-            if _resolved_fill(op, where, ctx):
-                _check_thin_mix(ctx, ink, where, "fill", w=w, h=h)
-                r = _resolved_rect_radius(op.get("r", 0), w, h, where, ctx)
-                if r > 0:
-                    paint_op(ink, lambda dr, col, x=x, y=y, w=w, h=h, r=r: _draw_rounded_rect(
-                        dr, x, y, w, h, r, col))
+        try:
+            # A last line of defence, after the specific checks above and
+            # each branch's own: any shape this file's authors didn't
+            # anticipate (docs/plans/dragon-feedback.md D1) must still warn
+            # and move on, never take the whole render() down with it.
+            if kind == "rect":
+                x, y, w, h = op["x"], op["y"], op["w"], op["h"]
+                if w <= 0 or h <= 0:
+                    field, value = ("w", w) if w <= 0 else ("h", h)
+                    ctx.problems.append(f"{where}: {field}={value!r} must be positive; skipped")
+                    continue
+                if _resolved_fill(op, where, ctx):
+                    _check_thin_mix(ctx, ink, where, "fill", w=w, h=h)
+                    r = _resolved_rect_radius(op.get("r", 0), w, h, where, ctx)
+                    if r > 0:
+                        paint_op(ink, lambda dr, col, x=x, y=y, w=w, h=h, r=r: _draw_rounded_rect(
+                            dr, x, y, w, h, r, col))
+                    else:
+                        paint_op(ink, lambda dr, col: dr.rectangle(
+                            [x, y, x + w - 1, y + h - 1], fill=col))
                 else:
+                    if op.get("r", 0):
+                        ctx.problems.append(
+                            f"{where}: r is ignored on an outline; drawing square corners"
+                        )
+                    t = _resolved_thickness(op.get("t", 1), where, ctx)
+                    _check_thin_mix(ctx, ink, where, "outline", t=t)
                     paint_op(ink, lambda dr, col: dr.rectangle(
-                        [x, y, x + w - 1, y + h - 1], fill=col))
-            else:
-                if op.get("r", 0):
-                    ctx.problems.append(
-                        f"{where}: r is ignored on an outline; drawing square corners"
+                        [x, y, x + w - 1, y + h - 1], outline=col, width=t))
+                xr, yr = x + w, y + h
+                if _off_canvas(xr, WIDTH):
+                    ctx.problems.append(f"{where}: x+w={xr} is off-canvas")
+                if _off_canvas(yr, HEIGHT):
+                    ctx.problems.append(f"{where}: y+h={yr} is off-canvas")
+
+            elif kind == "line":
+                t = _resolved_thickness(op.get("t", 1), where, ctx)
+                _check_thin_mix(ctx, ink, where, "line", t=t)
+                paint_op(ink, lambda dr, col: dr.line(
+                    [op["x"], op["y"], op["x2"], op["y2"]], fill=col, width=t))
+                x2, y2 = op.get("x2"), op.get("y2")
+                if isinstance(x2, (int, float)) and _off_canvas(x2, WIDTH):
+                    ctx.problems.append(f"{where}: x2={x2} is off-canvas")
+                if isinstance(y2, (int, float)) and _off_canvas(y2, HEIGHT):
+                    ctx.problems.append(f"{where}: y2={y2} is off-canvas")
+
+            elif kind == "circle":
+                x, y, r = op["x"], op["y"], op["r"]
+                box = [x - r, y - r, x + r, y + r]
+                if _resolved_fill(op, where, ctx):
+                    paint_op(ink, lambda dr, col: dr.ellipse(box, fill=col))
+                else:
+                    t = _resolved_thickness(op.get("t", 1), where, ctx)
+                    paint_op(ink, lambda dr, col: dr.ellipse(box, outline=col, width=t))
+                for label, v, bound in (
+                    ("x+r", x + r, WIDTH),
+                    ("x-r", x - r, WIDTH),
+                    ("y+r", y + r, HEIGHT),
+                    ("y-r", y - r, HEIGHT),
+                ):
+                    if _off_canvas(v, bound):
+                        ctx.problems.append(f"{where}: {label}={v} is off-canvas")
+
+            elif kind == "text":
+                c_name = op.get("c", "black")
+                font_name = op.get("f", "md")
+                f = ctx.font(font_name, where)
+                if f is None:
+                    # Matches the firmware's `skipped++; continue`: abandon the
+                    # op cleanly, nothing drawn, no tone/contrast checks run.
+                    continue
+                anchor = _anchor_of(op, ctx, where)
+                # `w`/`lh`/`lines` mirror the firmware's `o["field"] | default`:
+                # `describe()` advertises `null` as each one's default, so a
+                # `None`, wrong-typed or (for `w`) non-positive value here means
+                # exactly what omitting the field means — never a crash.
+                max_w = _optional_number(op.get("w"))
+                if max_w is not None and max_w <= 0:
+                    max_w = None
+                if op.get("wrap") and max_w is not None:
+                    lines_n = _optional_number(op.get("lines", 2))
+                    n_lines = int(lines_n) if lines_n is not None else 2
+                    if n_lines < 1:
+                        # wrap_lines() indexes lines[-1] once it has filled
+                        # max_lines; 0 (or negative) leaves it empty and that
+                        # indexing raises. A document that means "no lines"
+                        # means "draw nothing", not a crash -- treated the
+                        # same as the firmware's own unsigned `lines` field,
+                        # which can't represent negative or zero either.
+                        ctx.problems.append(
+                            f"{where}: lines={lines_n!r} must be >= 1; using 1"
+                        )
+                        n_lines = 1
+                    lines = wrap_lines(f, op["s"], max_w, n_lines)
+                    lh = _optional_number(op.get("lh"))
+                    if lh is None:
+                        lh = FONTS.get(font_name, FONTS["md"]).line_height
+                    positions = [(op["x"], op["y"] + n * lh, line) for n, line in enumerate(lines)]
+                    boxes = [
+                        d.textbbox((px, py), line, font=f, anchor=anchor)
+                        for px, py, line in positions
+                    ]
+
+                    def draw_fn(dr, col, positions=positions):
+                        for px, ly, line in positions:
+                            dr.text((px, ly), line, font=f, fill=col, anchor=anchor)
+
+                    def check_glyphs(font_name=font_name, lines=lines, where=where):
+                        _check_uncompiled_glyphs(ctx, font_name, "".join(lines), where)
+
+                    _paint_glyph_op(
+                        img, ctx, ink, c_name, where, boxes, draw_fn, dithered_colors,
+                        after_mix_check=check_glyphs,
                     )
-                t = _resolved_thickness(op.get("t", 1), where, ctx)
-                _check_thin_mix(ctx, ink, where, "outline", t=t)
-                paint_op(ink, lambda dr, col: dr.rectangle(
-                    [x, y, x + w - 1, y + h - 1], outline=col, width=t))
-            xr, yr = x + w, y + h
-            if _off_canvas(xr, WIDTH):
-                ctx.problems.append(f"{where}: x+w={xr} is off-canvas")
-            if _off_canvas(yr, HEIGHT):
-                ctx.problems.append(f"{where}: y+h={yr} is off-canvas")
+                else:
+                    text = fit_line(f, op["s"], max_w)
+                    box = d.textbbox((op["x"], op["y"]), text, font=f, anchor=anchor)
+                    draw_fn = lambda dr, col: dr.text(  # noqa: E731
+                        (op["x"], op["y"]), text, font=f, fill=col, anchor=anchor)
 
-        elif kind == "line":
-            t = _resolved_thickness(op.get("t", 1), where, ctx)
-            _check_thin_mix(ctx, ink, where, "line", t=t)
-            paint_op(ink, lambda dr, col: dr.line(
-                [op["x"], op["y"], op["x2"], op["y2"]], fill=col, width=t))
-            x2, y2 = op.get("x2"), op.get("y2")
-            if isinstance(x2, (int, float)) and _off_canvas(x2, WIDTH):
-                ctx.problems.append(f"{where}: x2={x2} is off-canvas")
-            if isinstance(y2, (int, float)) and _off_canvas(y2, HEIGHT):
-                ctx.problems.append(f"{where}: y2={y2} is off-canvas")
+                    def check_glyphs(font_name=font_name, text=text, where=where):
+                        _check_uncompiled_glyphs(ctx, font_name, text, where)
 
-        elif kind == "circle":
-            x, y, r = op["x"], op["y"], op["r"]
-            box = [x - r, y - r, x + r, y + r]
-            if _resolved_fill(op, where, ctx):
-                paint_op(ink, lambda dr, col: dr.ellipse(box, fill=col))
-            else:
-                t = _resolved_thickness(op.get("t", 1), where, ctx)
-                paint_op(ink, lambda dr, col: dr.ellipse(box, outline=col, width=t))
+                    _paint_glyph_op(
+                        img, ctx, ink, c_name, where, [box], draw_fn, dithered_colors,
+                        after_mix_check=check_glyphs,
+                    )
 
-        elif kind == "text":
-            c_name = op.get("c", "black")
-            font_name = op.get("f", "md")
-            f = ctx.font(font_name, where)
-            if f is None:
-                # Matches the firmware's `skipped++; continue`: abandon the
-                # op cleanly, nothing drawn, no tone/contrast checks run.
-                continue
-            anchor = _anchor_of(op, ctx, where)
-            # `w`/`lh`/`lines` mirror the firmware's `o["field"] | default`:
-            # `describe()` advertises `null` as each one's default, so a
-            # `None`, wrong-typed or (for `w`) non-positive value here means
-            # exactly what omitting the field means — never a crash.
-            max_w = _optional_number(op.get("w"))
-            if max_w is not None and max_w <= 0:
-                max_w = None
-            if op.get("wrap") and max_w is not None:
-                lines_n = _optional_number(op.get("lines", 2))
-                lines = wrap_lines(f, op["s"], max_w, int(lines_n if lines_n is not None else 2))
-                lh = _optional_number(op.get("lh"))
-                if lh is None:
-                    lh = FONTS.get(font_name, FONTS["md"]).line_height
-                positions = [(op["x"], op["y"] + n * lh, line) for n, line in enumerate(lines)]
-                boxes = [
-                    d.textbbox((px, py), line, font=f, anchor=anchor) for px, py, line in positions
-                ]
-
-                def draw_fn(dr, col, positions=positions):
-                    for px, ly, line in positions:
-                        dr.text((px, ly), line, font=f, fill=col, anchor=anchor)
-
-                def check_glyphs(font_name=font_name, lines=lines, where=where):
-                    _check_uncompiled_glyphs(ctx, font_name, "".join(lines), where)
-
-                _paint_glyph_op(
-                    img, ctx, ink, c_name, where, boxes, draw_fn, dithered_colors,
-                    after_mix_check=check_glyphs,
-                )
-            else:
-                text = fit_line(f, op["s"], max_w)
+            elif kind == "fmt":
+                # text without wrap whose `s` is a template of system fields. The
+                # values are never in the document, so meta.hash covers where and
+                # how the line is drawn, never what it says. `s` stays optional
+                # in OP_FIELDS (an empty template is a legal, if useless, way to
+                # write "draw nothing here"), but an empty or missing one really
+                # has nothing to draw, so it gets its own message and the same
+                # skip a missing required field gets, rather than drawing an
+                # empty line that passes every other check silently.
+                s = op.get("s", "")
+                if not isinstance(s, str) or not s:
+                    ctx.problems.append(f"{where}: fmt has no 's' template; nothing to draw")
+                    continue
+                c_name = op.get("c", "black")
+                font_name = op.get("f", "xs")
+                f = ctx.font(font_name, where)
+                if f is None:
+                    # Same abandonment as `text`, and it matches the firmware:
+                    # the header checks the font before it ever calls
+                    # expand_fmt(), so an unknown-field warning never fires
+                    # either when the font is also bad.
+                    continue
+                anchor = _anchor_of(op, ctx, where)
+                text, unknown = expand_fields(s, fields)
+                for field_name in unknown:
+                    ctx.problems.append(f"{where}: unknown field {{{field_name}}} (left literal)")
                 box = d.textbbox((op["x"], op["y"]), text, font=f, anchor=anchor)
                 draw_fn = lambda dr, col: dr.text(  # noqa: E731
                     (op["x"], op["y"]), text, font=f, fill=col, anchor=anchor)
@@ -780,250 +976,234 @@ def render(
                     after_mix_check=check_glyphs,
                 )
 
-        elif kind == "fmt":
-            # text without wrap whose `s` is a template of system fields. The
-            # values are never in the document, so meta.hash covers where and
-            # how the line is drawn, never what it says.
-            c_name = op.get("c", "black")
-            font_name = op.get("f", "xs")
-            f = ctx.font(font_name, where)
-            if f is None:
-                # Same abandonment as `text`, and it matches the firmware:
-                # the header checks the font before it ever calls
-                # expand_fmt(), so an unknown-field warning never fires
-                # either when the font is also bad.
-                continue
-            anchor = _anchor_of(op, ctx, where)
-            text, unknown = expand_fields(op.get("s", ""), fields)
-            for field_name in unknown:
-                ctx.problems.append(f"{where}: unknown field {{{field_name}}} (left literal)")
-            box = d.textbbox((op["x"], op["y"]), text, font=f, anchor=anchor)
-            draw_fn = lambda dr, col: dr.text(  # noqa: E731
-                (op["x"], op["y"]), text, font=f, fill=col, anchor=anchor)
+            elif kind == "icon":
+                c_name = op.get("c", "black")
+                name = op.get("n")
+                z = op.get("z", "sm")
+                key = f"{name}/{z}"
+                if name not in ICONS or z not in ICONS[name]:
+                    ctx.problems.append(f"{where}: {key!r} is not compiled in")
+                size = ICON_SIZES.get(z, 36)
+                x, y = op["x"], op["y"]
+                box = (x, y, x + size, y + size)
+                draw_fn = lambda dr, col: draw_icon(dr, name, op["x"], op["y"], size, col)  # noqa: E731
+                _paint_glyph_op(img, ctx, ink, c_name, where, [box], draw_fn, dithered_colors)
 
-            def check_glyphs(font_name=font_name, text=text, where=where):
-                _check_uncompiled_glyphs(ctx, font_name, text, where)
-
-            _paint_glyph_op(
-                img, ctx, ink, c_name, where, [box], draw_fn, dithered_colors,
-                after_mix_check=check_glyphs,
-            )
-
-        elif kind == "icon":
-            c_name = op.get("c", "black")
-            name = op.get("n")
-            z = op.get("z", "sm")
-            key = f"{name}/{z}"
-            if name not in ICONS or z not in ICONS[name]:
-                ctx.problems.append(f"{where}: {key!r} is not compiled in")
-            size = ICON_SIZES.get(z, 36)
-            x, y = op["x"], op["y"]
-            box = (x, y, x + size, y + size)
-            draw_fn = lambda dr, col: draw_icon(dr, name, op["x"], op["y"], size, col)  # noqa: E731
-            _paint_glyph_op(img, ctx, ink, c_name, where, [box], draw_fn, dithered_colors)
-
-        elif kind == "sprite":
-            # Pixel art as rows of characters (docs/plans/dragon-feedback.md
-            # D9). `cell`, `rows` and `palette` all have to be sensible
-            # before there is anything to draw; unlike every other op, a
-            # malformed one of these skips the whole op rather than
-            # drawing something wrong — the one place a skip is allowed,
-            # mirroring the firmware, which cannot draw a grid it cannot
-            # parse either.
-            x, y = op["x"], op["y"]
-            cell = op.get("cell")
-            raw_rows = op.get("rows")
-            raw_palette = op.get("palette")
-            # Both sides have to agree on what's too big to be sane, not
-            # just what overflows int arithmetic: a `cell` bigger than the
-            # canvas itself is malformed the same way a zero or fractional
-            # one is. See SPRITE_MAX_CELL's own comment for why.
-            if (
-                isinstance(cell, bool)
-                or not isinstance(cell, int)
-                or cell < 1
-                or cell > SPRITE_MAX_CELL
-                or not isinstance(raw_rows, list)
-                or not all(isinstance(r, str) for r in raw_rows)
-                or not isinstance(raw_palette, dict)
-            ):
-                ctx.problems.append(
-                    f"{where}: sprite needs an integer cell >= 1 and <= "
-                    f"{SPRITE_MAX_CELL}, rows (a list of strings) and palette (an "
-                    "object); nothing to draw, skipped"
-                )
-                continue
-
-            widths = [len(r) for r in raw_rows]
-            cols = max(widths, default=0)
-            if widths and min(widths) != cols:
-                ctx.problems.append(
-                    f"{where}: rows are ragged (widths {min(widths)}.."
-                    f"{cols}); short rows padded transparent"
-                )
-            grid = [r.ljust(cols, ".") for r in raw_rows]
-            mirror = op.get("mirror")
-            if mirror == "x":
-                grid = [r[::-1] for r in grid]
-            elif mirror is not None:
-                # `"x"` is the only legal value (docs/SPEC.md "sprite");
-                # anything else just doesn't mirror, same as omitting it.
-                ctx.problems.append(
-                    f'{where}: mirror must be "x"; got {mirror!r}, not mirrored'
-                )
-
-            # Resolve each palette character once, not per cell — the
-            # same alias/mix/built-in walk an op's own `c` gets, via
-            # ctx.ink() itself: a dict value earns the same mix hint `c`
-            # does, and anything else that doesn't resolve is "unknown
-            # colour", both already handled there. A key that isn't
-            # exactly one character can't identify a cell at all, so it's
-            # skipped up front — a row that uses it then falls into the
-            # "no palette entry" path below, same as any other unknown
-            # character.
-            used_chars = {ch for row in raw_rows for ch in row} - {".", " "}
-            char_ink: dict[str, Ink] = {}
-            checked_inks: set[Ink] = set()
-            for ch, value in raw_palette.items():
-                if len(ch) != 1:
+            elif kind == "sprite":
+                # Pixel art as rows of characters (docs/plans/dragon-feedback.md
+                # D9). `cell`, `rows` and `palette` all have to be sensible
+                # before there is anything to draw; unlike every other op, a
+                # malformed one of these skips the whole op rather than
+                # drawing something wrong — the one place a skip is allowed,
+                # mirroring the firmware, which cannot draw a grid it cannot
+                # parse either.
+                x, y = op["x"], op["y"]
+                cell = op.get("cell")
+                raw_rows = op.get("rows")
+                raw_palette = op.get("palette")
+                # `_op_required_field_problem()` has already guaranteed
+                # `cell` a number, `raw_rows` a list and `raw_palette` a
+                # dict before dispatch ever reaches here -- an
+                # `isinstance(cell, bool)`/`not isinstance(raw_rows, list)`/
+                # `not isinstance(raw_palette, dict)` clause here could
+                # never fire. What's left to check: `cell` an *integer* (a
+                # float like 1.5 is still a number) in range -- both sides
+                # have to agree on what's too big to be sane, not just what
+                # overflows int arithmetic; a `cell` bigger than the canvas
+                # itself is malformed the same way a zero or fractional one
+                # is, see SPRITE_MAX_CELL's own comment for why -- and every
+                # element of `rows` an actual string.
+                if (
+                    not isinstance(cell, int)
+                    or cell < 1
+                    or cell > SPRITE_MAX_CELL
+                    or not all(isinstance(r, str) for r in raw_rows)
+                ):
                     ctx.problems.append(
-                        f"{where}: palette key {ch!r} is not one character; ignored"
+                        f"{where}: sprite needs an integer cell >= 1 and <= "
+                        f"{SPRITE_MAX_CELL} and rows (a list of strings); "
+                        "nothing to draw, skipped"
                     )
                     continue
-                if ch in (".", " "):
+
+                widths = [len(r) for r in raw_rows]
+                cols = max(widths, default=0)
+                if widths and min(widths) != cols:
                     ctx.problems.append(
-                        f"{where}: sprite palette cannot redefine {ch!r}; "
-                        "it stays transparent"
+                        f"{where}: rows are ragged (widths {min(widths)}.."
+                        f"{cols}); short rows padded transparent"
+                    )
+                grid = [r.ljust(cols, ".") for r in raw_rows]
+                mirror = op.get("mirror")
+                if mirror == "x":
+                    grid = [r[::-1] for r in grid]
+                elif mirror is not None:
+                    # `"x"` is the only legal value (docs/SPEC.md "sprite");
+                    # anything else just doesn't mirror, same as omitting it.
+                    ctx.problems.append(
+                        f'{where}: mirror must be "x"; got {mirror!r}, not mirrored'
+                    )
+
+                # Resolve each palette character once, not per cell — the
+                # same alias/mix/built-in walk an op's own `c` gets, via
+                # ctx.ink() itself: a dict value earns the same mix hint `c`
+                # does, and anything else that doesn't resolve is "unknown
+                # colour", both already handled there. A key that isn't
+                # exactly one character can't identify a cell at all, so it's
+                # skipped up front — a row that uses it then falls into the
+                # "no palette entry" path below, same as any other unknown
+                # character.
+                used_chars = {ch for row in raw_rows for ch in row} - {".", " "}
+                char_ink: dict[str, Ink] = {}
+                checked_inks: set[Ink] = set()
+                for ch, value in raw_palette.items():
+                    if len(ch) != 1:
+                        ctx.problems.append(
+                            f"{where}: palette key {ch!r} is not one character; ignored"
+                        )
+                        continue
+                    if ch in (".", " "):
+                        ctx.problems.append(
+                            f"{where}: sprite palette cannot redefine {ch!r}; "
+                            "it stays transparent"
+                        )
+                        continue
+                    resolved = ctx.ink(value, where)
+                    char_ink[ch] = resolved
+                    # Only a character some row actually draws can be too thin
+                    # to carry a density — an unused palette entry has no
+                    # cell to be thin.
+                    if ch in used_chars and resolved not in checked_inks:
+                        checked_inks.add(resolved)
+                        _check_thin_mix(ctx, resolved, where, "fill", w=cell, h=cell)
+
+                black_ink = Ink(ctx.table["black"], ctx.table["black"], 100)
+                warned_chars: set[str] = set()
+                box = (x, y, x + cols * cell, y + len(grid) * cell)
+                snap = _snapshot(img, box)
+                for r, row in enumerate(grid):
+                    c0 = 0
+                    while c0 < cols:
+                        ch = row[c0]
+                        c1 = c0 + 1
+                        while c1 < cols and row[c1] == ch:
+                            c1 += 1
+                        run = c1 - c0
+                        if ch not in (".", " "):
+                            if ch in char_ink:
+                                run_ink = char_ink[ch]
+                            else:
+                                if ch not in warned_chars:
+                                    warned_chars.add(ch)
+                                    ctx.problems.append(
+                                        f"{where}: no palette entry for {ch!r}; "
+                                        "drawing black"
+                                    )
+                                run_ink = black_ink
+                            rx, ry = x + c0 * cell, y + r * cell
+                            rw, rh = run * cell, cell
+
+                            def draw_fn(dr, col, rx=rx, ry=ry, rw=rw, rh=rh):
+                                dr.rectangle([rx, ry, rx + rw - 1, ry + rh - 1], fill=col)
+
+                            paint_op(run_ink, draw_fn)
+                        c0 = c1
+                _check_drew_nothing(img, ctx, snap, where)
+
+                xr, yr = x + cols * cell, y + len(grid) * cell
+                if _off_canvas(xr, WIDTH):
+                    ctx.problems.append(f"{where}: x+cols*cell={xr} is off-canvas")
+                if _off_canvas(yr, HEIGHT):
+                    ctx.problems.append(f"{where}: y+rows*cell={yr} is off-canvas")
+
+            elif kind == "poly":
+                # A point list, filled by the even-odd scanline rule
+                # (docs/plans/dragon-feedback.md D12) or outlined edge by
+                # edge. Like sprite, a malformed `pts` skips the whole op —
+                # there's nothing sensible to draw from fewer than three
+                # points, and the firmware bails the same way.
+                pts = _valid_poly_points(op.get("pts"))
+                if pts is None:
+                    ctx.problems.append(
+                        f"{where}: poly needs at least three [x, y] points; "
+                        "nothing to draw, skipped"
                     )
                     continue
-                resolved = ctx.ink(value, where)
-                char_ink[ch] = resolved
-                # Only a character some row actually draws can be too thin
-                # to carry a density — an unused palette entry has no
-                # cell to be thin.
-                if ch in used_chars and resolved not in checked_inks:
-                    checked_inks.add(resolved)
-                    _check_thin_mix(ctx, resolved, where, "fill", w=cell, h=cell)
 
-            black_ink = Ink(ctx.table["black"], ctx.table["black"], 100)
-            warned_chars: set[str] = set()
-            box = (x, y, x + cols * cell, y + len(grid) * cell)
-            snap = _snapshot(img, box)
-            for r, row in enumerate(grid):
-                c0 = 0
-                while c0 < cols:
-                    ch = row[c0]
-                    c1 = c0 + 1
-                    while c1 < cols and row[c1] == ch:
-                        c1 += 1
-                    run = c1 - c0
-                    if ch not in (".", " "):
-                        if ch in char_ink:
-                            run_ink = char_ink[ch]
-                        else:
-                            if ch not in warned_chars:
-                                warned_chars.add(ch)
-                                ctx.problems.append(
-                                    f"{where}: no palette entry for {ch!r}; "
-                                    "drawing black"
-                                )
-                            run_ink = black_ink
-                        rx, ry = x + c0 * cell, y + r * cell
-                        rw, rh = run * cell, cell
-                        paint_op(run_ink, lambda dr, col, rx=rx, ry=ry, rw=rw, rh=rh: dr.rectangle(
-                            [rx, ry, rx + rw - 1, ry + rh - 1], fill=col))
-                    c0 = c1
-            _check_drew_nothing(img, ctx, snap, where)
+                # A coordinate this far out is malformed, not merely
+                # off-canvas: reject it before the bounding box or the
+                # scanline fill below ever has to reconcile a magnitude this
+                # large. See POLY_MAX_COORD's own comment for why.
+                if any(abs(px) > POLY_MAX_COORD or abs(py) > POLY_MAX_COORD for px, py in pts):
+                    ctx.problems.append(
+                        f"{where}: poly point out of range "
+                        f"(|x|,|y| <= {POLY_MAX_COORD}); nothing to draw, skipped"
+                    )
+                    continue
 
-            xr, yr = x + cols * cell, y + len(grid) * cell
-            if _off_canvas(xr, WIDTH):
-                ctx.problems.append(f"{where}: x+cols*cell={xr} is off-canvas")
-            if _off_canvas(yr, HEIGHT):
-                ctx.problems.append(f"{where}: y+rows*cell={yr} is off-canvas")
+                xs = [p[0] for p in pts]
+                ys = [p[1] for p in pts]
+                x0, x1 = min(xs), max(xs)
+                y0, y1 = min(ys), max(ys)
+                # There's no single x/y to check here (a poly has no anchor),
+                # so the ordinary off-canvas check at the bottom of this loop
+                # doesn't fire — this is its replacement, on the bounding box
+                # of every point, same tolerance as everywhere else.
+                if (
+                    _off_canvas(x0, WIDTH)
+                    or _off_canvas(x1, WIDTH)
+                    or _off_canvas(y0, HEIGHT)
+                    or _off_canvas(y1, HEIGHT)
+                ):
+                    ctx.problems.append(
+                        f"{where}: pts range x {x0}..{x1}, y {y0}..{y1} is off-canvas"
+                    )
 
-        elif kind == "poly":
-            # A point list, filled by the even-odd scanline rule
-            # (docs/plans/dragon-feedback.md D12) or outlined edge by
-            # edge. Like sprite, a malformed `pts` skips the whole op —
-            # there's nothing sensible to draw from fewer than three
-            # points, and the firmware bails the same way.
-            pts = _valid_poly_points(op.get("pts"))
-            if pts is None:
-                ctx.problems.append(
-                    f"{where}: poly needs at least three [x, y] points; "
-                    "nothing to draw, skipped"
-                )
-                continue
+                box = (x0, y0, x1 + 1, y1 + 1)
+                snap = _snapshot(img, box)
+                if _resolved_fill(op, where, ctx):
+                    spans = _poly_spans(pts)
+                    # `w`/`h` for the thin-mix check — a poly has no
+                    # single fill box like a rect's `w x h`, so this stands in
+                    # for it: the widest span (the narrowest a row of the fill
+                    # ever gets, in the sense that matters — the maximum,
+                    # since a warning should fire only when *every* row is too
+                    # thin to carry the density) and how many scanlines have
+                    # any fill at all.
+                    if spans:
+                        widest = max(xb - xa + 1 for _y, xa, xb in spans)
+                        n_scanlines = len({yy for yy, _xa, _xb in spans})
+                    else:
+                        widest = n_scanlines = 0
+                    _check_thin_mix(ctx, ink, where, "fill", w=widest, h=n_scanlines)
 
-            # A coordinate this far out is malformed, not merely
-            # off-canvas: reject it before the bounding box or the
-            # scanline fill below ever has to reconcile a magnitude this
-            # large. See POLY_MAX_COORD's own comment for why.
-            if any(abs(px) > POLY_MAX_COORD or abs(py) > POLY_MAX_COORD for px, py in pts):
-                ctx.problems.append(
-                    f"{where}: poly point out of range "
-                    f"(|x|,|y| <= {POLY_MAX_COORD}); nothing to draw, skipped"
-                )
-                continue
+                    def draw_fn(dr, col, spans=spans):
+                        for yy, xa, xb in spans:
+                            dr.rectangle([xa, yy, xb, yy], fill=col)
 
-            xs = [p[0] for p in pts]
-            ys = [p[1] for p in pts]
-            x0, x1 = min(xs), max(xs)
-            y0, y1 = min(ys), max(ys)
-            # There's no single x/y to check here (a poly has no anchor),
-            # so the ordinary off-canvas check at the bottom of this loop
-            # doesn't fire — this is its replacement, on the bounding box
-            # of every point, same tolerance as everywhere else.
-            if (
-                _off_canvas(x0, WIDTH)
-                or _off_canvas(x1, WIDTH)
-                or _off_canvas(y0, HEIGHT)
-                or _off_canvas(y1, HEIGHT)
-            ):
-                ctx.problems.append(
-                    f"{where}: pts range x {x0}..{x1}, y {y0}..{y1} is off-canvas"
-                )
-
-            box = (x0, y0, x1 + 1, y1 + 1)
-            snap = _snapshot(img, box)
-            if _resolved_fill(op, where, ctx):
-                spans = _poly_spans(pts)
-                # `w`/`h` for the thin-mix check — a poly has no
-                # single fill box like a rect's `w x h`, so this stands in
-                # for it: the widest span (the narrowest a row of the fill
-                # ever gets, in the sense that matters — the maximum,
-                # since a warning should fire only when *every* row is too
-                # thin to carry the density) and how many scanlines have
-                # any fill at all.
-                if spans:
-                    widest = max(xb - xa + 1 for _y, xa, xb in spans)
-                    n_scanlines = len({yy for yy, _xa, _xb in spans})
+                    paint_op(ink, draw_fn)
                 else:
-                    widest = n_scanlines = 0
-                _check_thin_mix(ctx, ink, where, "fill", w=widest, h=n_scanlines)
+                    t = _resolved_thickness(op.get("t", 1), where, ctx)
+                    _check_thin_mix(ctx, ink, where, "line", t=t)
+                    n_pts = len(pts)
 
-                def draw_fn(dr, col, spans=spans):
-                    for yy, xa, xb in spans:
-                        dr.rectangle([xa, yy, xb, yy], fill=col)
+                    def draw_fn(dr, col, pts=pts, t=t, n_pts=n_pts):
+                        for i in range(n_pts):
+                            ex1, ey1 = pts[i]
+                            ex2, ey2 = pts[(i + 1) % n_pts]
+                            for px, py in _thick_line_points(ex1, ey1, ex2, ey2, t):
+                                dr.point((px, py), fill=col)
 
-                paint_op(ink, draw_fn)
+                    paint_op(ink, draw_fn)
+                _check_drew_nothing(img, ctx, snap, where)
+
             else:
-                t = _resolved_thickness(op.get("t", 1), where, ctx)
-                _check_thin_mix(ctx, ink, where, "line", t=t)
-                n_pts = len(pts)
-
-                def draw_fn(dr, col, pts=pts, t=t, n_pts=n_pts):
-                    for i in range(n_pts):
-                        ex1, ey1 = pts[i]
-                        ex2, ey2 = pts[(i + 1) % n_pts]
-                        for px, py in _thick_line_points(ex1, ey1, ex2, ey2, t):
-                            dr.point((px, py), fill=col)
-
-                paint_op(ink, draw_fn)
-            _check_drew_nothing(img, ctx, snap, where)
-
-        else:
-            ctx.problems.append(f"{where}: unknown op {kind!r}")
+                ctx.problems.append(f"{where}: unknown op {kind!r}")
+        except Exception as exc:  # noqa: BLE001 - never let one op crash a publish
+            ctx.problems.append(
+                f"{where}: could not be drawn ({type(exc).__name__}: {exc}); skipped"
+            )
+            continue
 
         for k in ("x", "y"):
             v = op.get(k)
@@ -1040,6 +1220,14 @@ def bezel_problems(doc: dict[str, Any]) -> list[str]:
     Only the anchor corner is judged (plus the right edge of right-aligned
     text and of icons, whose extent is known): glyph boxes carry their own
     padding, so measuring the far edge would flag the standard footer.
+
+    Runs over the raw document, independently of render()'s own op loop --
+    an op render() went on to skip (a bad `f`/`z`, say) is still judged
+    here by its `x`/`y` alone, so a wrong-typed `f`/`z` falls back to the
+    same default render()'s own required/optional-field checks would use,
+    rather than reaching `FONTS`/`ICON_SIZES` as an unhashable dict key
+    (docs/plans/dragon-feedback.md D1 follow-up) -- render()'s own check
+    already reports the bad field itself; this one only needs geometry.
     """
     out: list[str] = []
     for i, op in enumerate(doc.get("ops") or []):
@@ -1057,12 +1245,19 @@ def bezel_problems(doc: dict[str, Any]) -> list[str]:
                 edges.append("right")
         elif x < BEZEL_MARGIN:
             edges.append("left")
-        if kind == "icon" and x + ICON_SIZES.get(op.get("z"), 0) > WIDTH - BEZEL_MARGIN:
-            edges.append("right")
+        if kind == "icon":
+            z = op.get("z", "sm")
+            if not isinstance(z, str):
+                z = "sm"
+            if x + ICON_SIZES.get(z, 0) > WIDTH - BEZEL_MARGIN:
+                edges.append("right")
         if y < BEZEL_MARGIN:
             edges.append("top")
         if kind != "icon":
-            size = FONTS.get(op.get("f", "md" if kind == "text" else "xs"), FONTS["md"]).size
+            font_name = op.get("f", "md" if kind == "text" else "xs")
+            if not isinstance(font_name, str):
+                font_name = "md" if kind == "text" else "xs"
+            size = FONTS.get(font_name, FONTS["md"]).size
             if y + size > HEIGHT - BEZEL_MARGIN:
                 edges.append("bottom")
         if edges:
@@ -1083,10 +1278,20 @@ def check(doc: dict[str, Any], font_dir: Path) -> list[str]:
     hash (a copy-pasted older document, or hand editing after `stamp`) is
     still flagged: that one means the document on disk no longer draws what
     its hash claims, which the panel would act on.
+
+    A `meta` that isn't an object at all (a document handed a string or a
+    list there, same JSON-legality every other field is allowed) is never
+    raised on either: warned about, once, and treated as empty, the same
+    "never raise from a shape the JSON allows" rule `Ctx.__init__` already
+    holds `palette` to.
     """
     _, problems = render(doc, font_dir, warn_ink=True)
     problems = problems + bezel_problems(doc)
-    stamped = (doc.get("meta") or {}).get("hash")
+    meta = doc.get("meta")
+    if meta is not None and not isinstance(meta, dict):
+        problems = problems + ["meta: must be an object; ignored"]
+        meta = {}
+    stamped = (meta or {}).get("hash")
     if stamped:
         h = render_hash(doc)
         if stamped != h:

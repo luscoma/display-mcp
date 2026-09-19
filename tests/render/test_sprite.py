@@ -99,16 +99,31 @@ def test_sprite_dot_and_space_are_transparent_even_if_palette_defines_them(font_
     assert px[135, 105] == INK["black"]
 
 
-@pytest.mark.parametrize(
-    ("field", "value"),
-    [("cell", 0), ("cell", 1.5), ("cell", True), ("rows", "KK"), ("rows", [1, 2]),
-     ("palette", ["K"])],
-)
+@pytest.mark.parametrize(("field", "value"), [("cell", 0), ("cell", 1.5), ("rows", [1, 2])])
 def test_sprite_malformed_required_field_warns_once_and_draws_nothing(font_dir, field, value):
+    """A `cell`/`rows`/`palette` that is the right JSON *type* but still
+    unusable (a non-integer or out-of-range `cell`, a `rows` of non-strings)
+    reaches sprite's own, more specific required-field check."""
     doc = _sprite_doc(**{field: value})
     img, problems = render(doc, font_dir)
     assert len(problems) == 1
     assert "nothing to draw, skipped" in problems[0]
+    blank, _ = render({"bg": "white", "ops": []}, font_dir)
+    assert img.tobytes() == blank.tobytes()
+
+
+@pytest.mark.parametrize(("field", "value"), [("cell", True), ("rows", "KK"), ("palette", ["K"])])
+def test_sprite_wrong_type_field_gets_the_generic_required_field_message(font_dir, field, value):
+    """A `cell`/`rows`/`palette` of the wrong JSON type entirely (a bool
+    where a number belongs, a string where a list belongs, a list where an
+    object belongs) is caught by the generic required-field check
+    (docs/plans/dragon-feedback.md D1 follow-up) before sprite's own check
+    ever runs -- one warning, not two."""
+    doc = _sprite_doc(**{field: value})
+    img, problems = render(doc, font_dir)
+    assert len(problems) == 1
+    assert "skipped" in problems[0]
+    assert "sprite needs x, y, cell, rows, palette" in problems[0]
     blank, _ = render({"bg": "white", "ops": []}, font_dir)
     assert img.tobytes() == blank.tobytes()
 

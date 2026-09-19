@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import threading
 
@@ -147,6 +148,41 @@ def test_check_exception_becomes_single_warning(store, sample_doc, monkeypatch):
     assert len(result.warnings) == 1
     assert "validation unavailable" in result.warnings[0]
     assert "fonts missing" in result.warnings[0]
+
+
+# The JSON-legal-but-malformed shapes tests/renderer/test_fields.py's own
+# fuzz set pins (a rect with w/h <= 0, f/a/z holding an unhashable value,
+# wrap:true with lines:0, meta not an object): none of them may ever raise
+# out of the real render.check(), so none of them may ever reach the
+# `except Exception` below and downgrade to "validation unavailable" --
+# that message is for a genuine renderer bug, not a document shape a
+# caller sent. Uses the real check() (this module's own autouse fixture
+# above fakes it for every other test here) against a real font_dir.
+_FUZZ_DOCS = [
+    {"bg": "white", "ops": [{"op": "rect", "x": 100, "y": 100, "w": 0, "h": 10}]},
+    {"bg": "white", "ops": [{"op": "rect", "x": 100, "y": 100, "w": 10, "h": 0}]},
+    {"bg": "white", "ops": [{"op": "rect", "x": 100, "y": 100, "w": -5, "h": 10}]},
+    {"bg": "white", "ops": [{"op": "text", "x": 100, "y": 100, "s": "hi", "f": []}]},
+    {"bg": "white", "ops": [{"op": "text", "x": 100, "y": 100, "s": "hi", "a": []}]},
+    {"bg": "white", "ops": [{"op": "icon", "x": 100, "y": 100, "n": "check", "z": []}]},
+    {
+        "bg": "white",
+        "ops": [
+            {"op": "text", "x": 100, "y": 100, "s": "hi", "w": 100, "wrap": True, "lines": 0}
+        ],
+    },
+    {"bg": "white", "meta": "x", "ops": []},
+]
+
+
+@pytest.mark.parametrize("doc", _FUZZ_DOCS)
+def test_fuzz_shapes_never_downgrade_to_validation_unavailable(store, font_dir, doc, monkeypatch):
+    from display_mcp.render import check as real_check
+
+    monkeypatch.setattr(store_mod.render, "check", real_check)
+    monkeypatch.setattr(store, "font_dir", font_dir)
+    result = store.publish(copy.deepcopy(doc), "default")
+    assert not any("validation unavailable" in w for w in result.warnings), result.warnings
 
 
 def test_publish_resets_first_fetch_at(store, sample_doc):

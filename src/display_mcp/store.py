@@ -113,10 +113,18 @@ def stamped_body(doc: dict[str, Any], generated: str) -> tuple[dict[str, Any], b
     preview the stamped byte size — `validate`, which has no document to
     publish and no real `generated` timestamp yet — build the identical
     bytes from one place instead of two copies that could drift apart.
+
+    A `meta` that isn't an object (a document handed a string or a list
+    there) is treated as empty rather than raised on — `dict("x")` doesn't
+    mean what `dict({})` means, and the JSON is otherwise legal.
+    `render.check()` is what actually warns about it; this function has no
+    warnings list of its own to append to, and both of its callers
+    (`Store.publish()`, `validate`) call `check()` too.
     """
     new_doc = dict(doc)
     new_doc.setdefault("v", 1)
-    meta = dict(new_doc.get("meta") or {})
+    raw_meta = new_doc.get("meta")
+    meta = dict(raw_meta) if isinstance(raw_meta, dict) else {}
     meta["hash"] = render.render_hash(new_doc)
     meta["generated"] = generated
     new_doc["meta"] = meta

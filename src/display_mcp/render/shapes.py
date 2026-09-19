@@ -264,6 +264,11 @@ def _valid_poly_points(raw: Any) -> list[tuple[int, int]] | None:
     """`pts` parsed to a list of `(x, y)` int pairs, or `None` if it isn't
     at least three of them (docs/plans/dragon-feedback.md D12).
 
+    `raw` is always a `list` by the time this runs — its only caller
+    checks `_op_required_field_problem()` first, which has already
+    guaranteed that — so the length check below is the actual first
+    condition for `poly`, not a shape check.
+
     Strict about the shape — a list of exactly-two-element lists/tuples of
     plain `int`s, `bool` excluded the way every other malformed-field check
     in this module excludes it — because the fill rule below is integer
@@ -272,7 +277,7 @@ def _valid_poly_points(raw: Any) -> list[tuple[int, int]] | None:
     parse: one bad point invalidates the whole op, same as `rows` in
     `sprite`.
     """
-    if not isinstance(raw, list) or len(raw) < 3:
+    if len(raw) < 3:
         return None
     pts: list[tuple[int, int]] = []
     for p in raw:

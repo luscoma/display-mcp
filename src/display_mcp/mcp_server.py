@@ -387,13 +387,18 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
         `max_bytes` is the ceiling `set_display` enforces (`bytes` above it
         is a `ToolError`, not a warning).
 
-        What is actually checked: unknown op/font/icon/colour name; a field an op does not
-        have (e.g. `c2`/`mix` written directly on an op — those are fields
-        of a *palette* entry, not an op: write `palette: {name: {c, c2,
-        mix}}` and `c: name` on the op instead); a malformed palette entry
-        (missing `c`/`c2`, `c2` equal to `c`, a `mix` outside 25/50/75);
-        an op placed off-canvas (`x`/`y`, and `x+w`/`y+h` for a rect,
-        `x2`/`y2` for a line); a `text`, `fmt` or `icon` op anchored inside
+        What is actually checked: unknown op/font/icon/colour name; a required field an op
+        does not have, missing or the wrong JSON type (e.g. `text` with no
+        `s`, or an `x` that is a string) — the op is skipped, same as an
+        unknown op; a field an op does not have at all (e.g. `c2`/`mix`
+        written directly on an op — those are fields of a *palette* entry,
+        not an op: write `palette: {name: {c, c2, mix}}` and `c: name` on
+        the op instead); a malformed palette entry (missing `c`/`c2`, `c2`
+        equal to `c`, a `mix` that isn't 25/50/75, rounded to the nearest
+        of those); an op placed off-canvas — `x`/`y` for every op,
+        `x+w`/`y+h` for a rect, `x2`/`y2` for a line, `x±r`/`y±r` for a
+        circle — each allowed 64 px of slack beyond the edge (a full-bleed
+        bar may overhang); a `text`, `fmt` or `icon` op anchored inside
         the 24 px band the printed bezel covers; `text`/`fmt`/`icon`
         contrast below 3:1 against what is actually behind it; a chromatic
         (non-black/white) mix used as text, which shifts toward its
@@ -583,8 +588,8 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
 
         In `ops`, an optional field whose default is `null` has no fixed
         default and may simply be omitted — `lh` is computed from the font
-        size, `w` means no width limit, `n` has no default, and `sprite`'s
-        `mirror` means no mirroring (its only other legal value is `"x"`).
+        size, `w` means no width limit, and `sprite`'s `mirror` means no
+        mirroring (its only other legal value is `"x"`).
         """
         return render.vocabulary(MAX_DOC_BYTES)
 
@@ -647,11 +652,16 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
         image, _problems = render.render(sheet, settings.font_dir, dithered_colors=False)
         buf = io.BytesIO()
         image.save(buf, format="PNG")
+        sheet_line = (
+            "the third block is the document; `set_display` it"
+            if include_document
+            else "pass `include_document=true` to receive it as a third block, "
+            "then `set_display` it"
+        )
         lines = [
             "Flat: each mix is drawn as the single colour it averages to, not the "
-            "panel's 1 px checkerboard. This sheet is itself a valid document — pass "
-            "`include_document=true` to receive it as a third block, then `set_display` "
-            "it, and every named colour below sits on the wall with its name under it.",
+            f"panel's 1 px checkerboard. This sheet is itself a valid document — {sheet_line}, "
+            "and every named colour below sits on the wall with its name under it.",
             "",
         ]
         for title, entries in render.swatch_groups(palette):
