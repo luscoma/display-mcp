@@ -224,13 +224,13 @@ def _grounds(img: Image.Image, box: tuple) -> list[tuple[tuple[float, ...], Coun
 # The report's whole "mixes don't render" section, in one sentence: `c2`
 # and `mix` are fields of a *palette entry*, not of an op, and a `c` that
 # is an object instead of a name is the same mistake written inline. Both
-# get this exact message (docs/plans/dragon-feedback.md, D1). Lives here
-# rather than in __init__.py's `_op_field_problems` (which also uses it)
-# because the message is Ctx.ink()/Ctx._mix()'s own, and __init__.py
-# imports it from here instead of the other way round.
+# get this exact message. Lives here rather than in __init__.py's
+# `_op_field_problems` (which also uses it) because the message is
+# Ctx.ink()/Ctx._mix()'s own, and __init__.py imports it from here instead
+# of the other way round.
 _MIX_HINT = (
-    'mixes are palette entries — write palette: {name: {c, c2, mix}} and '
-    'c: name (docs/SPEC.md "Mixes")'
+    "mixes are palette entries — put the mix in palette and name it in c "
+    "(palette: {name: {c, c2, mix}}, c: name)"
 )
 
 

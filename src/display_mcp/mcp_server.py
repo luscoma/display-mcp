@@ -237,8 +237,8 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
         `validate` for the full list of what is and isn't checked.
         `recent_fetch_at` is when a panel last asked for this name, `null`
         if none has since the name was last created fresh (`clear_display`
-        drops a name's fetch history along with its document); `status()`
-        lists the names that have been requested.
+        drops a name's fetch history along with its document); see
+        `status()` for the full rule on reading it against `published_at`.
         """
         try:
             validate_name(name)
@@ -263,15 +263,12 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
         judge it with `preview`/`status`, then move it to `default`) without
         resending the body over the wire. `meta.hash` is unchanged — it
         covers `bg` + `palette` + `ops`, none of which this touches — and
-        `meta.generated` is stamped fresh, exactly as for any publish;
-        `first_fetch_at` on `name` resets the same way too, since as far as
-        the panel is concerned this is an ordinary publish. `source == name`
-        is allowed and is just a republish: same hash, fresh `generated`.
-        If `name` already held this exact document the panel keeps getting
-        304s and `first_fetch_at` stays `null`; `recent_fetch_status: 304`
-        is then the signal that the wall is current, not that it never
-        collected the copy. `recent_fetch_at` in the reply is the target
-        name's, as for `set_display`.
+        `meta.generated` is stamped fresh, exactly as for any publish; this
+        is an ordinary publish as far as the panel is concerned, so
+        `first_fetch_at` on `name` resets the same way too — see `status()`
+        for the full rule on reading it. `source == name` is allowed and is
+        just a republish: same hash, fresh `generated`. `recent_fetch_at` in
+        the reply is the target name's, as for `set_display`.
 
         Raises if nothing is published under `source`.
         """
@@ -398,8 +395,13 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
         of those); an op placed off-canvas — `x`/`y` for every op,
         `x+w`/`y+h` for a rect, `x2`/`y2` for a line, `x±r`/`y±r` for a
         circle — each allowed 64 px of slack beyond the edge (a full-bleed
-        bar may overhang); a `text`, `fmt` or `icon` op anchored inside
-        the 24 px band the printed bezel covers; `text`/`fmt`/`icon`
+        bar may overhang); a `text`, `fmt` or `icon` op within the 24 px
+        bezel margin — left and top judged at the op's own anchor (`x`/`y`;
+        left is not checked for a right-aligned `text`/`fmt`, whose anchor
+        is its own right edge), bottom at anchor `y` plus the font's size
+        (`text`/`fmt` only — an icon's box has no separate bottom check),
+        right edge only for a right-aligned `text`/`fmt` or for any `icon`
+        (both have a known width the anchor alone doesn't say); `text`/`fmt`/`icon`
         contrast below 3:1 against what is actually behind it; a chromatic
         (non-black/white) mix used as text, which shifts toward its
         lighter ink; a 25%/75% mix on a feature thinner than 2 px, which
@@ -514,15 +516,22 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
 
         With `name`, one display's status. Without it, every known display,
         every name that has been requested, plus how the MCP endpoint is
-        authenticated. `recent_fetch_status: 304` is the healthy answer: the
-        panel already had this exact document and skipped the ~1.5 mAh
-        redraw. `first_fetch_at` is when the panel first served the
-        *current* hash (reset on every publish), so a stale `first_fetch_at`
-        next to a recent `published_at` usually just means the panel hasn't
-        woken up since — it wakes about hourly. `requested` covers every
-        name `fetched_names()` knows, published or not — it is the answer
-        to "which name is the panel actually configured to request", since
-        the server cannot read the firmware's own `dl_url`, only what has
+        authenticated.
+
+        The rule for whether the wall is caught up, in one place — every
+        other tool that returns these fields (`set_display`, `copy_display`)
+        just points back here: the wall is current when `recent_fetch_status`
+        is `200` or `304` **and** `recent_fetch_at` is later than
+        `published_at`. `first_fetch_at` is when the panel first downloaded
+        (`200`) the *current* publish — `null` until that happens, reset to
+        `null` by every new `set_display`/`copy_display`, and it stays
+        `null` for good when the panel already had this exact hash and has
+        only ever gotten a `304` for it — that is the steady state, not a
+        sign the publish was missed; it wakes roughly hourly, so give it an
+        hour before treating a `null` as a problem. `requested` lists every
+        name the panel has ever asked for, published or not — the answer to
+        "which name is the panel actually configured to request", since the
+        server cannot read the firmware's own `dl_url`, only what has
         actually shown up asking.
         """
         if name is not None:
@@ -588,8 +597,14 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
 
         In `ops`, an optional field whose default is `null` has no fixed
         default and may simply be omitted — `lh` is computed from the font
-        size, `w` means no width limit, and `sprite`'s `mirror` means no
-        mirroring (its only other legal value is `"x"`).
+        size, `w` means no width limit, `sprite`'s `mirror` means no
+        mirroring (its only other legal value is `"x"`), and `icon`'s `bgc`
+        is accepted and ignored outright (every compiled icon is
+        chroma-keyed, so its off pixels are skipped no matter what `bgc`
+        says). `fmt`'s `s` is `null` too, but not for the same reason as
+        the rest: it is required *in practice* — an empty or missing
+        template has nothing to draw and is a `validate`/`preview` warning,
+        not a silent no-op.
         """
         return render.vocabulary(MAX_DOC_BYTES)
 
@@ -640,8 +655,7 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
         sheet itself is an ordinary display-list document, but the PNG
         alone isn't it — pass `include_document=true` to receive the
         document JSON as a third block, then `set_display` it, and every
-        named colour here sits on the wall with its name under it
-        (docs/plans/ink-mixing.md, "Still open"'s closing-coupon bullet).
+        named colour here sits on the wall with its name under it.
         """
         palette = None
         if document is not None:

@@ -481,8 +481,13 @@ def vocabulary(max_bytes: int) -> dict[str, Any]:
 
     In `ops`, an optional field whose default is `null` has no fixed
     default and may simply be omitted — `lh` is computed from the font
-    size, `w` means no width limit, and `sprite`'s `mirror` means no
-    mirroring (its only other legal value is `"x"`).
+    size, `w` means no width limit, `sprite`'s `mirror` means no mirroring
+    (its only other legal value is `"x"`), and `icon`'s `bgc` is accepted
+    and ignored outright (every compiled icon is chroma-keyed, so its off
+    pixels are skipped no matter what `bgc` says). `fmt`'s `s` is `null`
+    too, but not for the same reason as the rest: it is required *in
+    practice* — an empty or missing template has nothing to draw and is a
+    `check()`/`validate()` warning, not a silent no-op.
     """
     mixes = {
         name: {
@@ -1295,7 +1300,9 @@ def check(doc: dict[str, Any], font_dir: Path) -> list[str]:
     if stamped:
         h = render_hash(doc)
         if stamped != h:
-            problems = [f"meta.hash is stale ({stamped}) — re-run display-mcp-cli stamp"] + problems
+            problems = [
+                f"meta.hash is stale ({stamped}) — remove meta.hash, set_display stamps it"
+            ] + problems
     return problems
 
 

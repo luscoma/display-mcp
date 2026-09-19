@@ -67,8 +67,8 @@ def test_sprite_palette_entry_that_is_an_object_warns_with_the_mix_hint(font_dir
     doc = _sprite_doc(palette={"K": {"c": "red", "c2": "yellow", "mix": 50}}, rows=["K"])
     img, problems = render(doc, font_dir)
     assert problems == [
-        'ops[0] sprite: mixes are palette entries — write palette: {name: {c, c2, mix}} '
-        'and c: name (docs/SPEC.md "Mixes")'
+        "ops[0] sprite: mixes are palette entries — put the mix in palette and name "
+        "it in c (palette: {name: {c, c2, mix}}, c: name)"
     ]
     assert img.getpixel((105, 105)) == INK["black"]
 

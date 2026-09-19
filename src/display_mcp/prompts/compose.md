@@ -2,59 +2,83 @@
 
 You are building the document an e-paper panel will draw next. There is no
 other context beyond what you're given here and whatever the caller told
-you: no memory of a previous run, no clock unless you look one up. Fetch
-`display://sample` before you start — a known-good document worth copying
-the shape of. A client that exposes only tools, not resources, gets the
-same thing through `get_display` on a published name, or the shapes in
-`describe()`. `describe()` returns the same vocabulary this file describes
-— inks, mixes, fonts, icons, ops — as one JSON object built from the
-renderer's own tables, and `guide()` returns this very text; either is
-reachable as a tool call for a client that cannot read resources or
-prompts.
+you: no memory of a previous run, no clock unless you look one up.
+`validate` and `preview` are the only checks you have — nothing here is
+verified until one of them says so, so run one before every `set_display`.
+`describe()` returns the whole vocabulary (inks, mixes, fonts, icons, ops)
+as one JSON object built from the renderer's own tables; `guide()` returns
+this very text. If your client can also read resources, `display://spec`
+carries the full document language and `display://sample` a worked
+example — but a tools-only client needs nothing more than this guide and
+`describe()`.
 
 ## Canvas
 
 1200 × 1600 px, portrait, origin top-left, y grows downward. Everything you
-place must fit inside `0 ≤ x < 1200`, `0 ≤ y < 1600`.
+place must fit inside `0 ≤ x < 1200`, `0 ≤ y < 1600` — `validate`/`preview`
+allow 64 px of slack past every edge (a full-bleed bar or a poly point
+just outside the frame isn't flagged) but nothing further out.
 
 The panel sits behind a printed bezel that overlaps the image by about 6 px
-on every edge, and the panel can sit a couple of pixels off inside it. Treat
-the outer **24 px** as a margin: run background fills and colour bars edge to
+on every edge, and can sit a couple of pixels off inside it. Treat the
+outer **24 px** as a margin: run background fills and colour bars edge to
 edge (full bleed hides the alignment), but keep text, icons and rule lines
-at least 24 px in from every edge. The sample's header bar is full bleed and
-its text starts 40 px in; copy that.
+at least 24 px in from every edge.
 
-## Document shape
+## A complete example
+
+This is the smallest document that is actually worth publishing — a header
+bar, one line of content, and the standard footer. Copy its shape rather
+than building from a blank `ops` list:
 
 ```json
 {
   "v": 1,
-  "meta": {},
   "bg": "white",
-  "palette": { "accent": "red", "work": "blue" },
-  "ops": [ ... ]
+  "ops": [
+    {"op": "rect", "x": 0,   "y": 0,    "w": 1200, "h": 120, "c": "navy"},
+    {"op": "text", "x": 40,  "y": 40,   "s": "Kitchen", "f": "xl", "c": "white"},
+    {"op": "text", "x": 48,  "y": 1552, "s": "Updated: 6:31 AM", "f": "xs"},
+    {"op": "fmt",  "x": 1045, "y": 1552, "s": "{hash}@{time24}", "f": "xs",
+     "a": "right", "c": "grey-mid"},
+    {"op": "icon", "x": 1058, "y": 1545, "n": "battery", "z": "sm", "c": "grey-mid"},
+    {"op": "fmt",  "x": 1100, "y": 1552, "s": "{battery}", "f": "xs", "c": "grey-mid"}
+  ]
 }
 ```
 
-`set_display` stamps `meta.hash` (from `bg` + `palette` + `ops`) and
-`meta.generated` — never set either yourself, both are overwritten.
-Anything else you put under `meta` is yours and is ignored by everything
-that reads the document: there is no `ttl` — the panel wakes on its own
-hourly schedule, not one the document sets. `palette` maps your own names
-onto the six inks (or onto a two-ink mix) so a restyle is a one-line edit
-instead of a find-and-replace through every op; `ops` reference a base ink,
-a built-in mix name, or your own palette entry directly in `c`.
+`v` is always `1`; `bg` is the page colour (default `white`). `set_display`
+stamps `meta.hash` (from `bg` + `palette` + `ops`) and `meta.generated` —
+never set either yourself; anything else under `meta` is yours and is
+ignored. There is no `ttl` — the panel wakes on its own hourly schedule,
+not one the document sets. A `palette` (omitted above; nothing here needs
+one) maps a name of your choosing to an ink name, a built-in mix name, or
+`{c, c2, mix}` whose `c`/`c2` are themselves two of the six inks (a
+built-in mix name given there degrades to its own base ink, with a
+warning, rather than nesting) — so a restyle is a one-line edit instead of
+a find-and-replace through every op.
+
+The two `text`/`fmt` pairs at the bottom are the **standard footer**: an
+`Updated:` line you write by hand — content, part of the document and
+`meta.hash`, so it only changes when you republish — next to
+`{hash}@{time24}`, filled in by the panel's own clock and this publish's
+hash *at draw time*, never in the document. Show both, so a reader can
+tell a stale wall from a current one at a glance.
+
+If `name` already has something published, start from that (`get_display`)
+rather than building fresh.
 
 ## Ops
 
 Every op takes `c` (a base ink, a built-in mix name, or your own `palette`
-entry, default `black`). An unknown op, font or icon name logs a warning and
-skips that op; an unknown colour is different — it falls back to black with
-a warning and the op still draws. A field an op does not have — a typo
-like `colour`, or `font` for `f` — is a `validate`/`preview` warning naming
-the fields that op actually takes, so a typo can't pass silently; `c2`/`mix`
-written on an op instead of in a `palette` entry gets its own warning
-saying where they belong. Check `warnings` either way.
+entry, default `black`). An unknown op, font or icon name skips that op
+with a warning; an unknown colour instead falls back to black with a
+warning and still draws. A required field missing or the wrong type (a
+`text` with no `s`, an `x` that's a string) also skips the op, naming
+every *required* field that op takes; a field an op doesn't have at all —
+`colour`, or `font` for `f` — warns the same way instead of passing silently;
+`c2`/`mix` written on an op rather than in a `palette` entry gets its own
+warning saying where they belong. Check `warnings` either way.
 
 - **`rect`** — `x y w h`, `fill` (default true), `t` (outline thickness when
   `fill: false`), `r` (corner radius on a filled rect, default 0, clamped to
@@ -63,26 +87,28 @@ saying where they belong. Check `warnings` either way.
   lines, diagonals only thicken vertically).
 - **`circle`** — `x y r` is the centre and radius, `fill` (default true), `t`.
 - **`text`** — `x y s f` (`f` defaults to `md`; `f: "mono"` for the monospace
-  face — block art, aligned columns, code), `a` (`left`/`center`/`right`, default `left`,
-  changes what `x` means — not `y`), `w` (max width), `wrap` (bool), `lines`
-  (default 2 when wrapping), `lh` (line height override). `x,y` is the top
-  of the glyph box, not its baseline.
+  face — block art, aligned columns, code), `a` (`left`/`center`/`right`,
+  default `left`, changes what `x` means, not `y`), `w` (max width), `wrap`
+  (bool), `lines` (default 2 when wrapping), `lh` (line height override).
+  `x,y` is the top of the glyph box, not its baseline.
   - `w` alone → ellipsis-truncates, never splitting a codepoint.
   - `w` + `wrap: true` → greedy word wrap to `lines`, last line ellipsized
     if it overruns, every line clipped to `w`.
   - Always set `w` on anything sourced from a calendar or a list — you
     don't control how long those strings get.
 - **`icon`** — `x y n z`. `x,y` is the top-left of the icon's box. `n` is the
-  MDI name below; only these eleven exist, anything else is skipped. `bgc`
-  is accepted and ignored (every compiled icon is transparent).
+  MDI name; only these eleven exist, anything else is skipped. `z` is the
+  size class — `lg` (88 px): `weather-sunny`, `weather-partly-cloudy`,
+  `weather-cloudy`, `weather-rainy`, `weather-snowy`, `weather-night`; `sm`
+  (36 px): `check`, `map-marker`, `clock`, `alert`, `battery`. `bgc` is
+  accepted and ignored (every compiled icon is transparent).
 - **`sprite`** — `x y cell rows palette`, `mirror` (only `"x"`, reverses
   every row before drawing; anything else warns and is not mirrored).
-  Pixel art: one `cell`×`cell` square per
-  character in `rows`, coloured by `palette` (a single character → a
-  colour **name**, resolved exactly like any other op's `c` — never an
-  inline `{c, c2, mix}` object; put a mix in the document `palette` and
-  name it here). `.` and space are always transparent, and there is no
-  `c` — colour lives entirely in `palette`. A tiny 8×4 glyph:
+  Pixel art: one `cell`×`cell` square per character in `rows`, coloured by
+  `palette` (a character → a colour **name**, resolved like any other op's
+  `c` — never an inline `{c, c2, mix}` object; put a mix in the document
+  `palette` and name it here). `.` and space are always transparent, and
+  there is no `c` — colour lives entirely in `palette`. A tiny 8×4 glyph:
 
   ```json
   {"op": "sprite", "x": 100, "y": 100, "cell": 20,
@@ -98,29 +124,22 @@ saying where they belong. Check `warnings` either way.
 - **`poly`** — `pts` (at least three `[x, y]` integer pairs), `c`, `fill`
   (default true), `t` (outline thickness when `fill: false`). A triangle,
   chevron, arrow or ground shadow — whatever `rect`/`circle` can't shape.
-  Filled polygons use an even-odd scanline rule shared exactly between the
-  panel and the preview (docs/SPEC.md "poly"), so a self-crossing shape
-  (a bow-tie, a star) fills the way you'd expect rather than however PIL
-  happens to; x and y aren't symmetric, so a poly matching a `rect`'s box
-  puts its points at `x`/`x+w-1` but `y`/`y+h` (not `y+h-1`). Fewer than
-  three points, or a point that isn't a two-number pair, is a warning and
-  the op is skipped:
+  Filled polygons use an even-odd scanline rule shared exactly between
+  panel and preview, so a self-crossing shape (a bow-tie, a star) fills
+  the way you'd expect; x and y aren't symmetric, so a poly matching a
+  `rect`'s box puts its points at `x`/`x+w-1` but `y`/`y+h` (not `y+h-1`).
+  Fewer than three points, or a point that isn't a two-number pair, warns
+  and the op is skipped:
 
   ```json
   {"op": "poly", "pts": [[100, 100], [300, 100], [200, 260]], "c": "navy"}
   ```
-- **`fmt`** — `x y s`, `f` (default `xs`), `a`, `c`. Like
-  `text` but `s` is a template of system fields: `{hash}` (last 5 of the
-  document's hash), `{hash16}`, `{time}` (`1:43 PM`, when the panel drew
-  it), `{time24}`, `{battery}` (`82%`), `{battv}`. Never type the hash, the
-  time or the battery yourself. The standard footer:
-
-  ```json
-  {"op": "text", "x": 48,   "y": 1552, "s": "Updated: 6:31 AM", "f": "xs"}
-  {"op": "fmt",  "x": 1045, "y": 1552, "s": "{hash}@{time24}", "f": "xs", "a": "right", "c": "grey-mid"}
-  {"op": "icon", "x": 1058, "y": 1545, "n": "battery", "z": "sm", "c": "grey-mid"}
-  {"op": "fmt",  "x": 1100, "y": 1552, "s": "{battery}", "f": "xs", "c": "grey-mid"}
-  ```
+- **`fmt`** — `x y s`, `f` (default `xs`), `a`, `c`. Like `text` but `s` is
+  a template of system fields: `{hash}` (last 5 of the document's hash),
+  `{hash16}`, `{time}` (`1:43 PM`, when the panel drew it), `{time24}`,
+  `{battery}` (`82%`), `{battv}`. Never type the hash, the time or the
+  battery yourself — see the footer above. An empty or missing `s` warns
+  and draws nothing; an unknown `{field}` is left literal and also warns.
 
 ## Type scale
 
@@ -135,61 +154,46 @@ Fixed, compiled into the firmware — six sizes, nothing between them:
 | `xs` | 22 | bold | 27 | 28 | — |
 | `mono` | 24 | regular | 30 | 33 | 31 |
 
+`mono` is one size, 24 px regular — no bold, no second mono size.
+
 Default line height is `round(size * 1.24)` — what wrapped `text` uses when
 you don't set `lh`, so it's also what to stack lines by hand: a `lg` title
 over an `md` subtitle sits the second line's `y` at `title_y + 60`. This is
 true for `mono` too — its default `lh` (30) is not its `cell_height` (33),
 and neither is the pitch that makes block art meet.
 
-Every face only has GF_Latin_Core compiled in, plus box drawing and block
-elements for `mono` alone — a character outside that (an emoji, a stray
-arrow) previews fine and has no glyph on the wall, so `check()` warns about
-it; `describe().fonts[*].glyphs` names the set each face actually has.
+Every face only compiles GF_Latin_Core, plus box drawing and block
+elements for `mono` alone. A character outside that — `✓`, `→`, an emoji,
+anything beyond plain Latin letters/digits/punctuation — previews fine
+and has no glyph on the wall; `validate`/`preview` list every such
+character by name and code point. `describe().fonts[*].glyphs` names the
+compiled set for each face.
 
 **Block art is one `text` op per row, stacked `ink_height` apart, not a
 wrapped one.** A full-height `mono` glyph (`│`, `█`) inks 31 rows at 1bpp —
-`ink_height` — inside a 33px `cell_height` (ascent + descent, which is
-headroom no glyph actually fills). Stack by `round(24 * 1.24) = 30` (the
-default `lh`) and rows fuse into one blob; stack by `cell_height` (33) and
-they leave a 2px hairline gap, on the wall as well as in the preview. Draw
-each row of a box-drawing or block diagram as its own `text` op at `y`,
-`y + 31`, `y + 62`, … (`describe().fonts.mono.ink_height`) and they meet
-exactly instead.
+`ink_height` — inside a 33px `cell_height` (ascent + descent, headroom no
+glyph fills). Stack by the default `lh` (30) and rows fuse into one blob;
+stack by `cell_height` (33) and they leave a 2px hairline gap. Draw each
+row at `y`, `y + 31`, `y + 62`, … (`describe().fonts.mono.ink_height`) and
+they meet exactly.
 
-Aligning a **36 px (`sm`) icon** beside a line of text at the same `y`: the
-icon's own box doesn't share the text's metrics, so centre it by eye against
-each size with this offset from the text op's `y` — `lg` → `y+6`, `md` →
-`y`, `sm` → `y−4`, `xs` → `y−7`. (Not meaningful for `xl`, which dwarfs a 36
-px icon.)
-
-## Icons
-
-Eleven names, each valid at exactly one size class:
-
-- `lg` (88 px): `weather-sunny`, `weather-partly-cloudy`, `weather-cloudy`,
-  `weather-rainy`, `weather-snowy`, `weather-night`
-- `sm` (36 px): `check`, `map-marker`, `clock`, `alert`, `battery`
+Aligning a **36 px `z: "sm"` icon** beside a line of `f: "sm"` text at the
+same `y` (two different fields that happen to share the name `"sm"` —
+one an icon size class, the other a font): the icon's own box doesn't
+share the text's metrics, so centre it by eye against each font size with
+this offset from the text op's `y` — `lg` → `y+6`, `md` → `y`, `sm` →
+`y−4`, `xs` → `y−7`. (Not meaningful for `xl`, which dwarfs a 36 px icon.)
 
 ## Colours
 
 **The one hard rule: 3:1 contrast is the floor.** Every compiled font size
 is WCAG large text (even `xs`, 22 px bold), so anything under 3:1 against
-what's actually behind it is a `validate`/`check()` warning, not a matter
+what's actually behind it is a `validate`/`preview` warning, not a matter
 of taste.
 
 Six inks — `black white yellow red blue green` — plus any two-ink mix.
 Write `"c": "navy"` with no palette entry needed: twenty-one tested
-pairings are built in (full table with hexes: the `display://spec`
-resource → "The named palette", or `describe()`, or `swatches()`, which
-renders every named colour as a labelled chip — pass
-`swatches(document, include_document=true)` to also get that sheet back as
-a publishable document, every name on the wall under its own chip).
-Redefine one, or invent your own, as a `palette` entry:
-`{"c": ..., "c2": ..., "mix": 25|50|75}`. `mix` is the share of **`c2`**, so
-with `c: black, c2: white` a *higher* number is *lighter* — backwards from
-print habit, and it has fooled everyone who's met it.
-
-The built-in set has three tiers, for what text goes **on top of** each one
+pairings are built in, three tiers by what text goes **on top of** each one
 as a fill:
 
 - **Dark backgrounds — white text.** `navy`, `teal`, `maroon`, `plum`,
@@ -200,26 +204,16 @@ as a fill:
 - **Mid-tone, ~3–4:1 — don't put text on these.** `grey-mid`, `mustard`,
   `orange`, `olive`.
 
-These tiers are about a colour used **behind** something. Using one *as* text
-is a different question with a different answer: a mixed glyph reads when
-either of its inks stands out from what is behind it, so `grey-mid` is a bad
-background (4.1:1 under black text) and good text on the white page (12.1:1)
-— which is what the footer stamp is.
+Call `describe()` or `swatches()` for the full table with hexes;
+`swatches(document, include_document=true)` also renders every named
+colour as a labelled chip and, on request, hands that sheet back as a
+publishable document.
 
-These are tested combinations with a note on what each turned out to be
-good for, **not a whitelist** — every ink pair and every density is legal
-inline, no palette entry required. Judge an untried one the way these were
-judged, against the 3:1 floor above. Two results worth holding onto
-because they cut against habit: yellow on white is 1.63:1 and genuinely
-unreadable, but yellow on **black** is 7.42:1 — better than red on white —
-and reads crisply down to `sm`. Coloured small text is fine when the
-background is right, too: blue on white (7.34:1) is the strongest coloured
-text there is, ahead of red (5.48:1). The background decides, not the ink.
-The real trap is dark-on-dark: red/blue, red/green, blue/green and
-black/blue all sit under 1.7:1 and look reasonable in the editor before
-vanishing on the wall.
-
-Two things contrast alone doesn't cover:
+These tiers are about a colour used **behind** something; *as* text is a
+different question — a mixed glyph reads when either of its inks stands
+out from what's behind it, so `grey-mid` is a bad background (4.1:1 under
+black text) and good text on the white page (12.1:1), which is what the
+footer stamp is. Two things contrast alone doesn't cover:
 
 - **A mixed glyph** (as opposed to a fill) shifts toward its lighter ink —
   too few pixels to average. `plum`, `brown`, `navy`, `maroon` and `forest`
@@ -228,6 +222,18 @@ Two things contrast alone doesn't cover:
 - **A feature thinner than 2 px can't carry 25% or 75%** — it samples one
   row of the 2×2 mask and lands at 0/50/100% by coordinate parity. Rules
   and hairlines want 50%, or make them 2 px wide.
+
+Redefine a built-in, or invent your own, as a `palette` entry (shape
+above). `mix` is the share of **`c2`**, backwards from print habit: with
+`c: black, c2: white` a *higher* number is *lighter*. Every ink pair and
+density is legal as a palette entry, no built-in name needed — the
+twenty-one above are tested and named, not a whitelist; judge an untried
+one against the 3:1 floor the same way. Worth
+remembering: yellow on white is 1.63:1 (unreadable) but yellow on
+**black** is 7.42:1 (crisp down to `sm`); blue on white (7.34:1) beats red
+on white (5.48:1). The trap is dark-on-dark — red/blue, red/green,
+blue/green and black/blue all sit under 1.7:1 and look fine in the editor
+before vanishing on the wall.
 
 The hexes are this panel's dither average at reading distance in one room's
 light, not a promise — e-paper is reflective and shifts with ambient light,
@@ -251,33 +257,28 @@ angle, temperature and unit variance. Trust the wall over the number.
    hour, and a wasted `set_display` either changes nothing (same hash) or
    costs the panel a ~1.5 mAh full redraw next time it wakes versus
    ~0.15 mAh for a 304 it would otherwise get. `preview(document, grid=true)`
-   overlays a labelled 100 px coordinate grid, for placing an op's `x`/`y`
-   by coordinate instead of a guess-preview-adjust round each time.
+   overlays a labelled 100 px coordinate grid for placing an op's `x`/`y`
+   by coordinate — an overlay only, never part of the document.
 
-   Each mix is drawn as the single colour it averages to — the hex in the
-   table above — rather than the 1 px checkerboard the panel dithers, so
-   the colours in the image are the colours you asked for and you can judge
-   them directly. The two caveats above still apply and are not visible in
-   the image: mixed *text* reads lighter than the swatch, and a 25%/75% mix
-   on a sub-2px feature can't hold its density. That is what the warnings
-   are for. Pass `dithered_colors=True` only if you specifically need to
-   see the real dither — that image aliases badly when scaled and is the
-   wrong one to judge colour from.
+   Each mix is drawn flat, as the hex it averages to, not the panel's 1 px
+   checkerboard, so what you see is the colour you asked for — but mixed
+   *text* still reads lighter than that, and a 25%/75% mix under 2 px still
+   can't hold its density; that is what the warnings are for. Pass
+   `dithered_colors=True` only to see the real dither, which aliases badly
+   when scaled and is the wrong image to judge colour from.
 3. `set_display(document, name=...)` — publish once you're satisfied.
-   `recent_fetch_at: null` in the reply means no panel has fetched this
-   name since it was last created (a `clear_display` drops the history)
-   — check `status()`'s `requested` list before assuming the wall is
-   about to change. If you drafted under a scratch name, `copy_display(
-   source, name)` promotes it to the panel's name without resending the
-   document; the hash is unchanged, so a wall that already showed it
-   just 304s.
-4. `status(name=...)` — confirm the panel actually picked it up. A `200`
-   means the panel fetched and redrew; every wake after that is a `304`,
-   which is what you want — it is the steady state, not a one-time
-   coincidence right after publishing. If `first_fetch_at` is older than
-   `published_at`, the panel just hasn't woken since; give it an hour
-   before worrying.
+   `recent_fetch_at: null` means no panel has fetched this name since it
+   was last created (`clear_display` drops the history) — check
+   `status()`'s `requested` list before assuming the wall is about to
+   change. If you drafted under a scratch name, `copy_display(source,
+   name)` promotes it without resending the document; the hash is
+   unchanged, so a wall that already showed it just 304s.
+4. `status(name=...)` — confirm the panel actually picked it up. See
+   "Reading status" below for what the fields mean together.
 
-If `name` already has something published, start from that instead of the
-sample — `get_display` or `display://current/{name}` — and edit it rather
-than building from a blank ops list.
+## Reading status
+
+One rule: the wall is current when `recent_fetch_status` is `200` or `304`
+**and** `recent_fetch_at` is later than `published_at`; `first_fetch_at`
+staying `null` just means the panel already had this hash and has only
+ever 304'd it, not that the publish was missed.

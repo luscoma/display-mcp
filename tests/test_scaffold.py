@@ -109,6 +109,28 @@ def test_compose_poly_example_checks_clean(font_dir):
     assert check({"v": 1, "bg": "white", "ops": [op]}, font_dir) == []
 
 
+def _fenced_document(text: str) -> dict:
+    """The first fenced ```json block in `text` that parses to a whole
+    document (an object with an `ops` key, not a lone op) -- compose.md's
+    own opening "A complete example"."""
+    for block in re.findall(r"[ \t]*```json\n(.*?)\n[ \t]*```", text, re.DOTALL):
+        try:
+            obj = json.loads(block)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict) and "ops" in obj:
+            return obj
+    raise AssertionError(f"no fenced json document found in {text[:40]!r}...")
+
+
+def test_compose_complete_example_checks_clean(font_dir):
+    """The guide opens with one complete, minimal document (header bar,
+    one `text`, the standard footer) -- it has to actually validate clean,
+    not just look plausible."""
+    doc = _fenced_document((PROMPTS / "compose.md").read_text())
+    assert check(doc, font_dir) == []
+
+
 @pytest.mark.parametrize("source", BUNDLED, ids=lambda p: p.name)
 def test_no_checked_in_duplicate(source):
     """The copy under prompts/ is a build product. If one is sitting in the

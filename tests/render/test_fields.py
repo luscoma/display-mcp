@@ -141,8 +141,8 @@ def test_c2_and_mix_on_an_op_point_at_the_palette_and_draw_unchanged(font_dir):
     img_mix, problems = render(with_stray_mix, font_dir)
     img_solid, _ = render(solid, font_dir)
     assert problems == [
-        'ops[0] rect: mixes are palette entries — write palette: {name: {c, c2, mix}} '
-        'and c: name (docs/SPEC.md "Mixes")'
+        "ops[0] rect: mixes are palette entries — put the mix in palette and name "
+        "it in c (palette: {name: {c, c2, mix}}, c: name)"
     ]
     # One warning covers both stray keys, not two.
     assert img_mix.tobytes() == img_solid.tobytes()
@@ -168,8 +168,8 @@ def test_dict_in_c_warns_and_draws_black_instead_of_raising(font_dir):
     black = {"bg": "white", "ops": [{"op": "rect", "x": 0, "y": 0, "w": 10, "h": 10, "c": "black"}]}
     img_black, _ = render(black, font_dir)
     assert problems == [
-        'ops[0] rect: mixes are palette entries — write palette: {name: {c, c2, mix}} '
-        'and c: name (docs/SPEC.md "Mixes")'
+        "ops[0] rect: mixes are palette entries — put the mix in palette and name "
+        "it in c (palette: {name: {c, c2, mix}}, c: name)"
     ]
     assert img.tobytes() == img_black.tobytes()
 
