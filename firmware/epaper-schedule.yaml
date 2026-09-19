@@ -68,6 +68,11 @@ esphome:
           // meant to be comparable against the hourly schedule, so a manual
           // refresh must not look like an extra wake.
           id(diag_wakes) += 1;
+          // Say why we are up, at INFO, so a log tail can tell a timer wake
+          // from a button, a power cycle or a crash. On 2026-09-19 an extra
+          // wake 52 s after sleeping went unexplained for want of this line.
+          ESP_LOGI("dl", "boot: wake cause %d, reset reason %d, wake #%u",
+                   (int) cause, (int) esp_reset_reason(), (unsigned) id(diag_wakes));
       - script.execute: wake_cycle
 
 esp32:
@@ -267,6 +272,13 @@ globals:
     restore_value: false
     initial_value: "false"
 
+  # Whether component.update actually started a display operation this
+  # cycle. It gates the shown-id stamp in wake_cycle.
+  - id: draw_started
+    type: bool
+    restore_value: false
+    initial_value: "false"
+
 ########################################################################
 # Display
 ########################################################################
@@ -455,6 +467,11 @@ script:
       - lambda: |-
           id(diag_status) = 0;
           id(diag_result) = "no response";
+          // Not restored across boots, but a held-awake board runs many
+          // cycles: without this a 304 after an earlier 200 still holds last
+          // cycle's body and logs "the server sent 200".
+          id(dl_body).clear();
+          id(dl_new_id).clear();
       # The ADC's own poll lands at a random offset inside its interval, so
       # force one before the fetch: the battery headers below and the draw's
       # {battery} both read it, and neither wants an hour-old value.
@@ -583,17 +600,62 @@ script:
                 condition:
                   time.has_time:
                 timeout: 5s
-            - component.update: epd
-            - wait_until:
+            # The stamp at the end is what turns every later fetch into a
+            # 304, so it must follow a refresh that demonstrably ran. On
+            # 2026-09-19 the display component had failed setup,
+            # component.update was skipped silently (UpdateComponentAction
+            # returns when the component is not ready), the wait returned at
+            # once, and the new hash was stamped as shown with the old image
+            # still on the glass: 304 forever (docs/plans/wake-sleep-flow.md).
+            # Every failure path here keeps the old shown id so the next wake
+            # gets a 200 and tries again.
+            - if:
                 condition:
-                  lambda: "return !id(epd).is_processing();"
-                timeout: 180s
-            - delay: 3s
-            - lambda: |-
-                id(dl_shown_id) = id(dl_new_id);
-                id(diag_result) = "200 redrawn";
-                auto t = id(sntp_time).utcnow();
-                if (t.is_valid()) id(diag_draw_ts) = t.strftime("%Y-%m-%dT%H:%M:%SZ");
+                  lambda: "return id(epd).is_failed();"
+                then:
+                  - lambda: |-
+                      id(diag_result) = "200 display failed";
+                      ESP_LOGE("dl", "display component failed setup; not drawing, "
+                                     "shown id kept");
+                else:
+                  - component.update: epd
+                  # update() schedules synchronously, so this is normally
+                  # already true; the short wait only guards a driver that
+                  # defers. It stays false when the update was skipped or the
+                  # driver refused the operation.
+                  - wait_until:
+                      condition:
+                        lambda: "return id(epd).is_processing();"
+                      timeout: 2s
+                  - lambda: "id(draw_started) = id(epd).is_processing();"
+                  - if:
+                      condition:
+                        lambda: "return id(draw_started);"
+                      then:
+                        - wait_until:
+                            condition:
+                              lambda: "return !id(epd).is_processing();"
+                            timeout: 180s
+                        - delay: 3s
+                        - if:
+                            condition:
+                              lambda: "return !id(epd).is_processing();"
+                            then:
+                              - lambda: |-
+                                  id(dl_shown_id) = id(dl_new_id);
+                                  id(diag_result) = "200 redrawn";
+                                  auto t = id(sntp_time).utcnow();
+                                  if (t.is_valid()) id(diag_draw_ts) = t.strftime("%Y-%m-%dT%H:%M:%SZ");
+                                  ESP_LOGI("dl", "redrawn; shown id now '%s'", id(dl_shown_id).c_str());
+                            else:
+                              - lambda: |-
+                                  id(diag_result) = "200 draw did not finish";
+                                  ESP_LOGE("dl", "refresh still running after 180 s; shown id kept");
+                      else:
+                        - lambda: |-
+                            id(diag_result) = "200 draw did not run";
+                            ESP_LOGE("dl", "component.update did nothing (display not ready, "
+                                           "or the driver refused the operation); shown id kept");
           else:
             # Say which guard stopped the refresh. A 304 means the ETag did its
             # job. A 200 with identical bytes means the server's ETag changed
@@ -621,7 +683,9 @@ script:
           condition:
             switch.is_on: stay_awake
           then:
-            - logger.log: "held awake"
+            - logger.log:
+                level: INFO
+                format: "held awake"
           else:
             # A wake somebody asked for gets a window to be flashed in; the
             # hourly ones go straight back down and cost nothing. On a redraw
@@ -632,7 +696,9 @@ script:
                 condition:
                   lambda: "return id(woke_by_button);"
                 then:
-                  - logger.log: "woken by button — holding ${flash_window} for OTA"
+                  - logger.log:
+                      level: INFO
+                      format: "woken by button — holding ${flash_window} for OTA"
                   - delay: ${flash_window}
             # deep_sleep.enter below is forced, so it would happily sleep in
             # the middle of an upload that started inside the window.

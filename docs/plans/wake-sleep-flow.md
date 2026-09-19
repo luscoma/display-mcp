@@ -1,9 +1,11 @@
 # Wake, sleep, the button, and how the wall got stuck on 2026-09-19
 
 Status: analysed and root-caused 2026-09-19; the sprite allocation fix is committed
-in `firmware/display_list.h`; the `wake_cycle` hardening below is still a
-recommendation, and a memory audit of the rest of the header followed (see
-the end of this file). Evidence is the server
+in `firmware/display_list.h`; the `wake_cycle` hardening below landed the
+same day (the shown id is stamped only after a refresh demonstrably ran, the
+body is cleared each cycle, the sleep log lines are INFO, and boot logs the
+wake cause and reset reason), and the memory audit of the rest of the header
+became `docs/plans/firmware-bounds.md`. Evidence is the server
 journal on the host (local time), `/healthz`, ESPHome 2026.8.2's own component
 sources, the driver pinned at v0.5.0, and two log captures over the native API
 taken during this analysis (07:35 and 07:39, both pressing a template button

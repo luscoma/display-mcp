@@ -7,9 +7,14 @@ Start this BEFORE waking the device; it retries until the API answers.
 
   python fetch_and_watch.py [--host epaper-13e6.local] [--wait 600] [--seconds 240]
                             [--no-press] [--no-hold]
+
+--host defaults to $EPAPER_HOST when set, so the panel's real name can live
+in your shell rather than in this public file (the mDNS default below does
+not resolve on a network that keeps its IoT devices in their own zone).
 """
 import argparse
 import asyncio
+import os
 import re
 import time
 
@@ -41,7 +46,7 @@ async def connect_with_retry(host: str, wait: int) -> aioesphomeapi.APIClient:
 
 async def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--host", default="epaper-13e6.local")
+    ap.add_argument("--host", default=os.environ.get("EPAPER_HOST", "epaper-13e6.local"))
     ap.add_argument("--wait", type=int, default=600, help="seconds to wait for the device to appear")
     ap.add_argument("--seconds", type=int, default=240, help="seconds to keep streaming after connect")
     ap.add_argument("--button", default="Fetch and draw")
