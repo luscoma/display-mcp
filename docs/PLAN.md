@@ -272,7 +272,10 @@ back out of `status` and `/healthz` as `panel_battery`, `panel_volts`,
 `panel_draw_at` and `panel_wakes`. Home Assistant polls `/healthz`; it is not
 told anything by the panel directly, because a deep-sleeping device is
 unreachable for most of the hour and "unavailable" cannot be told apart from
-"dead".
+"dead". `sleep_now` also lingers `${flash_window}` (30 s) before sleeping so
+an OTA can catch the board — but only on a wake the boot button caused, read
+from `esp_sleep_get_wakeup_cause()` at boot, so the hourly wakes pay nothing
+for it.
 `docs/plans/panel-diagnostics.md` has the decisions, the readings and the
 Home Assistant REST sensors.
 

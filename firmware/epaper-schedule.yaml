@@ -24,6 +24,15 @@ substitutions:
   sleep_minutes: "60min"
   max_awake: "4min"
 
+  # How long a wake lingers before deep sleep so an OTA can get its
+  # connection in — but only on a wake the boot button caused, never on the
+  # hourly timer. Pressing the button is already the "I am standing at the
+  # panel and I want it" signal; a window on every wake would be ~0.8 mAh of
+  # idle radio an hour, about 20 mAh/day, to be ready for something that
+  # happens twice a month. This way it is free until it is wanted, which is
+  # what lets it be generous.
+  flash_window: "30s"
+
   epd_clk_pin: "9"
   epd_data0_pin: "46"
   epd_data1_pin: "17" # no MISO on this board; inert spare pin
@@ -43,11 +52,22 @@ esphome:
   on_boot:
     priority: -100
     then:
-      # Counted here and not in wake_cycle, which also runs from the
-      # refresh_now action and both template buttons: X-Panel-Wakes is meant
-      # to be comparable against the hourly schedule, so a manual refresh
-      # must not look like an extra wake.
-      - lambda: "id(diag_wakes) += 1;"
+      # Why this wake happened, which is the whole basis for holding the board
+      # open afterwards (see flash_window). esp_sleep.h comes in with
+      # deep_sleep's own header. A cold boot reports UNDEFINED and is
+      # deliberately NOT treated as a press: a brownout loop on a flat battery
+      # would then hold 30 s every time it restarted, which is exactly when
+      # the panel can least afford it. Press the button after a power-on.
+      - lambda: |-
+          const auto cause = esp_sleep_get_wakeup_cause();
+          id(woke_by_button) = cause == ESP_SLEEP_WAKEUP_EXT0 ||
+                               cause == ESP_SLEEP_WAKEUP_EXT1 ||
+                               cause == ESP_SLEEP_WAKEUP_GPIO;
+          // Counted here and not in wake_cycle, which also runs from the
+          // refresh_now action and both template buttons: X-Panel-Wakes is
+          // meant to be comparable against the hourly schedule, so a manual
+          // refresh must not look like an extra wake.
+          id(diag_wakes) += 1;
       - script.execute: wake_cycle
 
 esp32:
@@ -97,7 +117,26 @@ ota:
   - platform: esphome
     password: !secret ota_password
     on_begin:
+      # prevent covers deep_sleep's own run_duration; ota_active covers
+      # sleep_now's explicit enter, which prevent does not.
       - deep_sleep.prevent: ds
+      - globals.set: { id: ota_active, value: "true" }
+    on_error:
+      - globals.set: { id: ota_active, value: "false" }
+      # prevent/allow is one shared flag, and "Stay awake" holds the same one.
+      # Allowing unconditionally here would drop the board into an hour of
+      # sleep with the switch still on — and deep_sleep latches a deferred
+      # sleep while prevented, so it would go down on the very next loop.
+      - if:
+          condition:
+            switch.is_off: stay_awake
+          then:
+            - deep_sleep.allow: ds
+      # The upload blocks the main loop, so the hold has almost certainly
+      # expired by now. Start it again rather than making someone re-press
+      # the button and race a 30 s window an hour from now.
+      - script.stop: sleep_now
+      - script.execute: sleep_now
 
 http_request:
   timeout: 15s
@@ -206,6 +245,21 @@ globals:
   - id: diag_result
     type: std::string
     restore_value: false
+
+  # deep_sleep.enter is a *forced* sleep — it ignores deep_sleep.prevent — so
+  # sleep_now has to know about an OTA itself or it will cut one off.
+  - id: ota_active
+    type: bool
+    restore_value: false
+    initial_value: "false"
+
+  # Set from the wakeup cause at boot, and by the button itself when it is
+  # pressed on a board that is already up. Never cleared inside wake_cycle:
+  # one press should still be honoured if a second cycle runs before sleep.
+  - id: woke_by_button
+    type: bool
+    restore_value: false
+    initial_value: "false"
 
 ########################################################################
 # Display
@@ -368,6 +422,9 @@ binary_sensor:
     filters:
       - delayed_on: 30ms
     on_press:
+      # Also fires on the press that woke the board, which on_boot has already
+      # accounted for; setting it twice is free.
+      - globals.set: { id: woke_by_button, value: "true" }
       - script.execute: wake_cycle
 
 ########################################################################
@@ -384,6 +441,11 @@ script:
   - id: wake_cycle
     mode: single
     then:
+      # sleep_now may be part-way through its OTA hold from the previous
+      # cycle. It is mode: single, so the script.execute at the end of THIS
+      # cycle would be dropped and the old hold would expire mid-refresh and
+      # force a sleep. Cancel it up front; this cycle owns the sleep now.
+      - script.stop: sleep_now
       - lambda: |-
           id(diag_status) = 0;
           id(diag_result) = "no response";
@@ -541,6 +603,23 @@ script:
           then:
             - logger.log: "held awake"
           else:
+            # A wake somebody asked for gets a window to be flashed in; the
+            # hourly ones go straight back down and cost nothing. On a redraw
+            # this is 30 s on top of an already long wake, which is fine — it
+            # is a deliberate press either way, and a rule with no exceptions
+            # beats one that saves half a milliamp-hour a month.
+            - if:
+                condition:
+                  lambda: "return id(woke_by_button);"
+                then:
+                  - logger.log: "woken by button — holding ${flash_window} for OTA"
+                  - delay: ${flash_window}
+            # deep_sleep.enter below is forced, so it would happily sleep in
+            # the middle of an upload that started inside the window.
+            - wait_until:
+                condition:
+                  lambda: "return !id(ota_active);"
+                timeout: 5min
             - deep_sleep.enter: ds
 
 button:

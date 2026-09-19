@@ -352,6 +352,7 @@ Assistant at the panel itself; it is asleep for most of the hour, and
 | Panel: `BUG: document has no meta.hash` | Something wrote the file directly, bypassing `set_display`. It stamps; nothing else does. |
 | `recent_fetch_at` stops advancing | The panel is not waking: battery, Wi-Fi, or a hang. Unlike an ESPHome entity going `unavailable`, this is unambiguous. |
 | All `panel_*` fields `null` | Firmware older than the `X-Panel-*` headers, or something other than the panel is fetching. `recent_fetch_ip` says which. |
+| `panel_battery` falling faster than expected | Usually "Stay awake" left on. `flash_window` only costs anything on wakes the boot button caused, so it is not the culprit unless someone is pressing it. |
 | Panel refreshes every hour regardless | Your ETag or hash is timestamp-derived. Compare `status.hash` across two publishes of identical content. |
 | Claude can't reach the connector | The tunnel first (`journalctl -u cloudflared`, and **Healthy** in the dashboard), then whether the Access application still sits on that hostname. |
 | MCP calls succeed with no login prompt | Access isn't configured — `setup.sh status` will say `mcp auth: not configured`. Fine for local testing, not for the internet-facing endpoint. |
