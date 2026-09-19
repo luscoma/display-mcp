@@ -657,34 +657,30 @@ inline bool draw_sprite(esphome::display::Display &it, JsonObject o, JsonObject 
     return false;
   }
 
-  // Walk each row into its codepoints: the widest row, in
-  // codepoints, decides the grid's column count, and a short row reads as
-  // transparent past its own length -- the drawing half of the Python's
-  // "ragged rows are padded"; the warning about it is authoring feedback
-  // and stays on that side. Padding happens before mirroring, exactly as
-  // the Python pads then reverses, so a ragged mirrored row pads on what
-  // becomes its trailing edge either way.
-  std::vector<std::vector<std::string>> rows_cp;
+  // The widest row, in codepoints, decides the grid's column count, and a
+  // short row reads as transparent past its own length -- the drawing half
+  // of the Python's "ragged rows are padded"; the warning about it is
+  // authoring feedback and stays on that side. Padding happens before
+  // mirroring, exactly as the Python pads then reverses, so a ragged
+  // mirrored row pads on what becomes its leading edge.
+  //
+  // Rows stay as the UTF-8 strings ArduinoJson already holds; only ONE row's
+  // cell boundaries are materialised at a time. An earlier cut kept every
+  // cell as its own std::string -- 8,448 of them for a 96x88 sprite, some
+  // 200 KB of internal heap on a chip that has about that much free after
+  // Wi-Fi -- and operator new aborted the panel on every wake until safe
+  // mode caught it (docs/plans/wake-sleep-flow.md).
   size_t cols = 0;
   for (JsonVariant rv : sprite_rows) {
     const char *s = rv;
     const std::string row = s != nullptr ? s : "";
-    std::vector<std::string> cps;
-    for (size_t i = 0; i < row.size();) {
-      const size_t j = utf8_next(row, i);
-      cps.push_back(row.substr(i, j - i));
-      i = j;
-    }
-    cols = std::max(cols, cps.size());
-    rows_cp.push_back(std::move(cps));
+    size_t n_cp = 0;
+    for (size_t i = 0; i < row.size(); i = utf8_next(row, i))
+      n_cp++;
+    cols = std::max(cols, n_cp);
   }
-  for (auto &r : rows_cp)
-    while (r.size() < cols)
-      r.push_back(".");
 
-  if (!strcmp(o["mirror"] | "", "x"))
-    for (auto &r : rows_cp)
-      std::reverse(r.begin(), r.end());
+  const bool mirror = !strcmp(o["mirror"] | "", "x");
   // Any other non-null mirror value is a Python-side ("x" is the only
   // legal one) authoring warning; the firmware just doesn't mirror, as it
   // always has.
@@ -715,13 +711,30 @@ inline bool draw_sprite(esphome::display::Display &it, JsonObject o, JsonObject 
 
   const Ink black_ink{esphome::Color(0, 0, 0), esphome::Color(0, 0, 0), 100};
   std::set<std::string> warned;
-  for (size_t r = 0; r < rows_cp.size(); r++) {
-    const auto &row = rows_cp[r];
+  size_t r = 0;
+  for (JsonVariant rv : sprite_rows) {
+    const char *s = rv;
+    const std::string row = s != nullptr ? s : "";
+    // (offset, length) of each codepoint in this row: a few hundred bytes
+    // for the widest sensible row, freed before the next one.
+    std::vector<std::pair<size_t, size_t>> cps;
+    for (size_t i = 0; i < row.size();) {
+      const size_t j = utf8_next(row, i);
+      cps.emplace_back(i, j - i);
+      i = j;
+    }
+    // Grid column -> the codepoint drawn there, "." past the row's own
+    // length; a mirrored row reads its codepoints from the far end, which
+    // is where the padding then lands.
+    auto cell_at = [&](size_t c) -> std::string {
+      const size_t idx = mirror ? cols - 1 - c : c;
+      return idx < cps.size() ? row.substr(cps[idx].first, cps[idx].second) : std::string(".");
+    };
     size_t c0 = 0;
     while (c0 < cols) {
-      const std::string &ch = row[c0];
+      const std::string ch = cell_at(c0);
       size_t c1 = c0 + 1;
-      while (c1 < cols && row[c1] == ch)
+      while (c1 < cols && cell_at(c1) == ch)
         c1++;
       const size_t run = c1 - c0;
       if (ch != "." && ch != " ") {
@@ -741,6 +754,7 @@ inline bool draw_sprite(esphome::display::Display &it, JsonObject o, JsonObject 
       }
       c0 = c1;
     }
+    r++;
   }
   return true;
 }
