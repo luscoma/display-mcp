@@ -1,0 +1,442 @@
+{
+  "instrument-bold/24": {
+    "cell_height": 30,
+    "ink_height": null
+  },
+  "instrument-bold/26": {
+    "cell_height": 33,
+    "ink_height": null
+  },
+  "instrument-bold/32": {
+    "cell_height": 40,
+    "ink_height": null
+  },
+  "instrument-bold/40": {
+    "cell_height": 49,
+    "ink_height": null
+  },
+  "instrument-bold/44": {
+    "cell_height": 54,
+    "ink_height": null
+  },
+  "instrument-bold/54": {
+    "cell_height": 67,
+    "ink_height": null
+  },
+  "instrument-bold/lg": {
+    "cell_height": 59,
+    "ink_height": null
+  },
+  "instrument-bold/md": {
+    "cell_height": 44,
+    "ink_height": null
+  },
+  "instrument-bold/sm": {
+    "cell_height": 35,
+    "ink_height": null
+  },
+  "instrument-bold/xl": {
+    "cell_height": 103,
+    "ink_height": null
+  },
+  "instrument-bold/xs": {
+    "cell_height": 28,
+    "ink_height": null
+  },
+  "instrument-italic/24": {
+    "cell_height": 30,
+    "ink_height": null
+  },
+  "instrument-italic/26": {
+    "cell_height": 33,
+    "ink_height": null
+  },
+  "instrument-italic/32": {
+    "cell_height": 40,
+    "ink_height": null
+  },
+  "instrument-italic/40": {
+    "cell_height": 49,
+    "ink_height": null
+  },
+  "instrument-italic/44": {
+    "cell_height": 54,
+    "ink_height": null
+  },
+  "instrument-italic/54": {
+    "cell_height": 67,
+    "ink_height": null
+  },
+  "instrument-italic/lg": {
+    "cell_height": 59,
+    "ink_height": null
+  },
+  "instrument-italic/md": {
+    "cell_height": 44,
+    "ink_height": null
+  },
+  "instrument-italic/sm": {
+    "cell_height": 35,
+    "ink_height": null
+  },
+  "instrument-italic/xl": {
+    "cell_height": 103,
+    "ink_height": null
+  },
+  "instrument-italic/xs": {
+    "cell_height": 28,
+    "ink_height": null
+  },
+  "instrument/24": {
+    "cell_height": 30,
+    "ink_height": null
+  },
+  "instrument/26": {
+    "cell_height": 33,
+    "ink_height": null
+  },
+  "instrument/32": {
+    "cell_height": 40,
+    "ink_height": null
+  },
+  "instrument/40": {
+    "cell_height": 49,
+    "ink_height": null
+  },
+  "instrument/44": {
+    "cell_height": 54,
+    "ink_height": null
+  },
+  "instrument/54": {
+    "cell_height": 67,
+    "ink_height": null
+  },
+  "instrument/lg": {
+    "cell_height": 59,
+    "ink_height": null
+  },
+  "instrument/md": {
+    "cell_height": 44,
+    "ink_height": null
+  },
+  "instrument/sm": {
+    "cell_height": 35,
+    "ink_height": null
+  },
+  "instrument/xl": {
+    "cell_height": 103,
+    "ink_height": null
+  },
+  "instrument/xs": {
+    "cell_height": 28,
+    "ink_height": null
+  },
+  "karla-bold/24": {
+    "cell_height": 30,
+    "ink_height": null
+  },
+  "karla-bold/26": {
+    "cell_height": 31,
+    "ink_height": null
+  },
+  "karla-bold/32": {
+    "cell_height": 39,
+    "ink_height": null
+  },
+  "karla-bold/40": {
+    "cell_height": 48,
+    "ink_height": null
+  },
+  "karla-bold/44": {
+    "cell_height": 53,
+    "ink_height": null
+  },
+  "karla-bold/54": {
+    "cell_height": 64,
+    "ink_height": null
+  },
+  "karla-bold/lg": {
+    "cell_height": 58,
+    "ink_height": null
+  },
+  "karla-bold/md": {
+    "cell_height": 44,
+    "ink_height": null
+  },
+  "karla-bold/sm": {
+    "cell_height": 34,
+    "ink_height": null
+  },
+  "karla-bold/xl": {
+    "cell_height": 100,
+    "ink_height": null
+  },
+  "karla-bold/xs": {
+    "cell_height": 27,
+    "ink_height": null
+  },
+  "karla-italic/24": {
+    "cell_height": 30,
+    "ink_height": null
+  },
+  "karla-italic/26": {
+    "cell_height": 31,
+    "ink_height": null
+  },
+  "karla-italic/32": {
+    "cell_height": 39,
+    "ink_height": null
+  },
+  "karla-italic/40": {
+    "cell_height": 48,
+    "ink_height": null
+  },
+  "karla-italic/44": {
+    "cell_height": 53,
+    "ink_height": null
+  },
+  "karla-italic/54": {
+    "cell_height": 64,
+    "ink_height": null
+  },
+  "karla-italic/lg": {
+    "cell_height": 58,
+    "ink_height": null
+  },
+  "karla-italic/md": {
+    "cell_height": 44,
+    "ink_height": null
+  },
+  "karla-italic/sm": {
+    "cell_height": 34,
+    "ink_height": null
+  },
+  "karla-italic/xl": {
+    "cell_height": 100,
+    "ink_height": null
+  },
+  "karla-italic/xs": {
+    "cell_height": 27,
+    "ink_height": null
+  },
+  "karla/24": {
+    "cell_height": 30,
+    "ink_height": null
+  },
+  "karla/26": {
+    "cell_height": 31,
+    "ink_height": null
+  },
+  "karla/32": {
+    "cell_height": 39,
+    "ink_height": null
+  },
+  "karla/40": {
+    "cell_height": 48,
+    "ink_height": null
+  },
+  "karla/44": {
+    "cell_height": 53,
+    "ink_height": null
+  },
+  "karla/54": {
+    "cell_height": 64,
+    "ink_height": null
+  },
+  "karla/lg": {
+    "cell_height": 58,
+    "ink_height": null
+  },
+  "karla/md": {
+    "cell_height": 44,
+    "ink_height": null
+  },
+  "karla/sm": {
+    "cell_height": 34,
+    "ink_height": null
+  },
+  "karla/xl": {
+    "cell_height": 100,
+    "ink_height": null
+  },
+  "karla/xs": {
+    "cell_height": 27,
+    "ink_height": null
+  },
+  "mono/24": {
+    "cell_height": 33,
+    "ink_height": 31
+  },
+  "mono/26": {
+    "cell_height": 35,
+    "ink_height": 34
+  },
+  "mono/32": {
+    "cell_height": 43,
+    "ink_height": 42
+  },
+  "mono/40": {
+    "cell_height": 53,
+    "ink_height": 53
+  },
+  "mono/44": {
+    "cell_height": 59,
+    "ink_height": 58
+  },
+  "mono/54": {
+    "cell_height": 73,
+    "ink_height": 71
+  },
+  "mono/lg": {
+    "cell_height": 64,
+    "ink_height": 63
+  },
+  "mono/md": {
+    "cell_height": 48,
+    "ink_height": 47
+  },
+  "mono/sm": {
+    "cell_height": 38,
+    "ink_height": 37
+  },
+  "mono/xl": {
+    "cell_height": 112,
+    "ink_height": 111
+  },
+  "mono/xs": {
+    "cell_height": 30,
+    "ink_height": 29
+  },
+  "petrona-bold/24": {
+    "cell_height": 28,
+    "ink_height": null
+  },
+  "petrona-bold/26": {
+    "cell_height": 31,
+    "ink_height": null
+  },
+  "petrona-bold/32": {
+    "cell_height": 37,
+    "ink_height": null
+  },
+  "petrona-bold/40": {
+    "cell_height": 46,
+    "ink_height": null
+  },
+  "petrona-bold/44": {
+    "cell_height": 50,
+    "ink_height": null
+  },
+  "petrona-bold/54": {
+    "cell_height": 62,
+    "ink_height": null
+  },
+  "petrona-bold/lg": {
+    "cell_height": 55,
+    "ink_height": null
+  },
+  "petrona-bold/md": {
+    "cell_height": 41,
+    "ink_height": null
+  },
+  "petrona-bold/sm": {
+    "cell_height": 33,
+    "ink_height": null
+  },
+  "petrona-bold/xl": {
+    "cell_height": 96,
+    "ink_height": null
+  },
+  "petrona-bold/xs": {
+    "cell_height": 25,
+    "ink_height": null
+  },
+  "petrona-italic/24": {
+    "cell_height": 28,
+    "ink_height": null
+  },
+  "petrona-italic/26": {
+    "cell_height": 31,
+    "ink_height": null
+  },
+  "petrona-italic/32": {
+    "cell_height": 37,
+    "ink_height": null
+  },
+  "petrona-italic/40": {
+    "cell_height": 46,
+    "ink_height": null
+  },
+  "petrona-italic/44": {
+    "cell_height": 50,
+    "ink_height": null
+  },
+  "petrona-italic/54": {
+    "cell_height": 62,
+    "ink_height": null
+  },
+  "petrona-italic/lg": {
+    "cell_height": 55,
+    "ink_height": null
+  },
+  "petrona-italic/md": {
+    "cell_height": 41,
+    "ink_height": null
+  },
+  "petrona-italic/sm": {
+    "cell_height": 33,
+    "ink_height": null
+  },
+  "petrona-italic/xl": {
+    "cell_height": 96,
+    "ink_height": null
+  },
+  "petrona-italic/xs": {
+    "cell_height": 25,
+    "ink_height": null
+  },
+  "petrona/24": {
+    "cell_height": 28,
+    "ink_height": null
+  },
+  "petrona/26": {
+    "cell_height": 31,
+    "ink_height": null
+  },
+  "petrona/32": {
+    "cell_height": 37,
+    "ink_height": null
+  },
+  "petrona/40": {
+    "cell_height": 46,
+    "ink_height": null
+  },
+  "petrona/44": {
+    "cell_height": 50,
+    "ink_height": null
+  },
+  "petrona/54": {
+    "cell_height": 62,
+    "ink_height": null
+  },
+  "petrona/lg": {
+    "cell_height": 55,
+    "ink_height": null
+  },
+  "petrona/md": {
+    "cell_height": 41,
+    "ink_height": null
+  },
+  "petrona/sm": {
+    "cell_height": 33,
+    "ink_height": null
+  },
+  "petrona/xl": {
+    "cell_height": 96,
+    "ink_height": null
+  },
+  "petrona/xs": {
+    "cell_height": 25,
+    "ink_height": null
+  }
+}

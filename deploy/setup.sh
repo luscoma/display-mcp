@@ -155,43 +155,61 @@ is_font() {
 install_fonts() {
   if [ "$WITH_FONTS" = 0 ]; then skip "fonts skipped (--no-fonts)"; return 0; fi
 
-  local reg="$PREFIX/fonts/InstrumentSans-Regular.ttf" bold="$PREFIX/fonts/InstrumentSans-Bold.ttf"
+  local petrona="$PREFIX/fonts/Petrona.ttf" petrona_i="$PREFIX/fonts/Petrona-Italic.ttf"
+  local instrument="$PREFIX/fonts/InstrumentSans.ttf" instrument_i="$PREFIX/fonts/InstrumentSans-Italic.ttf"
+  local karla="$PREFIX/fonts/Karla.ttf" karla_i="$PREFIX/fonts/Karla-Italic.ttf"
   local mono="$PREFIX/fonts/JetBrainsMono-Regular.ttf"
 
-  if [ -n "$FONTS_FROM" ]; then
-    # The Regular+Bold pair is the manual escape hatch fetch-fonts.sh's own
-    # comment describes: whatever .ttf/.otf sorts first in the directory
-    # (excluding a JetBrainsMono* file, so it can't accidentally win that
-    # slot). The mono face is a second, separate lookup by name (F4) --
-    # `do_check`'s own failure message is what used to just say "usually
-    # the fonts" when only this half ran.
-    log "copying fonts from $FONTS_FROM"
-    local src
-    src=$(find "$FONTS_FROM" -maxdepth 1 \( -iname '*.ttf' -o -iname '*.otf' \) \
-      -a -not -iname 'jetbrainsmono*' | sort | head -1)
-    [ -n "$src" ] || die "no .ttf/.otf found in $FONTS_FROM"
-    run install -o "$SVC_USER" -g "$SVC_USER" -m 0644 "$src" "$reg"
-    run install -o "$SVC_USER" -g "$SVC_USER" -m 0644 "$src" "$bold"
-    ok "fonts from $(basename "$src")"
+  # The seven files fetch-fonts.sh would download, each paired with its
+  # destination -- shared by the --fonts-from path below and the
+  # scratch-dir install after a real fetch.
+  local plan=(
+    "Petrona.ttf:$petrona" "Petrona-Italic.ttf:$petrona_i"
+    "InstrumentSans.ttf:$instrument" "InstrumentSans-Italic.ttf:$instrument_i"
+    "Karla.ttf:$karla" "Karla-Italic.ttf:$karla_i"
+    "JetBrainsMono-Regular.ttf:$mono"
+  )
 
-    local mono_src
-    mono_src=$(find "$FONTS_FROM" -maxdepth 1 -iname 'jetbrainsmono*.ttf' | sort | head -1)
-    if [ -n "$mono_src" ]; then
-      run install -o "$SVC_USER" -g "$SVC_USER" -m 0644 "$mono_src" "$mono"
-      ok "mono face from $(basename "$mono_src")"
-    else
-      warn "no JetBrainsMono*.ttf in $FONTS_FROM; the mono face is still"
-      warn "missing ($mono). Drop one in by hand, or run: $0 fonts"
+  if [ -n "$FONTS_FROM" ]; then
+    # This path is for a host that cannot reach GitHub at all, so it asks
+    # for all seven fetched files up front, picked up from $FONTS_FROM by
+    # their exact destination names -- not "whatever .ttf/.otf sorts
+    # first" -- so a directory holding unrelated fonts can't accidentally
+    # supply the wrong face. `is_font`, not just `[ -f ]`, so a 0-byte or
+    # truncated file is rejected same as fetch-fonts.sh would reject it.
+    log "copying fonts from $FONTS_FROM"
+    local entry name dest missing=() found=()
+    for entry in "${plan[@]}"; do
+      name=${entry%%:*}
+      if is_font "$FONTS_FROM/$name"; then
+        found+=("$name")
+      else
+        missing+=("$name")
+      fi
+    done
+    if [ ${#missing[@]} -gt 0 ]; then
+      die "not found in $FONTS_FROM, or not a real font: ${missing[*]}" \
+          "-- --fonts-from needs all seven; it does not fetch what's missing."
     fi
+    ok "found all seven in $FONTS_FROM: ${found[*]}"
+
+    for entry in "${plan[@]}"; do
+      name=${entry%%:*}; dest=${entry#*:}
+      run install -o "$SVC_USER" -g "$SVC_USER" -m 0644 "$FONTS_FROM/$name" "$dest"
+    done
     return 0
   fi
 
   if [ "$DRY" = 1 ]; then
-    printf '    would fetch Instrument Sans + JetBrains Mono into %s (deploy/fetch-fonts.sh)\n' "$PREFIX/fonts"
+    printf '    would fetch Petrona, Instrument Sans, Karla (upright + italic\n'
+    printf '    each) and JetBrains Mono into %s (deploy/fetch-fonts.sh)\n' "$PREFIX/fonts"
     return 0
   fi
 
-  if is_font "$reg" && is_font "$bold" && is_font "$mono"; then
+  if is_font "$petrona" && is_font "$petrona_i" \
+    && is_font "$instrument" && is_font "$instrument_i" \
+    && is_font "$karla" && is_font "$karla_i" \
+    && is_font "$mono"; then
     skip "fonts already installed"
     return 0
   fi
@@ -199,19 +217,34 @@ install_fonts() {
   # Download as root into a scratch dir, then install with the service
   # user's ownership. Not as the service user: it cannot read this repo when
   # it lives under a 0700 home directory, which on Debian 13 it does.
-  local scratch
+  #
+  # Install whatever landed regardless of fetch-fonts.sh's own exit status:
+  # a fresh host must never end with zero fonts just because one of seven
+  # downloads failed. Only the missing ones turn into the warning below.
+  local scratch rc=0 entry name dest missing=()
   scratch=$(mktemp -d)
-  if "$HERE/fetch-fonts.sh" "$scratch"; then
-    run install -o "$SVC_USER" -g "$SVC_USER" -m 0644 "$scratch/InstrumentSans-Regular.ttf" "$reg"
-    run install -o "$SVC_USER" -g "$SVC_USER" -m 0644 "$scratch/InstrumentSans-Bold.ttf" "$bold"
-    run install -o "$SVC_USER" -g "$SVC_USER" -m 0644 "$scratch/JetBrainsMono-Regular.ttf" "$mono"
-  else
-    warn "the service will not render previews until fonts are in place;"
-    warn "the panel endpoint is unaffected. Re-run install (or: $0 fonts)"
-    warn "once it works, or use --fonts-from <dir> with a Regular+Bold pair"
-    warn "plus a JetBrainsMono-Regular.ttf dropped in by hand."
-  fi
+  "$HERE/fetch-fonts.sh" "$scratch" || rc=$?
+  for entry in "${plan[@]}"; do
+    name=${entry%%:*}; dest=${entry#*:}
+    if is_font "$scratch/$name"; then
+      run install -o "$SVC_USER" -g "$SVC_USER" -m 0644 "$scratch/$name" "$dest"
+    else
+      missing+=("$name")
+    fi
+  done
   rm -rf "$scratch"
+
+  if [ "$rc" != 0 ] || [ ${#missing[@]} -gt 0 ]; then
+    if [ ${#missing[@]} -gt 0 ]; then
+      warn "not installed, missing or not a real font: ${missing[*]}"
+    else
+      warn "fetch-fonts.sh exited $rc"
+    fi
+    warn "whatever did land is installed, so the service will still start."
+    warn "Re-run install (or: $0 fonts) once the network/API rate limit"
+    warn "clears, or use --fonts-from <dir> with the seven filenames"
+    warn "fetch-fonts.sh's header comment lists."
+  fi
 }
 
 # The dependency list between "= [" and the closing "]", so a sync can tell
@@ -520,8 +553,8 @@ do_check() {
     # set up that way used to fail here with a generic "usually the fonts"
     # that didn't say which font -- distinguish it from a font directory
     # that's missing outright.
-    if is_font "$PREFIX/fonts/InstrumentSans-Regular.ttf" \
-      && is_font "$PREFIX/fonts/InstrumentSans-Bold.ttf" \
+    if is_font "$PREFIX/fonts/InstrumentSans.ttf" \
+      && is_font "$PREFIX/fonts/InstrumentSans-Italic.ttf" \
       && ! is_font "$PREFIX/fonts/JetBrainsMono-Regular.ttf"; then
       warn "the mono face is missing ($PREFIX/fonts/JetBrainsMono-Regular.ttf)."
       warn "Run: $0 fonts"
@@ -614,7 +647,7 @@ Commands:
   status      is it up, what is published, does revalidation work, is Access on
   check       can the renderer load the fonts and the sample document
   fonts       fetch whatever fonts are missing into $PREFIX/fonts; a no-op
-              when all three are already there (an existing install only)
+              when all seven are already there (an existing install only)
 
 Flags:
   --bind IP                  panel endpoint address (default: detected LAN address)

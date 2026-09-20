@@ -10,6 +10,7 @@ import re
 import pytest
 
 from display_mcp.render import (
+    FONT_ALIASES,
     FONTS,
     MAX_COORD,
     POLY_MAX_PTS,
@@ -134,24 +135,161 @@ def _yaml_font_entries() -> list[str]:
 
 def test_every_font_entry_lists_gf_latin_core():
     entries = _yaml_font_entries()
-    assert len(entries) == 6, f"expected six font entries, found {len(entries)}"
+    assert len(entries) == len(FONTS), (
+        f"expected {len(FONTS)} font entries (one per FONTS face), found {len(entries)}"
+    )
     missing = [e.splitlines()[1] for e in entries if "glyphsets: [GF_Latin_Core]" not in e]
     assert not missing, f"entries missing 'glyphsets: [GF_Latin_Core]': {missing}"
 
 
 def test_mono_extra_glyph_range_matches_the_yaml():
-    """`font_mono`'s `glyphs:` string, decoded back to code points, must be
-    exactly `Face("mono").extra_glyphs` -- the YAML and the Python table
-    are two independent statements of the same range, and either one
-    drifting silently un-compiles or over-promises glyphs."""
+    """Every `font_mono_*` entry's `glyphs:` string, decoded back to code
+    points, must be exactly `Face("mono/*").extra_glyphs` -- not just one
+    of them: with Decision 3's per-size table (docs/plans/fonts-and-icons.md,
+    B2) every mono size compiles its own `font:` entry, and a size the
+    generator forgot to give a `glyphs:` line would silently drop the
+    box-drawing/block glyphs at that size alone while every other size (and
+    this test, if it only checked the first) looked fine."""
     entries = _yaml_font_entries()
-    mono_entry = next(e for e in entries if "font_mono" in e)
-    m = re.search(r'glyphs: "(.*?)"', mono_entry)
-    assert m, "font_mono entry has no glyphs: string"
-    yaml_codepoints = {ord(c) for c in m.group(1)}
-
-    (extra_range,) = FONTS["mono"].extra_glyphs
-    assert yaml_codepoints == set(extra_range), (
-        f"yaml has {len(yaml_codepoints)} code points, "
-        f"Face('mono').extra_glyphs has {len(set(extra_range))}"
+    mono_names = [name for name in FONTS if name.split("/", 1)[0] == "mono"]
+    mono_entries = [e for e in entries if re.search(r"^\s*id: font_mono_", e, re.MULTILINE)]
+    assert len(mono_entries) == len(mono_names), (
+        f"{len(mono_entries)} font_mono_* YAML entries, {len(mono_names)} mono faces in FONTS"
     )
+    (extra_range,) = FONTS["mono/24"].extra_glyphs  # the same range for every mono size
+    for entry in mono_entries:
+        m = re.search(r'glyphs: "(.*?)"', entry)
+        assert m, f"a font_mono_* entry has no glyphs: string: {entry.splitlines()[1]}"
+        yaml_codepoints = {ord(c) for c in m.group(1)}
+        assert yaml_codepoints == set(extra_range), (
+            f"{entry.splitlines()[1]}: yaml has {len(yaml_codepoints)} code points, "
+            f"Face('mono').extra_glyphs has {len(set(extra_range))}"
+        )
+
+
+# --------------------------------------------------------------------------
+# The font vocabulary itself (docs/plans/fonts-and-icons.md Decision 1-3,
+# B2): the YAML's two generated fences (`font:`'s entries, the lambda's
+# `a.fonts[...]` lines) must say exactly what FONTS/FONT_ALIASES say, so the
+# firmware and the renderer can never quietly disagree about which font
+# spellings exist.
+# --------------------------------------------------------------------------
+
+
+def _yaml_font_ids() -> list[str]:
+    """Every `id:` the YAML's `font:` list defines, in order -- parsed from
+    the YAML text directly, the same way `_yaml_font_entries()` does."""
+    src = YAML.read_text()
+    start = src.index("\nfont:\n")
+    end = src.index("\n\n", start + 1)
+    block = src[start:end]
+    return re.findall(r"^\s*id:\s*(\w+)\s*$", block, re.MULTILINE)
+
+
+def _yaml_a_fonts_entries() -> dict[str, str]:
+    """Every `a.fonts["key"] = id(some_id);` line inside the display
+    lambda, as `{key: id}` -- parsed from the YAML text directly."""
+    from display_mcp.render.firmware_yaml import FONT_LAMBDA_END, FONT_LAMBDA_START
+
+    # Only the fenced lines count: a commented-out `a.fonts[...]` left as
+    # documentation elsewhere in the YAML must not read as a spelling the
+    # firmware accepts (B2 review, N3).
+    src = YAML.read_text()
+    start = src.index(FONT_LAMBDA_START)
+    end = src.index(FONT_LAMBDA_END, start)
+    fence = src[start:end]
+    entries = re.findall(r'a\.fonts\["([^"]+)"\]\s*=\s*id\((\w+)\);', fence)
+    # One line per spelling, no repeats (N4): a set comparison alone would
+    # pass a self-consistent duplicate.
+    assert len(entries) == len(FONTS) + len(FONT_ALIASES), len(entries)
+    return dict(entries)
+
+
+def test_yaml_font_fences_match_the_generated_table():
+    """The YAML's two font fences are exactly what
+    `firmware_yaml.generate_firmware_yaml()` emits from today's
+    `FONTS`/`FONT_ALIASES` -- the font analogue of the glyph-set parity
+    test above. Run on a copy of the YAML text (never written back), so a
+    stale committed file fails this test instead of being silently
+    accepted."""
+    from display_mcp.render.firmware_yaml import generate_firmware_yaml
+
+    src = YAML.read_text()
+    assert generate_firmware_yaml(src) == src, (
+        "epaper-schedule.yaml's font fences are stale -- run "
+        "`display-mcp-cli firmware-fonts` to regenerate them"
+    )
+
+
+def test_a_fonts_keys_are_exactly_fonts_and_aliases():
+    keys = set(_yaml_a_fonts_entries())
+    expected = set(FONTS) | set(FONT_ALIASES)
+    assert keys == expected, (
+        f"only in the YAML: {sorted(keys - expected)}; "
+        f"only in FONTS/FONT_ALIASES: {sorted(expected - keys)}"
+    )
+
+
+def test_every_a_fonts_id_is_defined_in_the_font_block():
+    used = set(_yaml_a_fonts_entries().values())
+    defined = set(_yaml_font_ids())
+    missing = used - defined
+    assert not missing, f"a.fonts[...] references undefined font id(s): {sorted(missing)}"
+
+
+def test_no_duplicate_font_ids():
+    ids = _yaml_font_ids()
+    dupes = {i for i in ids if ids.count(i) > 1}
+    assert not dupes, f"duplicate id(s) in the YAML's font: block: {sorted(dupes)}"
+
+
+# --------------------------------------------------------------------------
+# The fence-rewriting mechanism itself (firmware_yaml.rewrite_fenced_region),
+# tested against synthetic text -- no YAML file needed.
+# --------------------------------------------------------------------------
+
+
+def test_rewrite_fenced_region_leaves_outside_text_untouched():
+    from display_mcp.render.firmware_yaml import rewrite_fenced_region
+
+    text = "before\nSTART\nold body\nEND\nafter\n"
+    out = rewrite_fenced_region(text, "START", "END", "new body")
+    assert out == "before\nSTART\nnew body\nEND\nafter\n"
+
+
+def test_rewrite_fenced_region_is_idempotent():
+    from display_mcp.render.firmware_yaml import rewrite_fenced_region
+
+    text = "before\nSTART\nold body\nEND\nafter\n"
+    once = rewrite_fenced_region(text, "START", "END", "new body")
+    twice = rewrite_fenced_region(once, "START", "END", "new body")
+    assert once == twice
+
+
+def test_rewrite_fenced_region_missing_fence_raises_clearly():
+    from display_mcp.render.firmware_yaml import rewrite_fenced_region
+
+    with pytest.raises(RuntimeError, match="START"):
+        rewrite_fenced_region("no markers here", "START", "END", "body")
+
+
+def test_rewrite_fenced_region_duplicate_marker_raises_clearly():
+    from display_mcp.render.firmware_yaml import rewrite_fenced_region
+
+    text = "STARTfirst\nSTART\nbody\nEND\nafter\n"
+    with pytest.raises(RuntimeError, match=r"appears 2 times"):
+        rewrite_fenced_region(text, "START", "END", "body")
+
+
+def test_rewrite_fenced_region_missing_end_marker_raises_clearly():
+    from display_mcp.render.firmware_yaml import rewrite_fenced_region
+
+    with pytest.raises(RuntimeError, match="END"):
+        rewrite_fenced_region("START\nbody\nno end\n", "START", "END", "body")
+
+
+def test_rewrite_fenced_region_reversed_markers_raise_clearly():
+    from display_mcp.render.firmware_yaml import rewrite_fenced_region
+
+    with pytest.raises(RuntimeError):
+        rewrite_fenced_region("END\nbody\nSTART\n", "START", "END", "body")

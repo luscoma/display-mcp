@@ -4,21 +4,28 @@ uncompiled-glyph warning.
 
 Fixture note: `font_dir` and `sample_doc` come from tests/conftest.py. Any
 test that renders real text needs `font_dir` and will skip cleanly (via
-that fixture) if fonts/ hasn't been populated with the Instrument Sans
-pair.
+that fixture) if fonts/ hasn't been populated with the seven compiled
+font files.
 """
 
 from __future__ import annotations
 
+import json
+import os
 import shutil
 import time
+from pathlib import Path
 
 import pytest
+from PIL import ImageFont
 
 from display_mcp.render import (
+    FONT_ALIASES,
     FONTS,
     INK,
     MAX_COORD,
+    SIZES,
+    SLOTS,
     TEXT_MAX_LEN,
     TEXT_MAX_LINES,
     check,
@@ -27,8 +34,11 @@ from display_mcp.render import (
     load_font,
     render,
     render_hash,
+    resolve_font,
+    unknown_font_message,
     wrap_lines,
 )
+from display_mcp.render.fonts import _METRICS, _measure_ink_height
 
 from .conftest import _glyph_msgs
 
@@ -62,7 +72,7 @@ def test_fit_line_cases(font_dir, case_id, text, max_w, expected):
     max_w=None never truncates."""
     from display_mcp.render import load_font, text_width
 
-    font = load_font(font_dir, FONTS["sm"])
+    font = load_font(font_dir, FONTS["instrument/sm"])
     if max_w == "exact":
         resolved_max_w = text_width(font, text)
     elif max_w == "third":
@@ -84,7 +94,7 @@ def test_fit_line_cases(font_dir, case_id, text, max_w, expected):
 def test_wrap_two_lines_with_overflow_ellipsis(font_dir):
     from display_mcp.render import load_font, text_width
 
-    font = load_font(font_dir, FONTS["md"])
+    font = load_font(font_dir, FONTS["instrument/md"])
     s = "Order printer filament and a spare 0.4 nozzle for the workshop bench today"
     max_w = 300
     lines = wrap_lines(font, s, max_w, 2)
@@ -97,7 +107,7 @@ def test_wrap_two_lines_with_overflow_ellipsis(font_dir):
 def test_wrap_last_word_just_fits(font_dir):
     from display_mcp.render import load_font, text_width
 
-    font = load_font(font_dir, FONTS["md"])
+    font = load_font(font_dir, FONTS["instrument/md"])
     words = ["Book", "the", "dentist"]
     s = " ".join(words)
     max_w = text_width(font, s)  # exactly enough for every word on one line
@@ -108,7 +118,7 @@ def test_wrap_last_word_just_fits(font_dir):
 def test_wrap_lines_equals_one(font_dir):
     from display_mcp.render import load_font, text_width
 
-    font = load_font(font_dir, FONTS["md"])
+    font = load_font(font_dir, FONTS["instrument/md"])
     s = "Measure the driver board for the frame and order new screws"
     max_w = 250
     lines = wrap_lines(font, s, max_w, 1)
@@ -228,31 +238,323 @@ def test_unknown_font_skips_the_op_nothing_drawn(font_dir):
 
 
 def test_fonts_keys():
-    assert set(FONTS) == {"xl", "lg", "md", "sm", "xs", "mono"}
+    """B3b (docs/plans/fonts-and-icons.md Decision 2): 110 faces, ten
+    family-styles (petrona, petrona-bold, petrona-italic, instrument,
+    instrument-bold, instrument-italic, karla, karla-bold, karla-italic,
+    mono) x `SIZES` (11) -- generated, not a fixed literal set of names the
+    way the six legacy slots were."""
+    assert len(FONTS) == 110
+    family_styles = {(face.family, face.style) for face in FONTS.values()}
+    assert family_styles == {
+        ("petrona", ""), ("petrona", "bold"), ("petrona", "italic"),
+        ("instrument", ""), ("instrument", "bold"), ("instrument", "italic"),
+        ("karla", ""), ("karla", "bold"), ("karla", "italic"),
+        ("mono", ""),
+    }
+    assert {face.size for face in FONTS.values()} == set(SIZES)
+    # Every (family-style, size) combination compiled exactly once.
+    assert len(FONTS) == len(family_styles) * len(SIZES)
 
 
-_MEASURED_CELL_HEIGHTS = {
-    "xl": 103,
-    "lg": 59,
-    "md": 44,
-    "sm": 35,
-    "xs": 28,
-    "mono": 33,
-}
+def test_canonical_name_is_the_slot_spelling_when_the_size_is_a_slot():
+    """Decision 1's canonical-name rule: the slot spelling when `size` is
+    one of the five slots, the pixel spelling otherwise -- never both."""
+    for name, face in FONTS.items():
+        key, _, size_part = name.rpartition("/")
+        if face.size in SLOTS.values():
+            assert size_part in SLOTS and SLOTS[size_part] == face.size, name
+        else:
+            assert size_part == str(face.size), name
+        assert key == (face.family if not face.style else f"{face.family}-{face.style}")
 
 
-def test_cell_height_matches_getmetrics(font_dir):
-    for name in sorted(FONTS):
-        face = FONTS[name]
-        assert face.cell_height == _MEASURED_CELL_HEIGHTS[name], name
+def test_resolve_font_slot_px_and_bare_aliases_agree():
+    """Every accepted spelling of the same face resolves to one canonical
+    name: a face's own slot and px spellings, and (for the five legacy
+    names) the bare spelling too."""
+    assert resolve_font("instrument/lg") == "instrument/lg"
+    assert resolve_font("instrument/48") == "instrument/lg"
+    assert resolve_font("instrument-bold/xl") == "instrument-bold/xl"
+    assert resolve_font("instrument-bold/84") == "instrument-bold/xl"
+    assert resolve_font("mono/24") == "mono/24"
+    assert resolve_font("mono/sm") == "mono/sm"
+    assert resolve_font("xl") == "instrument-bold/xl"
+    assert resolve_font("lg") == "instrument-bold/lg"
+    assert resolve_font("md") == "instrument/md"
+    assert resolve_font("sm") == "instrument/sm"
+    assert resolve_font("xs") == "instrument-bold/xs"
+    # A ladder size that isn't a slot has only its one, px, spelling --
+    # there's no separate slot name for 40 to alias.
+    assert resolve_font("instrument/40") == "instrument/40"
+    assert "instrument/40" not in FONT_ALIASES.values()
+
+
+def test_bare_mono_has_no_alias():
+    """Decision 1: bare `mono` is dropped -- nothing published uses it, and
+    it's the only bare name that wouldn't be a size."""
+    assert "mono" not in FONTS
+    assert "mono" not in FONT_ALIASES
+    assert resolve_font("mono") is None
+
+
+def test_resolve_font_rejects_an_off_ladder_size():
+    """A pixel count that isn't one of `SIZES` is not compiled for any
+    family, slot or bare alias alike."""
+    assert resolve_font("instrument/41") is None
+    assert resolve_font("karla/41") is None
+    assert resolve_font("petrona/41") is None
+
+
+def test_unknown_font_message_names_the_wrong_half():
+    """Decision 1 (B1 review, item 7): a bad *size* on a real family-style
+    names that family-style's own compiled sizes, plus the slot table
+    (a mistyped slot is as likely a mistake as a mistyped pixel count); a
+    bad *family* (or a name with no size at all) lists every compiled
+    family and its styles, plus the five bare legacy names. B3b (Decision
+    2) grows the family list to petrona, instrument and karla (each also
+    -bold and -italic) and mono."""
+    msg = unknown_font_message("instrument/99")
+    assert msg == (
+        "unknown font 'instrument/99': instrument is compiled at "
+        "22 24 26 28 32 36 40 44 48 54 84 (slots xs=22 sm=28 md=36 lg=48 xl=84)"
+    )
+    msg = unknown_font_message("mono/99")
+    assert msg == (
+        "unknown font 'mono/99': mono is compiled at 22 24 26 28 32 36 40 44 48 54 84 "
+        "(slots xs=22 sm=28 md=36 lg=48 xl=84)"
+    )
+    msg = unknown_font_message("petrona/99")
+    assert msg == (
+        "unknown font 'petrona/99': petrona is compiled at "
+        "22 24 26 28 32 36 40 44 48 54 84 (slots xs=22 sm=28 md=36 lg=48 xl=84)"
+    )
+    msg = unknown_font_message("karla/99")
+    assert msg == (
+        "unknown font 'karla/99': karla is compiled at "
+        "22 24 26 28 32 36 40 44 48 54 84 (slots xs=22 sm=28 md=36 lg=48 xl=84)"
+    )
+    families = (
+        "petrona (also -bold, -italic), instrument (also -bold, -italic), "
+        "karla (also -bold, -italic) and mono"
+    )
+    msg = unknown_font_message("dragon/40")
+    assert msg == (
+        f"unknown font 'dragon/40': families are {families}; "
+        "the bare names xs sm md lg xl also work (Instrument Sans)"
+    )
+    msg = unknown_font_message("huge")
+    assert msg == (
+        f"unknown font 'huge': families are {families}; "
+        "the bare names xs sm md lg xl also work (Instrument Sans)"
+    )
+
+
+def test_font_metrics_file_matches_a_fresh_measurement(font_dir):
+    """`font_metrics.json` is committed data, generated by
+    `display-mcp-cli font-metrics <font_dir>`, not hand-typed
+    (Decision 3, docs/plans/fonts-and-icons.md) -- re-measure every face
+    from the real font files and diff against what `FONTS` actually loaded
+    from the committed file, so a stale commit (a font swap, or a
+    `SIZES`/`FAMILIES` edit not followed by a re-run of the script) fails
+    here instead of silently reflowing a document. The key sets must match
+    exactly, too: a row for a face that no longer exists (a size dropped
+    from `SIZES`, a family-style renamed) is a hand-edit the file's whole
+    reason for being generated is to make unnecessary (B1 re-review,
+    finding B)."""
+    assert set(_METRICS) == set(FONTS), sorted(set(_METRICS) ^ set(FONTS))
+    for name, face in FONTS.items():
         f = load_font(font_dir, face)
         ascent, descent = f.getmetrics()
         assert face.cell_height == ascent + descent, name
+        if face.family == "mono":
+            assert face.ink_height == _measure_ink_height(f), name
+        else:
+            assert face.ink_height is None, name
+
+
+def test_face_variation_exists_in_its_own_file(font_dir):
+    """A wrong `variation` is otherwise undetectable (docs/plans/
+    fonts-and-icons.md B1 review, item 4): `load_font()`'s
+    `set_variation_by_name` swallows any exception -- including "no such
+    named instance" -- and silently falls back to the file's own default
+    instance, and `cell_height`/`ink_height` don't depend on which
+    instance actually got selected, so a stale `font_metrics.json` can't
+    catch a typo'd `variation` either. Assert every distinct (file,
+    variation) pair this table asks for is really in that file's own
+    variation list -- deduped, since every size of a family-style shares
+    one file's variations. `get_variation_names()` returns `bytes`;
+    compared as `str` on both sides so a mismatch reads plainly."""
+    checked: set[tuple[str, str]] = set()
+    for face in FONTS.values():
+        key = (face.file, face.variation)
+        if key in checked:
+            continue
+        checked.add(key)
+        f = ImageFont.truetype(str(font_dir / face.file), face.size)
+        names = {n.decode() if isinstance(n, bytes) else n for n in f.get_variation_names()}
+        assert face.variation in names, (face.file, face.variation, sorted(names))
+
+
+def _variation_axis_values(f: ImageFont.FreeTypeFont, weight: int) -> list[int]:
+    """The axis-value list `set_variation_by_axes()` wants: `weight` on
+    the font's own `Weight` axis, every other axis (Instrument Sans's
+    `wdth`) left at its own default -- never a hardcoded `[weight]`, which
+    would silently mis-set a multi-axis font's other axes to 0."""
+    values = []
+    for axis in f.get_variation_axes():
+        name = axis["name"]
+        name = name.decode() if isinstance(name, bytes) else name
+        values.append(weight if name == "Weight" else axis["default"])
+    return values
+
+
+def test_load_font_selects_the_intended_weight_for_every_face_at_lg(font_dir):
+    """B1 re-review, item deferred to B3b, redone per the B3b re-review
+    (item 1): the previous version of this test only checked that a
+    family's styles measured *distinct* advances from each other, so
+    mutating Petrona's `SemiBold`/`ExtraBold`/`Medium Italic` instances to
+    `"Regular"` (load_font() then silently draws weight 400 for all three)
+    still passed -- Petrona's three styles are still distinct from each
+    other at 400. This is the direct check instead: for every family-style
+    at `lg` (48px, skipping mono's file if it's absent -- the one
+    `optional` face), `load_font()`'s `getlength("Handgloves")` must equal,
+    within 0.05px, the same file loaded fresh and moved to `face.weight`
+    on its own weight axis directly (`set_variation_by_axes()`, never by
+    name) -- proof `load_font()` actually landed on the intended weight,
+    not merely on *a* weight distinct from its siblings. The reviewer
+    measured the correct code within 0.03px of this and every
+    wrong-instance mutation 3.7-20.8px off."""
+    checked = []
+    for name, face in FONTS.items():
+        if face.size != 48:
+            continue
+        path = font_dir / face.file
+        if not path.exists():
+            continue  # mono's file is the one this repo doesn't ship pre-fetched
+        got = load_font(font_dir, face).getlength("Handgloves")
+        if face.layout == "basic":
+            want_font = ImageFont.truetype(str(path), 48, layout_engine=ImageFont.Layout.BASIC)
+        else:
+            want_font = ImageFont.truetype(str(path), 48)
+        want_font.set_variation_by_axes(_variation_axis_values(want_font, face.weight))
+        want = want_font.getlength("Handgloves")
+        assert abs(got - want) < 0.05, (name, got, want)
+        checked.append(name)
+    # Every family-style's `lg` face, at minimum -- proof the loop above
+    # didn't silently skip everything.
+    assert len(checked) >= 9, checked  # mono is the one optional file
+
+
+def test_stale_metrics_entry_raises_clearly(monkeypatch):
+    """A `SIZES`/`FAMILIES` edit not followed by a re-run of
+    `display-mcp-cli font-metrics` must fail loudly at build time, not
+    hand out `cell_height=0`/`ink_height=None` for the face it dropped
+    (docs/plans/fonts-and-icons.md B1 review, item 5). A temporary,
+    monkeypatched copy of `_METRICS` stands in for a stale
+    `font_metrics.json` so this doesn't touch the committed file."""
+    from display_mcp.render import fonts as fonts_module
+
+    stale = {name: dict(entry) for name, entry in fonts_module._METRICS.items()}
+    del stale["instrument/md"]
+    monkeypatch.setattr(fonts_module, "_METRICS", stale)
+    with pytest.raises(RuntimeError, match="instrument/md"):
+        fonts_module._build_fonts()
+
+
+def test_bootstrap_env_var_lets_the_same_stale_table_build_a_placeholder(monkeypatch):
+    """`DISPLAY_MCP_FONT_METRICS_BOOTSTRAP` (B3b re-review, item 3) is the
+    escape hatch `display-mcp-cli font-metrics` sets before its own first
+    import of this module: the exact stale table
+    `test_stale_metrics_entry_raises_clearly` pins as a hard failure above
+    must instead build, with a placeholder (`cell_height=0`,
+    `ink_height=None`) for the row that's missing -- that placeholder is
+    what lets `FONTS` exist at all so the command that's supposed to fix
+    the stale file can run in the first place. Nothing here writes
+    anything; `_write_metrics()` re-measuring the placeholder away for
+    real is test_font_metrics_cli_repairs_a_missing_row_in_a_fresh_process
+    below."""
+    from display_mcp.render import fonts as fonts_module
+
+    stale = {name: dict(entry) for name, entry in fonts_module._METRICS.items()}
+    del stale["instrument/md"]
+    monkeypatch.setattr(fonts_module, "_METRICS", stale)
+    monkeypatch.setenv(fonts_module._BOOTSTRAP_ENV_VAR, "1")
+
+    built = fonts_module._build_fonts()  # must not raise now
+    assert built["instrument/md"].cell_height == 0
+    assert built["instrument/md"].ink_height is None
+    # Every other face is untouched -- only the one dropped from `stale`
+    # got the placeholder.
+    assert built["instrument/lg"].cell_height == fonts_module.FONTS["instrument/lg"].cell_height
+
+
+def test_font_metrics_cli_repairs_a_missing_row_in_a_fresh_process(font_dir, tmp_path):
+    """The actual deadlock this closes (B3b re-review, item 3): adding a
+    size or a family leaves `font_metrics.json` missing a row for it, and
+    `display-mcp-cli font-metrics` -- the command that's supposed to add
+    that row -- can't import `display_mcp.render` at all to do so, since
+    building `FONTS` is exactly what raises on the missing row. Reproduced
+    with a fresh subprocess against a *copy* of the package (this test's
+    own process has already built `FONTS` successfully by the time it
+    runs, so monkeypatching `_METRICS` in-process, as the two tests above
+    do, can't reproduce a failure that only happens on a from-scratch
+    import) -- the real `src/display_mcp/render/font_metrics.json` is
+    never touched.
+
+    Without the flag, a plain import of the mutated copy fails loudly,
+    naming the missing face; `display-mcp-cli font-metrics` run against
+    that same copy repairs it, and the repaired row is a real measurement
+    (not the placeholder) equal to what the committed file already has
+    for that face -- Petrona and Karla didn't change, so re-measuring one
+    row from the real font files must land back on the same numbers this
+    batch already committed."""
+    from display_mcp.render.fonts import _METRICS_PATH
+
+    before = _METRICS_PATH.read_bytes()
+    import shutil
+    import subprocess
+    import sys
+
+    from display_mcp.render.fonts import _METRICS_PATH
+
+    real_value = json.loads(_METRICS_PATH.read_text())["petrona/xs"]
+
+    tmp_src = tmp_path / "src"
+    shutil.copytree(Path(__file__).resolve().parents[2] / "src", tmp_src)
+    copied_metrics = tmp_src / "display_mcp" / "render" / "font_metrics.json"
+    data = json.loads(copied_metrics.read_text())
+    del data["petrona/xs"]
+    copied_metrics.write_text(json.dumps(data))
+
+    env = {**os.environ, "PYTHONPATH": str(tmp_src) + os.pathsep + os.environ.get("PYTHONPATH", "")}
+
+    without_flag = subprocess.run(
+        [sys.executable, "-c", "import display_mcp.render"],
+        capture_output=True, text=True, timeout=30, env=env,
+    )
+    assert without_flag.returncode != 0
+    assert "petrona/xs" in without_flag.stderr
+
+    repaired = subprocess.run(
+        [sys.executable, "-m", "display_mcp.cli", "font-metrics", str(font_dir)],
+        capture_output=True, text=True, timeout=60, env=env,
+    )
+    assert repaired.returncode == 0, repaired.stdout + repaired.stderr
+    assert json.loads(copied_metrics.read_text())["petrona/xs"] == real_value
+    # The subprocess must have written its *copy*, never the committed file
+    # (a PYTHONPATH-precedence change would otherwise rewrite committed data
+    # silently -- B3b re-review nit).
+    assert _METRICS_PATH.read_bytes() == before
+
 
 
 def test_fonts_available_requires_mono_too(tmp_path):
-    (tmp_path / "InstrumentSans-Regular.ttf").write_bytes(b"x")
-    (tmp_path / "InstrumentSans-Bold.ttf").write_bytes(b"x")
+    for name in (
+        "Petrona.ttf", "Petrona-Italic.ttf",
+        "InstrumentSans.ttf", "InstrumentSans-Italic.ttf",
+        "Karla.ttf", "Karla-Italic.ttf",
+    ):
+        (tmp_path / name).write_bytes(b"x")
     assert fonts_available(tmp_path) is False
 
 
@@ -266,20 +568,20 @@ def test_mono_ink_height_matches_a_measured_block_glyph(font_dir):
     `test_mono_stacked_bars_meet_seamlessly_at_ink_height` pins below."""
     from PIL import Image, ImageDraw
 
-    f = load_font(font_dir, FONTS["mono"])
+    f = load_font(font_dir, FONTS["mono/24"])
     img = Image.new("1", (60, 80), 0)
     dr = ImageDraw.Draw(img)
     dr.text((10, 10), "█", font=f, fill=1)
     px = img.load()
     inked_rows = [y for y in range(80) if any(px[x, y] for x in range(60))]
-    assert len(inked_rows) == FONTS["mono"].ink_height == 31
+    assert len(inked_rows) == FONTS["mono/24"].ink_height == 31
 
 
 def test_mono_glyph_advance_is_a_constant_integer(font_dir):
     """The whole point of BASIC layout (D11's second finding): every glyph
     advances by the same integer width, `M`/`i`/a block character alike —
     not the fractional 14.4px raqm would use."""
-    f = load_font(font_dir, FONTS["mono"])
+    f = load_font(font_dir, FONTS["mono/24"])
     advances = {f.getlength(ch) for ch in ("M", "i", "█")}
     assert len(advances) == 1
     (advance,) = advances
@@ -289,7 +591,7 @@ def test_mono_glyph_advance_is_a_constant_integer(font_dir):
 def test_mono_angle_brackets_render_as_two_glyphs_not_a_ligature(font_dir):
     """Raqm's default layout turns `<>` into one ligature glyph; BASIC keeps
     it two, so its width equals `<` + `>` measured separately."""
-    f = load_font(font_dir, FONTS["mono"])
+    f = load_font(font_dir, FONTS["mono/24"])
     assert f.getlength("<>") == f.getlength("<") + f.getlength(">")
 
 
@@ -302,7 +604,7 @@ def test_mono_box_drawing_run_has_no_gap(font_dir):
         "meta": {},
         "bg": "white",
         "palette": {},
-        "ops": [{"op": "text", "x": 40, "y": 40, "s": "┌─┐", "f": "mono"}],
+        "ops": [{"op": "text", "x": 40, "y": 40, "s": "┌─┐", "f": "mono/24"}],
     }
     img, problems = render(doc, font_dir)
     assert problems == []
@@ -341,15 +643,15 @@ def test_mono_stacked_bars_meet_seamlessly_at_ink_height(font_dir):
     that makes consecutive block-art rows meet exactly — the two bars' ink
     merges into a single contiguous run, touching with no gap and no
     overlap."""
-    ink_height = FONTS["mono"].ink_height
+    ink_height = FONTS["mono/24"].ink_height
     doc = {
         "v": 1,
         "meta": {},
         "bg": "white",
         "palette": {},
         "ops": [
-            {"op": "text", "x": 40, "y": 100, "s": "│", "f": "mono"},
-            {"op": "text", "x": 40, "y": 100 + ink_height, "s": "│", "f": "mono"},
+            {"op": "text", "x": 40, "y": 100, "s": "│", "f": "mono/24"},
+            {"op": "text", "x": 40, "y": 100 + ink_height, "s": "│", "f": "mono/24"},
         ],
     }
     img, problems = render(doc, font_dir)
@@ -363,21 +665,25 @@ def test_mono_stacked_bars_meet_seamlessly_at_ink_height(font_dir):
 
 
 def test_mono_missing_face_warns_and_draws_nothing(tmp_path, font_dir):
-    """A font directory with Instrument Sans but no JetBrains Mono file
-    still renders — `mono` ops are abandoned like an unknown font name,
-    the same way the firmware skips an uncompiled one."""
-    shutil.copy(font_dir / "InstrumentSans-Regular.ttf", tmp_path / "InstrumentSans-Regular.ttf")
-    shutil.copy(font_dir / "InstrumentSans-Bold.ttf", tmp_path / "InstrumentSans-Bold.ttf")
+    """A font directory with every non-optional family but no JetBrains
+    Mono file still renders — `mono` ops are abandoned like an unknown
+    font name, the same way the firmware skips an uncompiled one."""
+    for name in (
+        "Petrona.ttf", "Petrona-Italic.ttf",
+        "InstrumentSans.ttf", "InstrumentSans-Italic.ttf",
+        "Karla.ttf", "Karla-Italic.ttf",
+    ):
+        shutil.copy(font_dir / name, tmp_path / name)
     doc = {
         "v": 1,
         "meta": {},
         "bg": "white",
         "palette": {},
-        "ops": [{"op": "text", "x": 40, "y": 40, "s": "hi", "f": "mono"}],
+        "ops": [{"op": "text", "x": 40, "y": 40, "s": "hi", "f": "mono/24"}],
     }
     img, problems = render(doc, tmp_path)
     assert problems == [
-        "ops[0] text: font 'mono' is not installed here "
+        "ops[0] text: font 'mono/24' is not installed here "
         "(fonts/JetBrainsMono-Regular.ttf); skipped"
     ]
     blank, _ = render({"v": 1, "meta": {}, "bg": "white", "ops": []}, tmp_path)
@@ -436,7 +742,7 @@ def test_fmt_unknown_font_skips_before_field_expansion(font_dir):
     field warns about the font only — the same op-abandonment as `text`."""
     doc = {"bg": "white", "ops": [{"op": "fmt", "x": 20, "y": 1550, "s": "{nope}", "f": "huge"}]}
     _, problems = render(doc, font_dir)
-    assert problems == ["ops[0] fmt: unknown font 'huge'"]
+    assert problems == [f"ops[0] fmt: {unknown_font_message('huge')}"]
 
 
 # --------------------------------------------------------------------------
@@ -526,7 +832,7 @@ def test_uncompiled_glyphs_silent_for_mono_block_element(font_dir):
     block character that warns on `sm` above is silent here."""
     doc = {
         "v": 1, "meta": {}, "bg": "white",
-        "ops": [{"op": "text", "x": 100, "y": 300, "s": "█", "f": "mono"}],
+        "ops": [{"op": "text", "x": 100, "y": 300, "s": "█", "f": "mono/24"}],
     }
     assert _glyph_msgs(check(doc, font_dir)) == []
 
@@ -556,3 +862,68 @@ def test_uncompiled_glyphs_ignore_what_fit_line_would_drop(font_dir):
         "ops": [{"op": "text", "x": 1000, "y": 300, "s": "ok→", "f": "sm", "w": 20}],
     }
     assert _glyph_msgs(check(doc, font_dir)) == []
+
+
+def _ink_pixel_count(font_dir, font_name: str) -> int:
+    """A `text` op in one face through the real op pipeline (`render()`,
+    not `load_font()` in isolation) -- the non-background pixel count, a
+    coarse black-box weight signal independent of the advance-width check
+    `test_load_font_selects_the_intended_weight_for_every_face_at_lg`
+    above already makes."""
+    doc = {
+        "v": 1, "meta": {}, "bg": "white",
+        "ops": [{"op": "text", "x": 40, "y": 40, "s": "Handgloves", "f": font_name}],
+    }
+    img, problems = render(doc, font_dir)
+    assert problems == [], (font_name, problems)
+    px = img.load()
+    w, h = img.size
+    return sum(1 for y in range(h) for x in range(w) if px[x, y] != INK["white"])
+
+
+def test_every_new_family_style_renders_clean_at_md(font_dir):
+    """B3b re-review, item 8: one document per new family-style
+    (docs/plans/fonts-and-icons.md Decision 2) through the real op
+    pipeline -- `render()`, not `load_font()` in isolation -- so a face
+    that loads fine standalone but breaks somewhere in `check()`/`Ctx.font()`
+    doesn't slip past every other test naming it individually. `-bold`
+    inks more pixels than its family's `regular` at the same size, for
+    both families new in this batch (`instrument-bold` isn't -- only
+    `instrument-italic` is new for Instrument Sans, so it's checked for a
+    clean render but not for a weight comparison it isn't part of)."""
+    new_family_styles = (
+        "petrona/md", "petrona-bold/md", "petrona-italic/md",
+        "karla/md", "karla-bold/md", "karla-italic/md",
+        "instrument-italic/md",
+    )
+    ink = {name: _ink_pixel_count(font_dir, name) for name in new_family_styles}
+    assert all(count > 0 for count in ink.values()), ink
+
+    for family in ("petrona", "karla"):
+        assert ink[f"{family}-bold/md"] > ink[f"{family}/md"], (family, ink)
+
+
+def test_default_instance_faces_load_exactly_as_the_file_default(font_dir):
+    """Pins `load_font()`'s guard (B3b re-review): a face whose `variation`
+    is its file's own default subfamily must be loaded with *no* named
+    instance selected, because Pillow's named-instance selection is not
+    byte-identical to the default even at the same axis coordinates -- the
+    B1 blocker, and the 0.06 px `instrument-italic` drift the B3b review
+    measured against the static TTFs the firmware compiles. The 48 px
+    weight test cannot see it (the divergence is zero at `lg`), so this
+    runs every size."""
+    from PIL import ImageFont
+
+    checked = 0
+    for name, face in FONTS.items():
+        if face.layout == "basic":
+            continue
+        path = font_dir / face.file
+        plain = ImageFont.truetype(str(path), face.size)
+        if face.variation != plain.getname()[1]:
+            continue
+        loaded = load_font(font_dir, face)
+        assert loaded.getlength("Handgloves") == plain.getlength("Handgloves"), name
+        assert loaded.getmetrics() == plain.getmetrics(), name
+        checked += 1
+    assert checked >= 40, checked  # instrument, instrument-italic, karla, karla-italic x 11

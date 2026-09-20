@@ -13,7 +13,7 @@
 // Usage from a display lambda:
 //
 //     DisplayListAssets a;
-//     a.fonts["xl"] = id(font_xl);   // ... etc
+//     a.fonts["instrument/lg"] = id(font_instrument_lg);   // ... every spelling; generated, see the YAML
 //     a.icons["check/sm"] = id(ic_check_sm);
 //     a.time = "1:43 PM"; a.time24 = "13:43";   // from the sntp clock, or empty
 //     draw_display_list(it, id(dl_body), a);
@@ -129,7 +129,9 @@ static const int kPolyMaxPts = 1024;
 static const uint32_t kDrawBudgetMs = 20000;
 
 struct DisplayListAssets {
-  // Type scale, keyed by the name the JSON uses: xl, lg, md, sm, xs, mono.
+  // Type scale, keyed by every spelling the JSON may use -- `family[-style]/slot`,
+  // `family[-style]/px`, and the five bare legacy names (xl lg md sm xs) -- as
+  // generated into the YAML from the renderer's table (docs/plans/fonts-and-icons.md).
   std::map<std::string, esphome::display::BaseFont *> fonts;
   // Icons keyed "<name>/<size-class>", e.g. "weather-sunny/lg".
   std::map<std::string, esphome::image::Image *> icons;

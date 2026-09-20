@@ -7,6 +7,7 @@ Fixture note: `font_dir` comes from tests/conftest.py.
 
 from __future__ import annotations
 
+import hashlib
 import re
 
 import pytest
@@ -20,6 +21,7 @@ from display_mcp.render import (
     INK,
     check,
     render,
+    resolve_font,
     swatch_document,
     swatch_groups,
 )
@@ -31,6 +33,24 @@ def test_swatch_document_validates_clean(font_dir):
     """The whole point of building it as an ordinary document: it has to
     pass the same bezel/contrast/off-canvas checks any other one does."""
     assert check(swatch_document(), font_dir) == []
+
+
+def test_swatch_document_renders_pixel_identical_to_pre_b1(font_dir):
+    """The pixel-identity guard for the legacy (regular, raqm-layout)
+    faces (docs/plans/fonts-and-icons.md B1 review): this is not
+    `render_hash(doc)` (that covers `bg`+`palette`+`ops` only, and
+    `swatch_document()`'s ops don't change shape with how a face is
+    loaded) but a hash of the *rendered pixels* — the first 16 hex digits
+    of their sha256, this repo's own convention for a short hash. Before
+    B1, `load_font()` never called `set_variation_by_name("Regular")` for
+    a regular raqm face; B1 briefly did, which is byte-*different* even
+    at the same axis coordinates and shifted the sheet's "mustard" label
+    38px (load_font()'s own docstring has the measured numbers). This
+    pins the sheet back to the pre-B1 pixels."""
+    img, problems = render(swatch_document(), font_dir)
+    assert problems == []
+    digest = hashlib.sha256(img.tobytes()).hexdigest()[:16]
+    assert digest == "d8e0253d910f5ce8"
 
 
 def test_swatch_groups_covers_every_ink_and_builtin_exactly_once():
@@ -147,7 +167,7 @@ def test_swatch_document_document_palette_overflow_fits_the_page(font_dir, n):
         if op["op"] == "rect":
             assert op["y"] + op["h"] <= HEIGHT
         else:
-            size = FONTS[op.get("f", "xs")].size
+            size = FONTS[resolve_font(op.get("f", "xs"))].size
             assert op["y"] + size <= HEIGHT
 
 

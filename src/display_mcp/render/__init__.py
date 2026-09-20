@@ -33,9 +33,15 @@ the split and this is still the one place to import it from.
 
 Public surface (final):
     WIDTH, HEIGHT            1200, 1600
-    FONTS                    {name: Face(size, bold, file, cell_height,
-                              ink_height, extra_glyphs, layout, optional)}
-                              for xl lg md sm xs mono;
+    FONTS                    {canonical_name: Face(family, style, size, file,
+                              weight, variation, italic, cell_height,
+                              ink_height, extra_glyphs, layout, optional)} --
+                              33 faces in B1 (instrument, instrument-bold,
+                              mono, each at every SIZES entry). FONT_ALIASES
+                              maps every other accepted spelling (a face's
+                              own px spelling, plus the five legacy bare
+                              names) to its FONTS key; resolve_font(name)
+                              is the one lookup every caller uses.
                               Face.line_height is round(size * 1.24)
     GF_LATIN_CORE             frozenset[int]; the code points every compiled
                               face has, vendored in gf_latin_core.txt
@@ -102,13 +108,21 @@ from .colour import (
     recipe_of,
 )
 from .fonts import (
+    ALIASES_BY_TARGET,
+    FONT_ALIASES,
+    FONT_FAMILIES,
     FONTS,
     GF_LATIN_CORE,
     GRID_FACE,
+    SIZE_TO_SLOT,
+    SIZES,
+    SLOTS,
     Face,
     _check_uncompiled_glyphs,
     fonts_available,
     load_font,
+    resolve_font,
+    unknown_font_message,
 )
 from .shapes import (
     MAX_COORD,
@@ -192,13 +206,21 @@ __all__ = [
     "mix_on",
     "recipe_of",
     # fonts.py
+    "ALIASES_BY_TARGET",
+    "FONT_ALIASES",
+    "FONT_FAMILIES",
     "FONTS",
     "GF_LATIN_CORE",
     "GRID_FACE",
+    "SIZE_TO_SLOT",
+    "SIZES",
+    "SLOTS",
     "Face",
     "_check_uncompiled_glyphs",
     "fonts_available",
     "load_font",
+    "resolve_font",
+    "unknown_font_message",
     # shapes.py
     "MAX_COORD",
     "POLY_MAX_PTS",
@@ -554,17 +576,36 @@ def vocabulary(max_bytes: int) -> dict[str, Any]:
     this module has no reason to know about the store, and `limits` is the
     one field nothing above it can derive from the renderer's own tables.
 
-    `fonts[*]` carries three sizes beside `px`/`bold`: `line_height`
-    (`Face.line_height`, what wrapped `text` uses when `lh` is unset),
-    `cell_height` (ascent + descent of the loaded face — every face has
-    one), and `ink_height` (how many rows a full-height glyph actually
-    inks at 1bpp — the row pitch that makes block glyphs meet with no
-    seam; `null` except for `mono`) — docs/plans/dragon-feedback.md D11.
-    `glyphs` is a short string naming the compiled glyph set —
-    `"GF_Latin_Core"` for every face but `mono`, which adds box drawing
-    and block elements: `"GF_Latin_Core + U+2500–U+259F"`. A character
-    outside that set previews fine and has no glyph on the wall; `check()`
-    warns about it.
+    `fonts` is keyed by canonical name (docs/plans/fonts-and-icons.md
+    Decision 1: `family[-style]/size`, the slot spelling when `size` is one
+    of the five slots, the pixel spelling otherwise). Each entry carries
+    `px`, `slot` (the slot name, or `null` for a non-slot size), `aliases`
+    (every other accepted spelling — a face's own pixel spelling plus,
+    for the five Instrument Sans faces the old bare names always meant,
+    the bare name itself), `family`, `style` (`""`/`"bold"`/`"italic"`),
+    `line_height` (`Face.line_height`, what wrapped `text` uses when `lh`
+    is unset), `cell_height` (ascent + descent of the loaded face — every
+    face has one) and `ink_height` (how many rows a full-height glyph
+    actually inks at 1bpp — the row pitch that makes block glyphs meet
+    with no seam; `null` except for `mono`'s sizes — docs/plans/
+    dragon-feedback.md D11). `resolve_font()` is the one place a
+    document's own font name is turned into one of these keys.
+
+    `font_families` is the constants that don't vary by size, keyed by
+    family-style (`fonts[*].family`, plus `-style` for a non-regular one —
+    the same key `fonts[*]` would join back to): `typeface` (the human
+    name, e.g. "Instrument Sans"), `weight`, `italic` and `glyphs` (a short
+    string naming the compiled glyph set — `"GF_Latin_Core"` for every
+    family but `mono`, which adds box drawing and block elements:
+    `"GF_Latin_Core + U+2500–U+259F"`; a character outside that set
+    previews fine and has no glyph on the wall, which `check()` warns
+    about). Split out from `fonts[*]` itself (B1 review, item 6) because
+    every one of a family-style's eleven sizes repeated the identical
+    `glyphs`/`weight`/`italic` — with 110 faces on the way, that repetition
+    only gets more expensive. `variation` (the variable-font instance
+    `load_font()` selects) is deliberately not published anywhere here:
+    it's a Pillow loading detail with no meaning to a composer, who names
+    fonts and sizes, never instances.
 
     In `ops`, an optional field whose default is `null` has no fixed
     default and may simply be omitted — `lh` is computed from the font
@@ -589,11 +630,13 @@ def vocabulary(max_bytes: int) -> dict[str, Any]:
     fonts = {
         name: {
             "px": face.size,
-            "bold": face.bold,
+            "slot": SIZE_TO_SLOT.get(face.size),
+            "aliases": ALIASES_BY_TARGET.get(name, []),
+            "family": face.family,
+            "style": face.style,
             "line_height": face.line_height,
             "cell_height": face.cell_height,
             "ink_height": face.ink_height,
-            "glyphs": "GF_Latin_Core" + (" + U+2500–U+259F" if face.extra_glyphs else ""),
         }
         for name, face in FONTS.items()
     }
@@ -613,6 +656,7 @@ def vocabulary(max_bytes: int) -> dict[str, Any]:
         "mixes": mixes,
         "densities": list(DENSITIES),
         "fonts": fonts,
+        "font_families": {key: dict(entry) for key, entry in FONT_FAMILIES.items()},
         "anchors": list(ANCHOR),
         "icons": {name: sorted(sizes) for name, sizes in ICONS.items()},
         "icon_sizes": icon_sizes,
@@ -1028,7 +1072,11 @@ def render(
                     lines = wrap_lines(f, op["s"], max_w, n_lines)
                     lh = _optional_number(op.get("lh"))
                     if lh is None:
-                        lh = FONTS.get(font_name, FONTS["md"]).line_height
+                        # font_name is guaranteed to resolve here -- ctx.font()
+                        # above already abandoned the op (`continue`d) if it
+                        # didn't -- so resolve_font() only ever re-derives the
+                        # canonical name it already used to load `f`.
+                        lh = FONTS[resolve_font(font_name)].line_height
                     # lh joins the bound too (docs/plans/firmware-bounds.md
                     # D4/D6 review amendment): with `lines` up to
                     # TEXT_MAX_LINES, `y + n * lh` below is exactly the
@@ -1491,7 +1539,13 @@ def bezel_problems(doc: dict[str, Any]) -> list[str]:
             font_name = op.get("f", "md" if kind == "text" else "xs")
             if not isinstance(font_name, str):
                 font_name = "md" if kind == "text" else "xs"
-            size = FONTS.get(font_name, FONTS["md"]).size
+            # A font name this check can't resolve falls back to `md` --
+            # matching the pre-Decision-1 `FONTS.get(font_name, FONTS["md"])`
+            # exactly, regardless of op kind -- rather than reaching FONTS
+            # with a bad key: render()'s own checks are what report a bad
+            # `f`, this one only needs a plausible size for the margin test.
+            canonical = resolve_font(font_name) or resolve_font("md")
+            size = FONTS[canonical].size
             if y + size > HEIGHT - BEZEL_MARGIN:
                 edges.append("bottom")
         if edges:

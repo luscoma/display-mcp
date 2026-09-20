@@ -266,3 +266,62 @@ def test_swatches_dithered_flag_renders_the_panel_faithful_checkerboard(
     assert got.tobytes() == dithered.convert("RGB").tobytes()
     flat, _ = render(swatch_document(), font_dir, dithered_colors=False)
     assert got.tobytes() != flat.convert("RGB").tobytes()
+
+
+def test_font_metrics_subcommand_calls_write_metrics(font_dir, monkeypatch, capsys):
+    """`display-mcp-cli font-metrics <font_dir>` (docs/plans/
+    fonts-and-icons.md B1 review, item 9) replaces `python -m
+    display_mcp.render.fonts --write-metrics`, which warned "found in
+    sys.modules ... prior to execution" because `render/__init__.py`
+    already imports `fonts.py` under its real name before `-m` re-executes
+    it as `__main__` -- a CLI subcommand has no such double import.
+    `_write_metrics` itself is monkeypatched so this doesn't touch the
+    committed font_metrics.json; `_write_metrics`'s own round trip is
+    tests/renderer/test_text.py's job."""
+    from display_mcp.render import fonts as fonts_module
+
+    calls = []
+    monkeypatch.setattr(fonts_module, "_write_metrics", lambda fd: calls.append(fd) or {})
+    code, out, err = _run(["font-metrics", str(font_dir)], capsys)
+    assert code == 0
+    assert calls == [font_dir]
+    assert "font_metrics.json" in out
+
+
+def test_firmware_fonts_subcommand_rewrites_a_scratch_yaml(tmp_path, capsys):
+    """`display-mcp-cli firmware-fonts <yaml_path>` (docs/plans/
+    fonts-and-icons.md Decision 3, B2) rewrites the file's two font
+    fences in place -- exercised on a scratch copy here, never the repo's
+    own YAML, so a botched run can't leave the committed file stale.
+    `generate_firmware_yaml()`'s own correctness (which entries, which
+    ids) is `tests/parity/test_limits_and_dispatch.py`'s job; this is only
+    "does the subcommand read the given file, rewrite it and say so"."""
+    from display_mcp.render.firmware_yaml import (
+        FONT_LAMBDA_END,
+        FONT_LAMBDA_START,
+        FONT_YAML_END,
+        FONT_YAML_START,
+    )
+
+    yaml_path = tmp_path / "epaper-schedule.yaml"
+    yaml_path.write_text(
+        f"font:\n{FONT_YAML_START}\n{FONT_YAML_END}\n"
+        f"\n"
+        f"lambda: |-\n{FONT_LAMBDA_START}\n{FONT_LAMBDA_END}\n"
+    )
+    code, out, err = _run(["firmware-fonts", str(yaml_path)], capsys)
+    assert code == 0
+    assert str(yaml_path) in out
+    text = yaml_path.read_text()
+    assert "id: font_instrument_xs" in text
+    assert 'a.fonts["instrument/xs"] = id(font_instrument_xs);' in text
+
+
+def test_firmware_fonts_default_yaml_path_is_the_repo_firmware_yaml():
+    """No path given -> the repo's own `firmware/epaper-schedule.yaml`,
+    resolved relative to this package, not the current working
+    directory."""
+    path = cli._default_yaml_path()
+    assert path.name == "epaper-schedule.yaml"
+    assert path.parent.name == "firmware"
+    assert path.exists()

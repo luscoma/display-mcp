@@ -387,6 +387,7 @@ async def test_describe_shape(mcp):
         "mixes",
         "densities",
         "fonts",
+        "font_families",
         "anchors",
         "icons",
         "icon_sizes",
@@ -468,30 +469,119 @@ async def test_describe_icon_required_includes_n(mcp):
 
 
 async def test_describe_fonts_table(mcp):
-    """All six faces, spelled out literally (not `round(size * 1.24)`
-    re-derived from the table under test): `mono`'s wrap-default
-    `line_height` stays like every other face's, not its `cell_height`
-    (D11, docs/plans/dragon-feedback.md) — `ink_height` is the pitch that
-    actually makes block glyphs meet with no seam, published alongside for
-    a composer stacking block art by hand, and is `null` for every
-    Instrument Sans size, where it means nothing."""
+    """33 faces in B1 (docs/plans/fonts-and-icons.md): keyed by canonical
+    name (`family[-style]/size`), each with `px`/`slot`/`aliases` plus
+    `family`/`style`/`line_height`/`cell_height`/`ink_height` -- checked
+    against the same `FONTS`/`SIZE_TO_SLOT`/`ALIASES_BY_TARGET` tables
+    `vocabulary()` itself reads (so this pins the *shape* every entry must
+    have, not a hand-typed copy of all 33), plus a few named spot-checks
+    so it can't just trivially agree with whatever the code under test
+    happens to compute. `mono`'s wrap-default `line_height` stays like
+    every other face's, not its `cell_height` (D11, docs/plans/
+    dragon-feedback.md). `bold` is gone, replaced by `family`/`style`;
+    `italic`/`weight`/`glyphs` moved to `font_families` (B1 review, item
+    6) since they don't vary by size and were the same string repeated
+    eleven times per family-style -- see test_describe_font_families_table
+    below. `variation` is a Pillow loading detail and appears nowhere in
+    `describe()`."""
     async with Client(mcp) as c:
         result = await c.call_tool("describe", {})
     fonts = result.structured_content["fonts"]
-    assert fonts == {
-        "xl": {"px": 84, "bold": True, "line_height": 104, "cell_height": 103,
-               "ink_height": None, "glyphs": "GF_Latin_Core"},
-        "lg": {"px": 48, "bold": True, "line_height": 60, "cell_height": 59,
-               "ink_height": None, "glyphs": "GF_Latin_Core"},
-        "md": {"px": 36, "bold": False, "line_height": 45, "cell_height": 44,
-               "ink_height": None, "glyphs": "GF_Latin_Core"},
-        "sm": {"px": 28, "bold": False, "line_height": 35, "cell_height": 35,
-               "ink_height": None, "glyphs": "GF_Latin_Core"},
-        "xs": {"px": 22, "bold": True, "line_height": 27, "cell_height": 28,
-               "ink_height": None, "glyphs": "GF_Latin_Core"},
-        "mono": {"px": 24, "bold": False, "line_height": 30, "cell_height": 33,
-                 "ink_height": 31, "glyphs": "GF_Latin_Core + U+2500–U+259F"},
+    assert set(fonts) == set(render.FONTS)
+    for name, face in render.FONTS.items():
+        row = fonts[name]
+        assert set(row) == {
+            "px", "slot", "aliases", "family", "style",
+            "line_height", "cell_height", "ink_height",
+        }
+        assert row["px"] == face.size
+        assert row["slot"] == render.SIZE_TO_SLOT.get(face.size)
+        assert row["aliases"] == render.ALIASES_BY_TARGET.get(name, [])
+        assert row["family"] == face.family
+        assert row["style"] == face.style
+        assert row["line_height"] == round(face.size * 1.24) == face.line_height
+        assert row["cell_height"] == face.cell_height
+        assert row["ink_height"] == face.ink_height
+
+    assert "mono" not in fonts  # the dropped bare alias, not a face
+    assert fonts["instrument/lg"] == {
+        "px": 48, "slot": "lg", "aliases": ["instrument/48"], "family": "instrument",
+        "style": "", "line_height": 60, "cell_height": 59, "ink_height": None,
     }
+    assert fonts["instrument-bold/xl"]["aliases"] == ["instrument-bold/84", "xl"]
+    assert fonts["instrument/md"]["aliases"] == ["instrument/36", "md"]
+    assert fonts["instrument/40"]["slot"] is None
+    assert fonts["instrument/40"]["aliases"] == []
+    assert fonts["mono/24"] == {
+        "px": 24, "slot": None, "aliases": [], "family": "mono", "style": "",
+        "line_height": 30, "cell_height": 33, "ink_height": 31,
+    }
+
+
+async def test_describe_font_families_table(mcp):
+    """`font_families` (B1 review, item 6): keyed by family-style (the
+    same string `fonts[*].family`/`.style` join back to), each with
+    `typeface`, `weight`, `italic`, `glyphs` -- the constants that used to
+    be repeated on every one of a family-style's eleven `fonts[*]`
+    entries, now said once. Checked against `FONT_FAMILIES` directly, plus
+    named spot-checks. B3b (docs/plans/fonts-and-icons.md Decision 2) grows
+    the table to ten family-styles: Petrona and Karla join Instrument Sans,
+    each in regular/bold/italic, alongside mono."""
+    async with Client(mcp) as c:
+        result = await c.call_tool("describe", {})
+    families = result.structured_content["font_families"]
+    assert families == render.FONT_FAMILIES
+    assert set(families) == {
+        "petrona", "petrona-bold", "petrona-italic",
+        "instrument", "instrument-bold", "instrument-italic",
+        "karla", "karla-bold", "karla-italic",
+        "mono",
+    }
+    assert families["instrument"] == {
+        "typeface": "Instrument Sans", "weight": 400, "italic": False,
+        "glyphs": "GF_Latin_Core",
+    }
+    assert families["instrument-bold"] == {
+        "typeface": "Instrument Sans", "weight": 700, "italic": False,
+        "glyphs": "GF_Latin_Core",
+    }
+    assert families["instrument-italic"] == {
+        "typeface": "Instrument Sans", "weight": 400, "italic": True,
+        "glyphs": "GF_Latin_Core",
+    }
+    assert families["petrona"] == {
+        "typeface": "Petrona", "weight": 600, "italic": False,
+        "glyphs": "GF_Latin_Core",
+    }
+    assert families["petrona-bold"] == {
+        "typeface": "Petrona", "weight": 800, "italic": False,
+        "glyphs": "GF_Latin_Core",
+    }
+    assert families["petrona-italic"] == {
+        "typeface": "Petrona", "weight": 500, "italic": True,
+        "glyphs": "GF_Latin_Core",
+    }
+    assert families["karla"] == {
+        "typeface": "Karla", "weight": 400, "italic": False,
+        "glyphs": "GF_Latin_Core",
+    }
+    assert families["karla-bold"] == {
+        "typeface": "Karla", "weight": 700, "italic": False,
+        "glyphs": "GF_Latin_Core",
+    }
+    assert families["karla-italic"] == {
+        "typeface": "Karla", "weight": 400, "italic": True,
+        "glyphs": "GF_Latin_Core",
+    }
+    assert families["mono"] == {
+        "typeface": "JetBrains Mono", "weight": 400, "italic": False,
+        "glyphs": "GF_Latin_Core + U+2500–U+259F",
+    }
+    # Every `fonts[*]` entry's family[-style] is a real key here.
+    fonts = result.structured_content["fonts"]
+    for row in fonts.values():
+        key = row["family"] if not row["style"] else f"{row['family']}-{row['style']}"
+        assert key in families
 
 
 async def test_describe_icons_matches_icons_table(mcp):
@@ -503,11 +593,20 @@ async def test_describe_icons_matches_icons_table(mcp):
         assert set(icons[name]) == set(sizes)
 
 
-async def test_describe_is_under_4096_bytes(mcp):
+async def test_describe_is_under_a_generous_byte_budget(mcp):
+    """`describe()` growing from 6 to 33 faces (docs/plans/fonts-and-icons.md
+    B1) pushed it well past the old 4096-byte ceiling (~7.9 KB now, after
+    the B1-review `font_families` split below moved the per-family-style
+    constants out of `fonts[*]`). 65536 is not a measured number -- it's
+    "comfortably fits in one tool call, with a lot of the room MCP clients
+    actually have", the same order of magnitude as `store.MAX_DOC_BYTES`
+    -- later batches land Petrona and Karla (110 faces total) and nineteen
+    icons at five slots each, so this may need revisiting again, but not
+    re-tightening."""
     async with Client(mcp) as c:
         result = await c.call_tool("describe", {})
     body = json.dumps(result.structured_content, separators=(",", ":")).encode("utf-8")
-    assert len(body) < 4096
+    assert len(body) < 65536
 
 
 async def test_guide_returns_compose_md_verbatim(mcp):

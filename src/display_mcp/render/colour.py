@@ -17,7 +17,7 @@ from typing import Any, NamedTuple
 from PIL import Image
 
 from .canvas import HEIGHT, WIDTH
-from .fonts import FONTS, _load_fonts
+from .fonts import FONTS, _load_fonts, resolve_font, unknown_font_message
 
 COLORS = ("black", "white", "yellow", "red", "blue", "green")
 
@@ -431,20 +431,27 @@ class Ctx:
         way rather than fall back to `md` — a fallback would draw in the
         preview something the panel never puts on the wall.
 
-        `mono` is the one face `_load_fonts` may have stored as `None` (its
-        file missing rather than the font directory itself): that is a
-        second, distinct kind of "no font here" from an unknown *name*, so
-        it gets its own message naming the file to fetch rather than the
-        generic "unknown font" one.
+        `name` is resolved through `resolve_font()` first (docs/plans/
+        fonts-and-icons.md Decision 1), so a slot, a px spelling or one of
+        the five legacy bare names all reach the same compiled face; a name
+        that resolves to nothing gets `unknown_font_message()`'s
+        which-half-is-wrong text rather than a bare "unknown font".
+
+        A mono size is the one kind of face `_load_fonts` may have stored
+        as `None` (its file missing rather than the font directory itself):
+        that is a second, distinct kind of "no font here" from an unknown
+        *name*, so it gets its own message naming the file to fetch rather
+        than the generic "unknown font" one.
         """
-        if name not in self.fonts:
-            self.problems.append(f"{where}: unknown font {name!r}")
+        canonical = resolve_font(name)
+        if canonical is None:
+            self.problems.append(f"{where}: {unknown_font_message(name)}")
             return None
-        f = self.fonts[name]
+        f = self.fonts.get(canonical)
         if f is None:
             self.problems.append(
                 f"{where}: font {name!r} is not installed here "
-                f"(fonts/{FONTS[name].file}); skipped"
+                f"(fonts/{FONTS[canonical].file}); skipped"
             )
             return None
         return f

@@ -22,7 +22,8 @@ from mcp import Client
 
 from display_mcp import mcp_server
 from display_mcp.config import Settings
-from display_mcp.render import BUILTIN_MIXES, FONTS, OP_FIELDS, check, render_hash
+from display_mcp.render import BUILTIN_MIXES, OP_FIELDS, check, render_hash
+from display_mcp.render.fonts import SIZES
 from fakes import FakeStore
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -60,7 +61,7 @@ def test_vocabulary_sample_hash(vocabulary_sample_doc):
     text, a sprite with mirror and a document mix and a built-in mix, a
     filled poly in a mix and an outline poly, a thick circle outline, a
     thick line), for the flash-and-judge step in RUNBOOK.md."""
-    assert render_hash(vocabulary_sample_doc) == "91500ec10b0c26f7"
+    assert render_hash(vocabulary_sample_doc) == "168ec2ea749851e3"
 
 
 def test_vocabulary_sample_checks_clean(vocabulary_sample_doc, font_dir):
@@ -217,12 +218,33 @@ async def test_prose_tool_ops_font_and_mix_counts_match_the_code():
 
     tools_found = _found(rf"\b({_NUM_RE})\s+(?:MCP\s+)?tools\b", readme, spec, runbook)
     ops_found = _found(rf"\b({_NUM_RE})\s+ops\b", readme, spec)
-    fonts_found = _found(rf"\b({_NUM_RE})\s+font sizes\b", readme, spec)
     mixes_found = _found(rf"\b({_NUM_RE})\s+built-in\b", readme, spec) | _found(
         rf"\ball\s+({_NUM_RE})\b", spec
     )
 
     assert tools_found == {await _tool_count()}, tools_found
     assert ops_found == {len(OP_FIELDS)}, ops_found
-    assert fonts_found == {len(FONTS)}, fonts_found
     assert mixes_found == {len(BUILTIN_MIXES)}, mixes_found
+
+
+@pytest.mark.xfail(
+    strict=True, reason="README/SPEC say six font sizes until batch B6 rewrites them"
+)
+def test_prose_font_size_count_matches_the_code():
+    """Split out of test_prose_tool_ops_font_and_mix_counts_match_the_code
+    (docs/plans/fonts-and-icons.md B1 review): `len(FONTS)` grew from 6 to
+    33 in B1, but README.md/docs/SPEC.md are owned by other batches — B1's
+    own rules say not to touch them — and still say "six font sizes" until
+    B6's prose pass reconciles every count with what the finished
+    vocabulary compiles. Still derived from `len(FONTS)`, not a frozen
+    number, and `strict=True` so it flips red-to-green (an unexpected pass
+    fails the suite) the moment B6 lands, rather than staying silently
+    green forever. The count is `len(SIZES)` -- "font sizes" is the ladder
+    (eleven), which the prose can say in words; `len(FONTS)` is the table
+    (33 in B1, 110 now that B3b has landed Petrona and Karla), which no
+    prose will ever spell out, so asserting that would leave this xfail
+    unable to flip (B1 re-review, finding A)."""
+    readme = (ROOT / "README.md").read_text()
+    spec = (ROOT / "docs" / "SPEC.md").read_text()
+    fonts_found = _found(rf"\b({_NUM_RE})\s+font sizes\b", readme, spec)
+    assert fonts_found == {len(SIZES)}, fonts_found

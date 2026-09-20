@@ -83,31 +83,35 @@ sudo install -d -o display-mcp -g display-mcp /opt/display-mcp/fonts
 
 The preview must use the *same faces the firmware compiles in*, or it will
 wrap text in different places than the panel does — which defeats the point
-of previewing. Two families: Instrument Sans (the five proportional sizes)
-and JetBrains Mono (`mono`, block art and code).
+of previewing. `fetch-fonts.sh` fetches four families — Petrona, Instrument
+Sans and Karla (each an upright and an italic variable font) and JetBrains
+Mono (upright only) — seven files in all, plus two temporary copies of
+Instrument Sans under legacy names the renderer still looks for today.
+Petrona and Karla aren't wired into the renderer yet; fetching them now
+just saves a second round of downloads once they are.
 
 ```bash
 sudo -u display-mcp ./deploy/fetch-fonts.sh /opt/display-mcp/fonts
-file /opt/display-mcp/fonts/*.ttf     # all three should say TrueType, not "JSON text"
+file /opt/display-mcp/fonts/*.ttf     # all nine should say TrueType, not "JSON text"
 ```
 
-Google Fonts ships Instrument Sans as a single variable font, which is why
-both names point at the same file — the renderer selects the Bold instance
-itself. JetBrains Mono is fetched the same way, as a variable font too; the
-renderer selects its Regular instance. If the GitHub API is rate limited or
-a raw URL 404s, browse `ofl/instrumentsans` or `ofl/jetbrainsmono` in
-`google/fonts` yourself and take whatever `.ttf` is there, or pass
-`--fonts-from <dir>` to `setup.sh install` for the Instrument Sans pair (a
-JetBrains Mono face still needs to land in the fonts directory by hand, or
-via `setup.sh fonts` once the network works). Any static Regular + Bold
-pair works too, so long as the ESPHome config compiles the same family.
+Google Fonts ships every weight of a family in one upright variable font
+and, where the family has an italic, a second variable font for that one;
+the renderer selects the named instance it wants out of whichever of the
+two it loaded. If the GitHub API is rate limited or a raw URL 404s, just
+re-run once it clears — or pass `--fonts-from <dir>` to `setup.sh install`
+with all seven files already sitting in `<dir>`, named exactly as
+`fetch-fonts.sh`'s header comment lists them; that path requires every one
+of the seven and does not fetch whatever's missing for you.
 
-On a host already running an older install, upgrading past B3 means running
-`sudo ./deploy/setup.sh fonts` once to fetch the new JetBrains Mono face
-into `/opt/display-mcp/fonts` — `setup.sh sync`, the usual redeploy, is
-code-only and deliberately never touches fonts.
+On a host already running an older install, `setup.sh sync` — the everyday
+code-only redeploy — deliberately never touches fonts. Run
+`sudo ./deploy/setup.sh fonts` once after pulling a commit that adds,
+renames or removes a font file (as this one does) or a compiled face (as
+B3 did for `mono`), so the new files land in `/opt/display-mcp/fonts`
+without a full `install` run.
 
-**Done when:** `file *.ttf` reports TrueType for all three. Step 3 checks
+**Done when:** `file *.ttf` reports TrueType for all nine. Step 3 checks
 that the renderer can actually load them.
 
 ## Step 3 — Install the service
@@ -366,9 +370,10 @@ this order:
 1. `git pull` on the host.
 2. `sudo ./deploy/setup.sh sync` — the code-only redeploy, restarts the
    service.
-3. `sudo ./deploy/setup.sh fonts` — **once**, only when the change adds a
-   compiled face (as B3 did for `mono`); `sync` deliberately never touches
-   fonts, so a routine redeploy is never also a font decision.
+3. `sudo ./deploy/setup.sh fonts` — **once**, when the change adds or
+   renames a font file or a compiled face (as B3 did for `mono`); `sync`
+   deliberately never touches fonts, so a routine redeploy is never also a
+   font decision.
 4. `cd firmware && esphome run epaper-schedule.yaml` — flashes the new
    vocabulary onto the panel. Nothing before this step can be judged on the
    wall; the preview only shows what the *next* firmware will draw.

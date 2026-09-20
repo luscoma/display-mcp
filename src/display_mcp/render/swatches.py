@@ -9,7 +9,7 @@ from typing import Any
 
 from .canvas import BEZEL_MARGIN, HEIGHT
 from .colour import BUILTIN_MIXES, COLORS, TIERS, Ctx, builtin_ink, hex_of, recipe_of
-from .fonts import FONTS
+from .fonts import FONTS, resolve_font
 
 _SWATCH_CHIP_W = 182  # px; fits the widest recipe string ("yellow+green 50")
 
@@ -120,10 +120,10 @@ def swatch_document(palette: dict[str, Any] | None = None) -> dict[str, Any]:
     chip_w, chip_h = _SWATCH_CHIP_W, 80
     gap_x = 10
     chip_gap, line_gap = 6, 2
-    name_lh = FONTS["sm"].line_height
-    xs_lh = FONTS["xs"].line_height
+    name_lh = FONTS[resolve_font("sm")].line_height
+    xs_lh = FONTS[resolve_font("xs")].line_height
     row_gap = 8
-    heading_lh, heading_gap = FONTS["xs"].line_height, 6
+    heading_lh, heading_gap = FONTS[resolve_font("xs")].line_height, 6
     # Roughly doubles the gap before a heading (row_gap, already left after
     # the previous group's last row) so it reads as belonging to the chips
     # below it rather than the group above.

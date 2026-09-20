@@ -32,11 +32,11 @@ def vocabulary_sample_doc():
 
 @pytest.fixture
 def font_dir() -> Path:
-    """All three compiled faces: the Instrument Sans pair and JetBrains
-    Mono. Tests that need real fonts skip if any are missing -- checked
-    with fonts_available(), the same check render()/the CLI use, so a
-    `mono`-only test can't pass here and then OSError at runtime instead of
-    skipping cleanly."""
+    """The seven compiled font files: Petrona, Instrument Sans and Karla
+    (each upright + italic) plus JetBrains Mono. Tests that need real fonts
+    skip if any are missing -- checked with fonts_available(), the same
+    check render()/the CLI use, so a `mono`-only test can't pass here and
+    then OSError at runtime instead of skipping cleanly."""
     from display_mcp.render import fonts_available
 
     d = Path(__import__("os").environ.get("DISPLAY_MCP_FONT_DIR", ROOT / "fonts"))

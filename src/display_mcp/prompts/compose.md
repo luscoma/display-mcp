@@ -86,8 +86,8 @@ warning saying where they belong. Check `warnings` either way.
 - **`line`** — `x y x2 y2`, `t` (thickness; works on horizontal/vertical
   lines, diagonals only thicken vertically).
 - **`circle`** — `x y r` is the centre and radius, `fill` (default true), `t`.
-- **`text`** — `x y s f` (`f` defaults to `md`; `f: "mono"` for the monospace
-  face — block art, aligned columns, code), `a` (`left`/`center`/`right`,
+- **`text`** — `x y s f` (`f` defaults to `md`; `f: "mono/24"` for the
+  monospace face — block art, aligned columns, code), `a` (`left`/`center`/`right`,
   default `left`, changes what `x` means, not `y`), `w` (max width), `wrap`
   (bool), `lines` (default 2 when wrapping), `lh` (line height override).
   `x,y` is the top of the glyph box, not its baseline.
@@ -143,39 +143,72 @@ warning saying where they belong. Check `warnings` either way.
 
 ## Type scale
 
-Fixed, compiled into the firmware — six sizes, nothing between them:
+A font name is `family[-bold|-italic]/size`. Every family is compiled at
+the same eleven sizes — 22 24 26 28 32 36 40 44 48 54 84 — and `size` is
+either a bare pixel count or one of the five slots below; both spellings
+of the same face work (`instrument/lg` and `instrument/48` are the same
+face) and the slot spelling is recommended.
 
-| name | px | weight | default line height | cell height | ink height |
+| slot | px |
+|---|---|
+| `xl` | 84 |
+| `lg` | 48 |
+| `md` | 36 |
+| `sm` | 28 |
+| `xs` | 22 |
+
+Three families in regular, `-bold` and `-italic`, plus mono (regular only):
+
+| family | typeface | regular | `-bold` | `-italic` | the family write-up uses it for |
 |---|---|---|---|---|---|
-| `xl` | 84 | bold | 104 | 103 | — |
-| `lg` | 48 | bold | 60 | 59 | — |
-| `md` | 36 | regular | 45 | 44 | — |
-| `sm` | 28 | regular | 35 | 35 | — |
-| `xs` | 22 | bold | 27 | 28 | — |
-| `mono` | 24 | regular | 30 | 33 | 31 |
+| `petrona` | Petrona | 600 | 800 | 500 italic | the day name, section headings; the italic for a subtitle or callout heading |
+| `instrument` | Instrument Sans | 400 | 700 | 400 italic | the default — everything else, and what the five bare names mean |
+| `karla` | Karla | 400 | 700 | 400 italic | bold for event titles and chip labels; regular for times and cues |
+| `mono` | JetBrains Mono | 400 | — | — | the monospace face — block art, aligned columns, code (`mono/24`, or any other size) |
 
-`mono` is one size, 24 px regular — no bold, no second mono size.
+That last column is guidance from the design write-up, not a renderer
+rule — a style skill's own mapping wins if it says otherwise.
+
+The bare legacy names `xl lg md sm xs` still work, unchanged: they mean
+Instrument Sans, at `instrument-bold/xl`, `instrument-bold/lg`,
+`instrument/md`, `instrument/sm` and `instrument-bold/xs` respectively, so
+nothing already written needs rewriting. There is no bare `mono` — write
+`mono/24` (or `mono/sm`, `mono/lg`, …) explicitly, and there is no bare
+italic — an italic always names its family, e.g. `petrona-italic/40`, a
+size with only the pixel spelling since 40 isn't one of the five slots.
+`describe().fonts[*]` lists every face's `px`, `slot`, `aliases`, `family`,
+`style`, `line_height`, `cell_height` and `ink_height`;
+`describe().font_families[*]` (keyed by `family`, or `family-style` for a
+non-regular one) carries the constants that don't vary by size —
+`typeface` (the human name), `weight`, `italic`, `glyphs`. Both are the
+source of truth for what's compiled — the table above is a summary, not a
+substitute for reading them. An unknown font name still skips the op; the
+warning says which half is wrong — a bad size on a real family names that
+family's own compiled sizes, a bad family lists every compiled family and
+its styles, plus the five bare legacy names and what they mean.
 
 Default line height is `round(size * 1.24)` — what wrapped `text` uses when
-you don't set `lh`, so it's also what to stack lines by hand: a `lg` title
-over an `md` subtitle sits the second line's `y` at `title_y + 60`. This is
-true for `mono` too — its default `lh` (30) is not its `cell_height` (33),
-and neither is the pitch that makes block art meet.
+you don't set `lh`, so it's also what to stack lines by hand: an
+`instrument-bold/lg` title over an `instrument/md` subtitle sits the
+second line's `y` at `title_y + 60`. This is true for `mono` too — its
+default `lh` is not its `cell_height`, and neither is the pitch that makes
+block art meet (below).
 
 Every face only compiles GF_Latin_Core, plus box drawing and block
 elements for `mono` alone. A character outside that — `✓`, `→`, an emoji,
 anything beyond plain Latin letters/digits/punctuation — previews fine
 and has no glyph on the wall; `validate`/`preview` list every such
-character by name and code point. `describe().fonts[*].glyphs` names the
-compiled set for each face.
+character by name and code point. `describe().font_families[*].glyphs`
+names the compiled set for each family-style.
 
-**Block art is one `text` op per row, stacked `ink_height` apart, not a
-wrapped one.** A full-height `mono` glyph (`│`, `█`) inks 31 rows at 1bpp —
-`ink_height` — inside a 33px `cell_height` (ascent + descent, headroom no
-glyph fills). Stack by the default `lh` (30) and rows fuse into one blob;
-stack by `cell_height` (33) and they leave a 2px hairline gap. Draw each
-row at `y`, `y + 31`, `y + 62`, … (`describe().fonts.mono.ink_height`) and
-they meet exactly.
+**Block art is one `text` op per row, stacked by the mono size's own
+`ink_height` apart, not a wrapped one.** A full-height `mono` glyph (`│`,
+`█`) inks `ink_height` rows at 1bpp, inside a taller `cell_height` (ascent
++ descent, headroom no glyph fills) — stack by the default `lh` and rows
+fuse into one blob; stack by `cell_height` and they leave a hairline gap.
+Draw each row at `y`, `y + h`, `y + 2h`, … where `h` is
+`describe().fonts["mono/24"].ink_height` (or whichever mono size you're
+using) and they meet exactly.
 
 Aligning a **36 px `z: "sm"` icon** beside a line of `f: "sm"` text at the
 same `y` (two different fields that happen to share the name `"sm"` —
@@ -183,6 +216,8 @@ one an icon size class, the other a font): the icon's own box doesn't
 share the text's metrics, so centre it by eye against each font size with
 this offset from the text op's `y` — `lg` → `y+6`, `md` → `y`, `sm` →
 `y−4`, `xs` → `y−7`. (Not meaningful for `xl`, which dwarfs a 36 px icon.)
+These offsets were measured against `instrument` text; Petrona and Karla
+sit a few px off at the same size (B4b re-measures them).
 
 ## Colours
 

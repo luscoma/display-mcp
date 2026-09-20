@@ -320,7 +320,7 @@ and never drawn wrong — the panel only ever skips, it never reboots.
 ## Vocabulary
 
 **Fonts** — `xl` 84 bold, `lg` 48 bold, `md` 36, `sm` 28, `xs` 22 bold
-(Instrument Sans); `mono` 24 regular (JetBrains Mono, monospaced — box
+(Instrument Sans); `mono/24` regular (JetBrains Mono, monospaced — box
 drawing and block art, aligned columns, code). Adding a size is a rebuild,
 so the scale is a commitment. Every face compiles GF_Latin_Core; `mono`
 also compiles box drawing and block elements (U+2500–U+259F) — a character

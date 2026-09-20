@@ -1,25 +1,24 @@
 #!/usr/bin/env bash
 #
-# fetch-fonts.sh <dir> — put the Instrument Sans Regular/Bold pair and the
-# JetBrains Mono Regular face in <dir>.
+# fetch-fonts.sh <dir> — put the preview's seven font files (one per family
+# per slant; mono has no italic) in <dir>.
 #
 # One implementation, two callers: setup.sh on the host, and local development
 # on whatever you're reading this on:
 #
 #   deploy/fetch-fonts.sh ./fonts
 #
-# Google Fonts ships Instrument Sans as a single variable font, which is why
-# Regular and Bold end up byte-identical here — the renderer selects the Bold
-# instance itself at render time. Any static Regular + Bold pair works too,
-# so long as it's the same family the firmware compiles in; drop them in
-# <dir> by hand instead of running this script if you'd rather. JetBrains
-# Mono is fetched the same way, as a variable font too — the renderer
-# selects its Regular instance the same way it selects Instrument Sans's
-# Bold one.
+# Google Fonts ships every weight of a family in one upright variable font
+# and, for an italic style, a second variable font — never separate files
+# per weight. That is why each of Petrona, Instrument Sans and Karla is two
+# files here (an upright one and an `-Italic` one) rather than one: the
+# renderer picks the weight it wants out of whichever of the two it loaded.
+# JetBrains Mono has no italic in this vocabulary, so it is a single file.
 #
-# Exits 0 with all three files in place and looking like a font. Exits 1, with
-# a warning explaining the manual fallback, if nothing downloadable panned out.
-# Leaves ownership alone — the caller chowns if it needs to.
+# Exits 0 with all seven fetched files in place and looking like fonts.
+# Exits 1, with a warning explaining the manual fallback, if something
+# downloadable did not pan out. Leaves ownership alone — the caller chowns
+# if it needs to.
 
 set -euo pipefail
 
@@ -49,8 +48,13 @@ cleanup() { if [ -n "$TMP" ]; then rm -f "$TMP"; TMP=""; fi; }
 on_exit() { local rc=$?; cleanup; exit "$rc"; }
 trap on_exit EXIT
 
-FONT_REGULAR="InstrumentSans-Regular.ttf"
-FONT_BOLD="InstrumentSans-Bold.ttf"
+# The seven fetched destinations.
+FONT_PETRONA="Petrona.ttf"
+FONT_PETRONA_ITALIC="Petrona-Italic.ttf"
+FONT_INSTRUMENT="InstrumentSans.ttf"
+FONT_INSTRUMENT_ITALIC="InstrumentSans-Italic.ttf"
+FONT_KARLA="Karla.ttf"
+FONT_KARLA_ITALIC="Karla-Italic.ttf"
 FONT_MONO="JetBrainsMono-Regular.ttf"
 
 # A real font, not the few hundred bytes of JSON GitHub hands back for a 404
@@ -69,37 +73,83 @@ is_font() {
   esac
 }
 
-# One family, installed to one or more destination paths (Instrument Sans
-# writes the same downloaded file to both its Regular and Bold names — the
-# renderer and the firmware both select the Bold instance out of the one
-# variable font; JetBrains Mono has a single destination). Ask GitHub what
-# is actually in that ofl/<slug> directory rather than guessing a filename
-# — upstream renames variable fonts from time to time. The listing also
-# contains the Italic variable font, which must not win: the firmware
-# compiles the upright face. $fallback_url is the fixed URL used when the
-# API is rate limited.
-fetch_family() {
-  local label=$1 slug=$2 fallback_url=$3; shift 3
-  local dests=("$@")
+all_present() {
+  local f
+  for f in "$@"; do is_font "$f" || return 1; done
+  return 0
+}
+
+# GitHub's listing of one ofl/<slug> directory, fetched at most once per
+# slug even though up to two destinations (an upright and an italic) pull
+# from it -- four slugs, not seven API calls, against GitHub's unauthenticated
+# 60/hour limit. Called lazily, only when at least one of that slug's
+# destinations still needs fetching, from family_listing below. Prints
+# nothing (and does not fail the script) on a rate limit or a network
+# hiccup; the caller falls back to $fallback_url either way.
+list_ofl() {
+  local slug=$1
+  curl -fsSL --max-time 20 \
+    "https://api.github.com/repos/google/fonts/contents/ofl/$slug" 2>/dev/null || true
+}
+
+# The shared listing for a slug's destination(s): skips the API call
+# entirely when every one of them is already a real font, same as
+# fetch_if_missing used to do per-file before the listing was shared.
+family_listing() {
+  local slug=$1; shift
+  local dest
+  for dest in "$@"; do
+    is_font "$dest" || { list_ofl "$slug"; return 0; }
+  done
+  printf ''
+}
+
+# The pure filter, factored out of fetch_one so it can be driven offline
+# (see tests/test_deploy.py) with a captured listing on stdin instead of a
+# live API call. Reads a GitHub directory listing (one JSON object per
+# `ofl/<slug>` entry, `list_ofl`'s output) and prints the candidate download
+# URLs, in listing order: 0 keeps the non-italic ones, 1 keeps only the
+# italic ones. Either way the filename must contain the escaped `[` a
+# variable font's axis-tag suffix always has (`Petrona%5Bwght%5D.ttf`) -- a
+# static `Petrona-Regular.ttf` sitting in the same directory must not be
+# able to win the upright slot over `Petrona[wght].ttf`.
+select_urls() {
+  local italic=$1
+  local grep_opts=(-vi)
+  [ "$italic" = 1 ] && grep_opts=(-i)
+  sed -n 's/.*"download_url": *"\([^"]*\.ttf\)".*/\1/p' \
+    | grep "${grep_opts[@]}" 'italic' \
+    | grep '%5B' || true
+}
+
+# One family/slant, fetched into one destination file from an
+# already-fetched directory $listing (see list_ofl/family_listing).
+# $fallback_url is the fixed URL used when the API is rate limited or
+# select_urls finds nothing (an empty $listing, or a directory that has
+# been reorganised).
+fetch_one() {
+  local label=$1 listing=$2 italic=$3 fallback_url=$4 dest=$5
   log "fetching $label"
   local urls=() u
   cleanup; TMP=$(mktemp)
 
   while read -r u; do [ -n "$u" ] && urls+=("$u"); done < <(
-    curl -fsSL --max-time 20 \
-      "https://api.github.com/repos/google/fonts/contents/ofl/$slug" 2>/dev/null \
-      | sed -n 's/.*"download_url": *"\([^"]*\.ttf\)".*/\1/p' \
-      | grep -vi 'italic' || true
+    printf '%s' "$listing" | select_urls "$italic"
   )
   urls+=("$fallback_url")
 
   for u in "${urls[@]}"; do
     if curl -fsSL --retry 2 --max-time 60 -o "$TMP" "$u" && is_font "$TMP"; then
       # mktemp made $TMP 0600; the service user has to be able to read these.
-      local d
-      for d in "${dests[@]}"; do install -m 0644 "$TMP" "$d"; done
-      ok "$label installed from ${u##*/}"
-      return 0
+      # Guarded, not a bare statement: under `set -e` an install failure here
+      # (e.g. an unwritable $DIR) would otherwise abort the whole script
+      # before the manual-fallback warning below ever ran.
+      if install -m 0644 "$TMP" "$dest"; then
+        ok "$label installed from ${u##*/}"
+        return 0
+      fi
+      warn "downloaded $label but could not install it to $dest."
+      return 1
     fi
   done
 
@@ -107,38 +157,75 @@ fetch_family() {
   return 1
 }
 
+# Skips the fetch (and the network round trip) when the destination already
+# looks like a font, same as fetch_one's caller used to do inline.
+fetch_if_missing() {
+  local label=$1 listing=$2 italic=$3 fallback_url=$4 dest=$5
+  if is_font "$dest"; then
+    ok "$label already present in $DIR"
+    return 0
+  fi
+  fetch_one "$label" "$listing" "$italic" "$fallback_url" "$dest"
+}
+
 main() {
   mkdir -p "$DIR"
-  local reg="$DIR/$FONT_REGULAR" bold="$DIR/$FONT_BOLD" mono="$DIR/$FONT_MONO"
+  local petrona="$DIR/$FONT_PETRONA" petrona_i="$DIR/$FONT_PETRONA_ITALIC"
+  local instrument="$DIR/$FONT_INSTRUMENT" instrument_i="$DIR/$FONT_INSTRUMENT_ITALIC"
+  local karla="$DIR/$FONT_KARLA" karla_i="$DIR/$FONT_KARLA_ITALIC"
+  local mono="$DIR/$FONT_MONO"
 
-  if is_font "$reg" && is_font "$bold" && is_font "$mono"; then
+  if all_present "$petrona" "$petrona_i" "$instrument" "$instrument_i" \
+                 "$karla" "$karla_i" "$mono"; then
     ok "fonts already present in $DIR"
     return 0
   fi
 
   local failed=0
-  if is_font "$reg" && is_font "$bold"; then
-    ok "Instrument Sans already present in $DIR"
-  else
-    fetch_family "Instrument Sans" instrumentsans \
-      'https://raw.githubusercontent.com/google/fonts/main/ofl/instrumentsans/InstrumentSans%5Bwdth,wght%5D.ttf' \
-      "$reg" "$bold" || failed=1
-  fi
-  if is_font "$mono"; then
-    ok "JetBrains Mono already present in $DIR"
-  else
-    fetch_family "JetBrains Mono" jetbrainsmono \
-      'https://raw.githubusercontent.com/google/fonts/main/ofl/jetbrainsmono/JetBrainsMono%5Bwght%5D.ttf' \
-      "$mono" || failed=1
-  fi
+  local listing
+
+  listing=$(family_listing petrona "$petrona" "$petrona_i")
+  fetch_if_missing "Petrona" "$listing" 0 \
+    'https://raw.githubusercontent.com/google/fonts/main/ofl/petrona/Petrona%5Bwght%5D.ttf' \
+    "$petrona" || failed=1
+  fetch_if_missing "Petrona Italic" "$listing" 1 \
+    'https://raw.githubusercontent.com/google/fonts/main/ofl/petrona/Petrona-Italic%5Bwght%5D.ttf' \
+    "$petrona_i" || failed=1
+
+  listing=$(family_listing instrumentsans "$instrument" "$instrument_i")
+  fetch_if_missing "Instrument Sans" "$listing" 0 \
+    'https://raw.githubusercontent.com/google/fonts/main/ofl/instrumentsans/InstrumentSans%5Bwdth,wght%5D.ttf' \
+    "$instrument" || failed=1
+  fetch_if_missing "Instrument Sans Italic" "$listing" 1 \
+    'https://raw.githubusercontent.com/google/fonts/main/ofl/instrumentsans/InstrumentSans-Italic%5Bwdth,wght%5D.ttf' \
+    "$instrument_i" || failed=1
+
+  listing=$(family_listing karla "$karla" "$karla_i")
+  fetch_if_missing "Karla" "$listing" 0 \
+    'https://raw.githubusercontent.com/google/fonts/main/ofl/karla/Karla%5Bwght%5D.ttf' \
+    "$karla" || failed=1
+  fetch_if_missing "Karla Italic" "$listing" 1 \
+    'https://raw.githubusercontent.com/google/fonts/main/ofl/karla/Karla-Italic%5Bwght%5D.ttf' \
+    "$karla_i" || failed=1
+
+  listing=$(family_listing jetbrainsmono "$mono")
+  fetch_if_missing "JetBrains Mono" "$listing" 0 \
+    'https://raw.githubusercontent.com/google/fonts/main/ofl/jetbrainsmono/JetBrainsMono%5Bwght%5D.ttf' \
+    "$mono" || failed=1
 
   if [ "$failed" = 1 ]; then
-    warn "Put a Regular+Bold pair in $DIR as $FONT_REGULAR and $FONT_BOLD,"
-    warn "and/or a Regular face as $FONT_MONO, by hand, or re-run once the"
-    warn "network/API rate limit clears."
+    warn "Put the missing file(s) in $DIR by hand -- Petrona.ttf,"
+    warn "Petrona-Italic.ttf, InstrumentSans.ttf, InstrumentSans-Italic.ttf,"
+    warn "Karla.ttf, Karla-Italic.ttf and/or JetBrainsMono-Regular.ttf --"
+    warn "and/or re-run once the network/API rate limit clears."
     return 1
   fi
   return 0
 }
 
-main "$@"
+# Guarded so tests/test_deploy.py can `source` this file (to drive
+# select_urls offline, with a captured listing) without also running main()
+# against whatever $1 the sourcing shell happens to have.
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+  main "$@"
+fi
