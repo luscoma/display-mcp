@@ -18,25 +18,110 @@ from display_mcp.render import (
     ICONS,
     INK,
     MAX_COORD,
+    NAME_MAX_LEN,
     bezel_problems,
     check,
     draw_icon,
     render,
+    resolve_icon_size,
 )
 
 from .conftest import _icon_doc
 
 
-def test_icon_bad_size_class_is_a_problem(sample_doc, font_dir):
-    doc = _icon_doc(sample_doc, "check", "lg")
-    _, problems = render(doc, font_dir)
-    assert any("check/lg" in p and "not compiled in" in p for p in problems)
+@pytest.mark.parametrize(
+    ("z", "want"),
+    [
+        ("lg", "lg"),
+        ("xs", "xs"),
+        ("48", "lg"),
+        ("22", "xs"),
+        ("48.0", None),  # off-ladder spelling: only the bare integer string is accepted
+        ("47", None),  # not one of the five pixel counts
+        ("LG", None),  # case-sensitive
+        ("", None),
+        (None, None),  # not a string at all
+        (48, None),  # a JSON number, not its string spelling
+        (True, None),  # bool is not a string either
+    ],
+)
+def test_resolve_icon_size_matrix(z, want):
+    assert resolve_icon_size(z) == want
+
+
+def test_icon_unknown_size_is_a_problem_naming_the_slots_and_skips(font_dir):
+    """Every icon now compiles at all five slots (docs/plans/
+    fonts-and-icons.md Decision 4, B4b: "there is no icon ladder"), so the
+    only way an icon/z pair can miss on a real name is a z that resolves to
+    no slot at all -- an off-ladder pixel count, here. Unlike an unknown
+    font, which still lets the rest of the op's checks run, this abandons
+    the op outright and draws nothing, the same as a missing required
+    field. A minimal doc, not `sample_doc` (its footer's `{hash}` depends
+    on the exact `ops` list, so appending any op -- even one that draws
+    nothing -- would legitimately move that text and defeat a byte-for-byte
+    "drew nothing" comparison)."""
+    doc = {"bg": "white", "ops": [{"op": "icon", "x": 10, "y": 10, "n": "check", "z": "47"}]}
+    img, problems = render(doc, font_dir)
+    assert any(
+        "'check/47' is not compiled in: check is compiled at" in p and "md=36" in p
+        for p in problems
+    )
+    blank, _ = render({"bg": "white", "ops": []}, font_dir)
+    assert img.tobytes() == blank.tobytes()
+
+
+def test_icon_unknown_name_is_a_problem_naming_the_icons_and_skips(font_dir):
+    doc = {"bg": "white", "ops": [{"op": "icon", "x": 10, "y": 10, "n": "no-such-icon", "z": "md"}]}
+    img, problems = render(doc, font_dir)
+    assert any(
+        "'no-such-icon/md' is not compiled in: names are" in p and "school-day" in p
+        for p in problems
+    )
+    blank, _ = render({"bg": "white", "ops": []}, font_dir)
+    assert img.tobytes() == blank.tobytes()
+
+
+def test_icon_n_past_the_length_bound_is_skipped(font_dir):
+    """docs/plans/fonts-and-icons.md B4b review item 2: `icon`'s `n`/`z`
+    bounded by NAME_MAX_LEN the same way text/fmt's `f` is -- mirrors
+    firmware/display_list.h's kNameMaxLen."""
+    n = "a" * (NAME_MAX_LEN + 1)
+    doc = {"bg": "white", "ops": [{"op": "icon", "x": 10, "y": 10, "n": n, "z": "md"}]}
+    img, problems = render(doc, font_dir)
+    assert any(f"n/z longer than {NAME_MAX_LEN} bytes" in p for p in problems)
+    blank, _ = render({"bg": "white", "ops": []}, font_dir)
+    assert img.tobytes() == blank.tobytes()
+
+
+def test_icon_z_past_the_length_bound_is_skipped(font_dir):
+    z = "a" * (NAME_MAX_LEN + 1)
+    doc = {"bg": "white", "ops": [{"op": "icon", "x": 10, "y": 10, "n": "check", "z": z}]}
+    img, problems = render(doc, font_dir)
+    assert any(f"n/z longer than {NAME_MAX_LEN} bytes" in p for p in problems)
+    blank, _ = render({"bg": "white", "ops": []}, font_dir)
+    assert img.tobytes() == blank.tobytes()
 
 
 def test_icon_good_size_class_is_not_a_problem(sample_doc, font_dir):
     doc = _icon_doc(sample_doc, "check", "sm")
     _, problems = render(doc, font_dir)
     assert problems == []
+
+
+def test_icon_default_z_is_md_36px(font_dir):
+    """`z`'s default became `"md"` with Decision 4 (B4b) -- 36px, the same
+    pixel size the old default `"sm"` already meant before that batch
+    re-keyed the size classes onto the font ladder (`sm` is 28px now), so
+    an op that omits `z` still draws the same 36px icon it always did."""
+    doc = {"bg": "white", "ops": [{"op": "icon", "x": 10, "y": 10, "n": "check"}]}
+    img, problems = render(doc, font_dir)
+    assert problems == []
+    explicit_doc = {
+        "bg": "white",
+        "ops": [{"op": "icon", "x": 10, "y": 10, "n": "check", "z": "md"}],
+    }
+    explicit_img, _ = render(explicit_doc, font_dir)
+    assert img.tobytes() == explicit_img.tobytes()
 
 
 def test_weather_snowy_is_valid(sample_doc, font_dir):
@@ -309,6 +394,32 @@ def test_bezel_margin_ignores_fills_and_the_standard_footer(sample_doc, font_dir
     assert bezel_problems(sample_doc) == []
 
 
+def test_bezel_problems_uses_the_resolved_icon_px():
+    """`bezel_problems()` resolves `z` through `resolve_icon_size()`
+    (docs/plans/fonts-and-icons.md Decision 4, B4b) before sizing the
+    icon's right edge -- a pixel-count spelling of a slot must be judged by
+    that slot's actual px, not left at 0 (ICON_SIZES.get(z, 0)'s old
+    fallback for anything that wasn't a slot key)."""
+    doc = {
+        "bg": "white",
+        "ops": [{"op": "icon", "x": 1170, "y": 100, "n": "check", "z": "84"}],
+    }
+    problems = bezel_problems(doc)
+    assert any("right edge" in p for p in problems)
+
+
+def test_bezel_problems_unresolvable_icon_size_falls_back_to_zero_width():
+    """An icon `z` that resolves to nothing contributes no width to the
+    right-edge check, mirroring the conservative fallback the pre-B4b code
+    had for any `z` not in the old `ICON_SIZES`."""
+    doc = {
+        "bg": "white",
+        "ops": [{"op": "icon", "x": 1170, "y": 100, "n": "check", "z": "not-a-size"}],
+    }
+    problems = bezel_problems(doc)
+    assert not any("right edge" in p for p in problems)
+
+
 ICON_CASES = [(name, z) for name in sorted(ICONS) for z in sorted(ICONS[name])]
 
 
@@ -377,10 +488,21 @@ def test_unknown_icon_placeholder_stays_inside_its_box():
 
 
 def test_weather_night_is_a_crescent_not_a_disc():
-    """The bite out of the moon is transparent, so the ground shows through."""
+    """The bite out of the moon is transparent, so the ground shows through.
+
+    `lg` shrank from 88px to 48px with the icon ladder's re-key onto the
+    font slots (docs/plans/fonts-and-icons.md Decision 4, B4b) -- the old
+    `size // 8` sample point sat right at the bite's own edge (`-0.45 *
+    radius`) and which side of that edge it landed on flipped between the
+    two pixel counts. `0.28 * size` stays inside the crescent's solid band
+    (between the bite's edge at `0.45 * radius = 0.135 * size` and the
+    disc's own edge at `radius = 0.30 * size`) at every compiled slot, and
+    the centre point is inside the bite at every size on geometry alone
+    (the bite spans `-0.45r .. +1.65r`, which always contains 0)."""
     size = ICON_SIZES["lg"]
     ground = (255, 255, 255)
     px = _draw_one("weather-night", size, ground, (0, 0, 0)).load()
     cx = cy = PAD + size // 2
-    assert px[cx - size // 8, cy] != ground, "left limb should be inked"
-    assert px[cx + size // 8, cy] == ground, "crescent's bite should be untouched"
+    left_limb = cx - round(size * 0.28)
+    assert px[left_limb, cy] != ground, "left limb should be inked"
+    assert px[cx, cy] == ground, "crescent's bite should be untouched"

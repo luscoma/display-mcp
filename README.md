@@ -28,7 +28,7 @@ a redraw does. It runs for months on a battery.
 </p>
 
 That is [`samples/display.json`](samples/display.json) — 56 ops, 4.4 KB, hash
-`3cd62aa76e731d2d` — rendered by the same code the preview tool uses, and the
+`1c772cd7a6ebc2c7` — rendered by the same code the preview tool uses, and the
 best thing to copy and edit. Every op in the vocabulary appears between it
 and [`samples/sprite.json`](samples/sprite.json), the second sample, which
 shows off pixel art drawn with the `sprite` op. A third,

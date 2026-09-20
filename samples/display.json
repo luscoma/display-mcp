@@ -4,7 +4,7 @@
     "generated": "2026-09-08T06:31:00-07:00",
     "ttl": 3600,
     "title": "daily schedule",
-    "hash": "3cd62aa76e731d2d"
+    "hash": "1c772cd7a6ebc2c7"
   },
   "bg": "white",
   "palette": {
@@ -44,7 +44,7 @@
       "x": 916,
       "y": 46,
       "n": "weather-partly-cloudy",
-      "z": "lg",
+      "z": "xl",
       "c": "yellow"
     },
     {
@@ -312,7 +312,7 @@
       "x": 312,
       "y": 908,
       "n": "map-marker",
-      "z": "sm",
+      "z": "md",
       "c": "black"
     },
     {
@@ -389,7 +389,7 @@
       "x": 51,
       "y": 1265,
       "n": "check",
-      "z": "sm",
+      "z": "md",
       "c": "white"
     },
     {
@@ -489,7 +489,7 @@
       "x": 1058,
       "y": 1545,
       "n": "battery",
-      "z": "sm",
+      "z": "md",
       "c": "grey-mid"
     },
     {

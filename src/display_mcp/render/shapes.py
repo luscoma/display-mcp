@@ -1,7 +1,8 @@
 """Shapes: the rounded rect (D10), the icon stencil, the poly scanline fill
 and outline walk (D12), the device-safety limits (THICK_MAX, SPRITE_MAX_CELL,
 MAX_COORD, TEXT_MAX_LEN, TEXT_MAX_LINES, SPRITE_MAX_COLS, SPRITE_MAX_ROWS,
-SPRITE_MAX_PALETTE, POLY_MAX_PTS -- docs/plans/firmware-bounds.md D4/D6/D7/D8)
+SPRITE_MAX_PALETTE, POLY_MAX_PTS, NAME_MAX_LEN -- docs/plans/firmware-bounds.md
+D4/D6/D7/D8, docs/plans/fonts-and-icons.md B4b review item 2 for the last)
 and the off-canvas check every op's bounding box goes through
 (`OFF_CANVAS_TOLERANCE` itself lives in `canvas.py`, since it's a canvas
 constant, not a shape one -- this module is just its one reader).
@@ -16,7 +17,9 @@ panel.
 
 from __future__ import annotations
 
+import functools
 import math
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from PIL import Image, ImageDraw
@@ -60,6 +63,18 @@ SPRITE_MAX_PALETTE = 64
 
 # D8: how many points a poly's `pts` can hold.
 POLY_MAX_PTS = 1024
+
+
+# docs/plans/fonts-and-icons.md Decision 4, B4b review item 2: `text`/`fmt`'s
+# `f` and `icon`'s `n`/`z`, measured in bytes on the raw string before any
+# resolution -- mirrors firmware/display_list.h's kNameMaxLen, which exists
+# because normalize_font_key() builds a std::string from `f` (two
+# allocations) and a legal multi-KB `f` under MAX_DOC_BYTES would have made
+# that peak at several times its own length of transient heap on a panel
+# with none to spare. Every real compiled spelling is at most 21 characters
+# (`weather-partly-cloudy`; the longest font spelling, `instrument-italic/48`,
+# is 20); 64 is generous headroom, not a tight fit.
+NAME_MAX_LEN = 64
 
 
 def _off_canvas(v: float, bound: int) -> bool:
@@ -179,15 +194,52 @@ def _icon_mask(name: str, size: int) -> Image.Image:
     return mask
 
 
-def draw_icon(d: ImageDraw.ImageDraw, name: str, x, y, size, fill):
-    """Procedural stand-ins. The panel draws real MDI bitmaps.
+# The eight lucide activity icons' committed rasters (docs/plans/
+# fonts-and-icons.md Decision 4, B4a/B4b), one PNG per name/slot --
+# `firmware/icons/rasterize.py`'s output, the same file ESPHome's `file:`
+# image loader compiles for the panel. `render/icons/` has no `__init__.py`
+# (B4a's note); this is the one place that reads out of it.
+_ICONS_DIR = Path(__file__).parent / "icons"
 
-    Stencilled into a `size x size` tile and blitted at (x, y), the way the
-    firmware's `image->draw()` blits exactly get_width() x get_height():
-    nothing lands outside [x, x+size) x [y, y+size), and the pixels the
-    glyph does not set are left as they were.
+
+@functools.cache
+def _icon_bitmap(name: str, size: int) -> Image.Image | None:
+    """The committed raster for `name` at `size`, already thresholded to a
+    mode `"1"` mask ready for `ImageDraw.bitmap()` -- or `None` when no such
+    file exists (the eleven MDI icons, which have no lucide source, and any
+    name this file doesn't recognise at all). Every committed PNG's alpha is
+    exactly 0 or 255 (B4a's own tests), so the `>= 128` threshold below never
+    actually has to choose; it exists so a corrupt or hand-edited PNG
+    degrades to a hard edge rather than PIL's own `"1"`-conversion dithering
+    smearing it. Cached: a document can draw the same icon many times, and
+    there are only forty of these files total, all small.
     """
-    d.bitmap((x, y), _icon_mask(name, size), fill=fill)
+    path = _ICONS_DIR / f"{name}-{size}.png"
+    if not path.is_file():
+        return None
+    alpha = Image.open(path).convert("RGBA").split()[-1]
+    return alpha.point(lambda a: 255 if a >= 128 else 0).convert("1")
+
+
+def draw_icon(d: ImageDraw.ImageDraw, name: str, x, y, size, fill):
+    """Blit the committed raster for `name` at `size` (docs/plans/
+    fonts-and-icons.md Decision 4) when one exists -- the same file the
+    firmware compiles, so the wall and the preview show the identical
+    bitmap, the first time any icon here has had real preview parity.
+    Falls back to the procedural stand-in (`_icon_mask()`) for the eleven
+    MDI icons, which have no committed raster, and for a name neither table
+    recognises.
+
+    Either way, stencilled into a `size x size` mask and blitted at (x, y),
+    the way the firmware's `image->draw()` blits exactly get_width() x
+    get_height(): nothing lands outside [x, x+size) x [y, y+size), and the
+    pixels the glyph does not set are left as they were.
+    """
+    size = int(size)
+    mask = _icon_bitmap(name, size)
+    if mask is None:
+        mask = _icon_mask(name, size)
+    d.bitmap((x, y), mask, fill=fill)
 
 
 def _resolved_rect_radius(r_raw: Any, w: int, h: int, where: str, ctx: Ctx) -> int:

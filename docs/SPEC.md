@@ -21,7 +21,7 @@ is eyeball parity.
 ```json
 {
   "v": 1,
-  "meta": { "generated": "...", "hash": "3cd62aa76e731d2d" },
+  "meta": { "generated": "...", "hash": "1c772cd7a6ebc2c7" },
   "bg": "white",
   "palette": { "accent": "red", "work": "blue" },
   "ops": [ ... ]
@@ -79,7 +79,7 @@ not `c`.
 | `line` | `x y x2 y2` · `t` | thickness works on H/V lines; diagonals thicken vertically only |
 | `circle` | `x y r` · `fill` (default true) · `t` | `x,y` is the centre |
 | `text` | `x y s f` · `a` · `w` · `wrap` · `lines` · `lh` · `deco` | see below |
-| `icon` | `x y n z` · `bgc` | `n` = MDI name, `z` = size class, `x,y` = top-left |
+| `icon` | `x y n z` · `bgc` | `n` = icon name, `z` = slot or its px count (default `md`), `x,y` = top-left |
 | `fmt` | `x y s` · `f` · `a` | `text` without wrap whose `s` is a template of system fields: `{hash}` `{hash16}` `{time}` `{time24}` `{battery}` `{battv}`; `f` defaults to `xs` |
 | `sprite` | `x y cell rows palette` · `mirror` | pixel art — a grid of characters, one `palette` entry per colour; no `c` (see below) |
 | `poly` | `pts` · `c` · `fill` (default true) · `t` | a point list; `fill: false` draws an outline `t` px thick |
@@ -134,9 +134,24 @@ this file.
 
 ### icon
 
-Icons are Material Design Icons compiled in **by name**, so there are no
-codepoints to get wrong. Only the eleven in the YAML exist; anything else logs
-and skips.
+Nineteen names, each compiled at the same five slots a font uses —
+`xs` 22 · `sm` 28 · `md` 36 · `lg` 48 · `xl` 84 — so `z` takes the slot or
+its pixel count, exactly as `f` does (`check/lg` and `check/48` are the
+same bitmap); the slot spelling is canonical, `describe().icons` lists
+every name's slots and `describe().icon_aliases` lists the five px
+spellings. `z` defaults to `md` (36 px). There is no icon ladder beyond
+those five: a name/size pair that isn't one of them logs and skips, the
+same as an unknown op or font.
+
+Eleven names come from Material Design Icons, compiled in by name so
+there are no codepoints to get wrong: `weather-sunny`,
+`weather-partly-cloudy`, `weather-cloudy`, `weather-rainy`,
+`weather-snowy`, `weather-night`, `check`, `map-marker`, `clock`, `alert`,
+`battery`. Eight more are lucide icons named for a family activity —
+`school-day`, `daycare`, `taekwondo`, `swim`, `helper`, `appointment`,
+`family-meeting`, `closed` — rasterised once to committed 1-bit PNGs that
+the firmware compiles and the preview blits, so these nineteen are the
+first icons with real preview parity rather than a procedural stand-in.
 
 `bgc` is accepted but ignored: every compiled icon is transparent
 (`transparency: chroma_key`), so the pixels its glyph doesn't set are left
@@ -167,7 +182,7 @@ beside it:
 ```json
 {"op": "text", "x": 48,   "y": 1552, "s": "Updated: 6:31 AM", "f": "xs"}
 {"op": "fmt",  "x": 1045, "y": 1552, "s": "{hash}@{time24}", "f": "xs", "a": "right", "c": "grey-mid"}
-{"op": "icon", "x": 1058, "y": 1545, "n": "battery", "z": "sm", "c": "grey-mid"}
+{"op": "icon", "x": 1058, "y": 1545, "n": "battery", "z": "md", "c": "grey-mid"}
 {"op": "fmt",  "x": 1100, "y": 1552, "s": "{battery}", "f": "xs", "c": "grey-mid"}
 ```
 
@@ -343,16 +358,23 @@ and never drawn wrong — the panel only ever skips, it never reboots.
 
 ## Vocabulary
 
-**Fonts** — `xl` 84 bold, `lg` 48 bold, `md` 36, `sm` 28, `xs` 22 bold
-(Instrument Sans); `mono/24` regular (JetBrains Mono, monospaced — box
-drawing and block art, aligned columns, code). Adding a size is a rebuild,
-so the scale is a commitment. Every face compiles GF_Latin_Core; `mono`
-also compiles box drawing and block elements (U+2500–U+259F) — a character
+**Fonts** — four families, `petrona`, `instrument` (Instrument Sans),
+`karla`, each in regular/`-bold`/`-italic`, plus `mono` (JetBrains Mono,
+regular only) — 110 faces, eleven sizes apiece: the five slots `xs` 22,
+`sm` 28, `md` 36, `lg` 48, `xl` 84, plus 24 26 32 40 44 54 as pixel-only
+sizes with no slot name. Adding a size or a family is a rebuild, so the
+scale is a commitment. Every face compiles GF_Latin_Core; `mono` also
+compiles box drawing and block elements (U+2500–U+259F) — a character
 outside that set previews fine and silently has no glyph on the wall,
 which `check()` warns about.
 
-**Icons** — `weather-{sunny,partly-cloudy,cloudy,rainy,snowy,night}` at `lg`
-(88 px); `check`, `map-marker`, `clock`, `alert`, `battery` at `sm` (36 px).
+**Icons** — nineteen names, each at the same five slots fonts use (`xs`
+22, `sm` 28, `md` 36, `lg` 48, `xl` 84 px): eleven Material Design icons —
+`weather-{sunny,partly-cloudy,cloudy,rainy,snowy,night}`, `check`,
+`map-marker`, `clock`, `alert`, `battery` — and eight lucide activity
+icons, rasterised to committed PNGs rather than compiled from an `mdi:`
+name — `school-day`, `daycare`, `taekwondo`, `swim`, `helper`,
+`appointment`, `family-meeting`, `closed`.
 
 **Colours** — six inks, `black white yellow red blue green`, plus any
 two-ink **mix** declared in the palette (below). Nothing else exists.
@@ -513,8 +535,10 @@ display-mcp-cli check display.json                   # validate, no render
 ```
 
 The render uses approximate *ink* colours, so it looks like the wall rather
-than like a screen. Icons are procedural stand-ins — good for judging layout
-and weight, not icon artwork.
+than like a screen. The eight lucide activity icons blit the same committed
+PNG the firmware compiles — real artwork, not a stand-in. The eleven MDI
+icons are still procedural stand-ins — good for judging layout and weight,
+not artwork.
 
 The CLI always dithers mixes the way the panel does, which is what you want
 when checking against firmware. Be aware that a 1 px checkerboard aliases to
@@ -538,7 +562,7 @@ canon = json.dumps(core, sort_keys=True, separators=(",", ":"))
 h     = hashlib.sha256(canon.encode()).hexdigest()[:16]
 ```
 
-Serve that same value as the ETag (`ETag: "3cd62aa76e731d2d"`) and put it in
+Serve that same value as the ETag (`ETag: "1c772cd7a6ebc2c7"`) and put it in
 `meta.hash`. Then:
 
 - The device sends `If-None-Match` with the id it is currently showing. A

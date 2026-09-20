@@ -8,7 +8,7 @@ deliberate fixes called out in docs/PLAN.md ("Renderer"):
    it). A procedural stand-in is drawn for it like the other weather icons.
 2. Icons are validated as ``name/z`` pairs, the way the firmware keys its
    compiled icon table (``assets.icons["check/sm"]`` etc.) -- an icon whose
-   size class was never compiled in is now a problem, not a silent pass.
+   slot was never compiled in is now a problem, not a silent pass.
 3. The off-canvas check also covers ``x+w``/``y+h`` for rects and
    ``x2``/``y2`` for lines, with the same +/-64px tolerance already applied
    to every op's ``x``/``y``.
@@ -45,8 +45,13 @@ Public surface (final):
                               Face.line_height is round(size * 1.24)
     GF_LATIN_CORE             frozenset[int]; the code points every compiled
                               face has, vendored in gf_latin_core.txt
-    ICONS                    {name: frozenset(size classes)} e.g. {"check": {"sm"}}
-    ICON_SIZES               {size class: pixel size}
+    ICONS                    {name: frozenset(slots)} -- nineteen names (the
+                              eleven MDI icons, the eight lucide activity
+                              icons), every one at all five font slots
+                              (docs/plans/fonts-and-icons.md Decision 4)
+    ICON_SIZES               {slot: pixel size} -- the same table as
+                              fonts.SLOTS; resolve_icon_size(z) resolves a
+                              slot or its pixel-count spelling to the slot
     COLORS                   the six ink names
     OP_FIELDS                {op: {required: [...], optional: {field: default}}}
     BUILTIN_MIXES            {name: (c, c2, mix)}; TIERS {name: "dark"/"light"/"mid"}
@@ -127,6 +132,7 @@ from .fonts import (
 )
 from .shapes import (
     MAX_COORD,
+    NAME_MAX_LEN,
     POLY_MAX_PTS,
     SPRITE_MAX_CELL,
     SPRITE_MAX_COLS,
@@ -156,6 +162,7 @@ from .swatches import swatch_document, swatch_groups
 __all__ = [
     "ICONS",
     "ICON_SIZES",
+    "resolve_icon_size",
     "ANCHOR",
     "_NO_HASH_WARNING",
     "OP_FIELDS",
@@ -229,6 +236,7 @@ __all__ = [
     "unknown_font_message",
     # shapes.py
     "MAX_COORD",
+    "NAME_MAX_LEN",
     "POLY_MAX_PTS",
     "SPRITE_MAX_CELL",
     "SPRITE_MAX_COLS",
@@ -251,22 +259,69 @@ __all__ = [
     "swatch_groups",
 ]
 
+# The eleven Material Design icons, then the eight lucide activity icons
+# (docs/plans/fonts-and-icons.md Decision 4, B4b) -- every one of them now
+# compiled at all five font slots, the same ladder `FONTS` uses, so there is
+# one size vocabulary for fonts and icons rather than two that happen to
+# share some of the same names. `_ALL_SLOTS` is `frozenset(SLOTS)` computed
+# once rather than re-built per icon.
+_ALL_SLOTS: frozenset[str] = frozenset(SLOTS)
+
 ICONS: dict[str, frozenset[str]] = {
-    "weather-sunny": frozenset({"lg"}),
-    "weather-partly-cloudy": frozenset({"lg"}),
-    "weather-cloudy": frozenset({"lg"}),
-    "weather-rainy": frozenset({"lg"}),
-    "weather-snowy": frozenset({"lg"}),
-    "weather-night": frozenset({"lg"}),
-    "check": frozenset({"sm"}),
-    "map-marker": frozenset({"sm"}),
-    "clock": frozenset({"sm"}),
-    "alert": frozenset({"sm"}),
-    "battery": frozenset({"sm"}),
+    name: _ALL_SLOTS
+    for name in (
+        "weather-sunny",
+        "weather-partly-cloudy",
+        "weather-cloudy",
+        "weather-rainy",
+        "weather-snowy",
+        "weather-night",
+        "check",
+        "map-marker",
+        "clock",
+        "alert",
+        "battery",
+        "school-day",
+        "daycare",
+        "taekwondo",
+        "swim",
+        "helper",
+        "appointment",
+        "family-meeting",
+        "closed",
+    )
 }
 
 
-ICON_SIZES = {"sm": 36, "md": 56, "lg": 88}
+# ICON_SIZES is the font slot table itself (Decision 4): an icon's `z` and a
+# font's size share one ladder, one set of pixel values -- imported rather
+# than duplicated, so the two tables cannot drift apart the way the old
+# three-size-class table ("sm" 36, "md" 56, "lg" 88 -- none of which matched
+# any font slot's own pixel size) did.
+ICON_SIZES = SLOTS
+
+
+def resolve_icon_size(z: Any) -> str | None:
+    """The slot `z` means, or `None` when it isn't one (docs/plans/
+    fonts-and-icons.md Decision 4): `z` itself when it already names a slot,
+    the slot when `z` is that slot's pixel count spelled as a string (`"36"`
+    -> `"md"`), `None` for anything else -- a non-string, an off-ladder
+    pixel count (`"40"`, which is not one of the five), a wrong-case slot
+    name (`"LG"`), or an empty string. Unlike `resolve_font()`, there is no
+    icon ladder beyond the five font slots (Decision 4: "there is no icon
+    ladder"), so this never needs to consult a per-icon table -- every icon
+    that exists at all exists at all five (`ICONS`'s own values), and this
+    function only resolves the *size* half of `n/z`, independent of `n`.
+    The render()/bezel_problems()/check() icon paths all resolve `z` through
+    this, the same discipline `resolve_font()` already holds fonts to."""
+    if not isinstance(z, str):
+        return None
+    if z in SLOTS:
+        return z
+    for slot, px in SLOTS.items():
+        if z == str(px):
+            return slot
+    return None
 
 
 ANCHOR = {"left": "la", "center": "ma", "right": "ra"}
@@ -333,7 +388,7 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
         # are skipped), and a caller who writes it must not be told it is
         # unknown.
         "required": ("x", "y", "n"),
-        "optional": {"c": "black", "z": "sm", "bgc": None},
+        "optional": {"c": "black", "z": "md", "bgc": None},
     },
     "sprite": {
         # `c` is deliberately absent: colour comes from `palette`, one
@@ -466,14 +521,15 @@ def _op_required_field_problem(op: dict[str, Any], kind: str | None, where: str)
 
 # `f`/`a`/`z` are optional, but a value of the wrong JSON type there doesn't
 # fail softly the way an unknown *value* does -- an unknown font name,
-# alignment or icon size class each warn and either fall back or abandon the
-# op through their own lookup. The lookup itself is what breaks first: `f`
-# and `z` end up as a dict/set key (`ctx.fonts`, `ICONS[name]`/`ICON_SIZES`)
-# and `a` as a dict-membership test (`ANCHOR`), and an unhashable value (a
-# `list` or `dict`) raises `TypeError` out of `in`/`.get()` before any of
-# those checks run. `n` needs no entry here — it is already a *required*
-# field, covered above; sprite's `mirror` compares with `==`, never `in`, so
-# it never hits this either.
+# alignment or icon slot each warn and either fall back or abandon the op
+# through their own lookup. The lookup itself is what breaks first: `f`
+# ends up as a dict key (`ctx.fonts`, via `resolve_font()`) and `z` as a
+# dict/set-membership test (`SLOTS`, via `resolve_icon_size()`, then
+# `ICONS[name]`) and `a` as a dict-membership test (`ANCHOR`), and an
+# unhashable value (a `list` or `dict`) raises `TypeError` out of `in`/
+# `.get()` before any of those checks run. `n` needs no entry here — it is
+# already a *required* field, covered above; sprite's `mirror` compares
+# with `==`, never `in`, so it never hits this either.
 _OPTIONAL_STRING_FIELDS = {"f", "a", "z"}
 
 
@@ -498,6 +554,12 @@ def _op_optional_field_type_problem(op: dict[str, Any], kind: str | None, where:
         if field not in _OPTIONAL_STRING_FIELDS or field not in op:
             continue
         value = op[field]
+        if value is None:
+            # Explicit JSON null is the same as absent, for these three as
+            # for every numeric optional (`lh: null` == omitted): the
+            # firmware's `o["f"] | "md"` cannot tell the two apart, so the
+            # renderer must not either (B4b re-review).
+            continue
         if not isinstance(value, str):
             return f"{where}: {field}={value!r} is not a string; skipped"
     return None
@@ -730,6 +792,17 @@ def vocabulary(max_bytes: int) -> dict[str, Any]:
     it's a Pillow loading detail with no meaning to a composer, who names
     fonts and sizes, never instances.
 
+    `icons` is name -> every slot it's compiled at, sorted -- every name in
+    `ICONS` now lists all five (docs/plans/fonts-and-icons.md Decision 4).
+    `icon_sizes` is the slot table itself (`ICON_SIZES`, the same values
+    `fonts[*].slot`/`px` use). `icon_aliases` is the reverse of that table,
+    pixel-count spelling to slot (`"36": "md"`), published once rather than
+    per icon since every icon accepts the same five aliases -- the icon
+    analogue of a font's own `aliases` list, which is per-face because a
+    font's canonical spelling isn't always the slot one (`petrona-italic/40`
+    has none). `resolve_icon_size()` is the one place a document's own `z`
+    is turned into a slot.
+
     In `ops`, an optional field whose default is `null` has no fixed
     default and may simply be omitted — `lh` is computed from the font
     size, `w` means no width limit, `sprite`'s `mirror` means no mirroring
@@ -767,12 +840,17 @@ def vocabulary(max_bytes: int) -> dict[str, Any]:
         op: {"required": list(spec["required"]), "optional": dict(spec["optional"])}
         for op, spec in OP_FIELDS.items()
     }
-    # Only the size classes some compiled icon actually has — `md: 56` is
-    # in ICON_SIZES for arithmetic elsewhere but has no icon behind it, and
-    # advertising it here would invite `{"n": "check", "z": "md"}`, which
-    # `check()` then has to reject as "not compiled in".
-    used_sizes = {z for sizes in ICONS.values() for z in sizes}
-    icon_sizes = {z: px for z, px in ICON_SIZES.items() if z in used_sizes}
+    # Every icon now compiles at all five font slots (docs/plans/
+    # fonts-and-icons.md Decision 4, B4b), so icon_sizes is simply the slot
+    # table -- there is no longer a slot with arithmetic-only meaning and no
+    # icon behind it, the way "md: 56" was before this batch.
+    icon_sizes = dict(ICON_SIZES)
+    # The reverse of `icon_sizes`: a pixel-count spelling to the slot it
+    # means, so a composer reading describe() alone can see that `z: "36"`
+    # is accepted exactly as `z: "md"` is -- the icon analogue of a font's
+    # own `aliases` list, but published once (every icon shares the same
+    # five aliases) rather than repeated per icon.
+    icon_aliases = {str(px): slot for slot, px in ICON_SIZES.items()}
     return {
         "canvas": {"w": WIDTH, "h": HEIGHT, "bezel_margin": BEZEL_MARGIN},
         "inks": {name: hex_of(rgb) for name, rgb in INK.items()},
@@ -781,8 +859,16 @@ def vocabulary(max_bytes: int) -> dict[str, Any]:
         "fonts": fonts,
         "font_families": {key: dict(entry) for key, entry in FONT_FAMILIES.items()},
         "anchors": list(ANCHOR),
-        "icons": {name: sorted(sizes) for name, sizes in ICONS.items()},
+        # Sorted by pixel size (SLOTS' own xs/sm/md/lg/xl order), not
+        # alphabetically -- `sorted(sizes)` alone puts "lg" before "md"
+        # before "sm" before "xl" before "xs" (B4b review, nit 10), which
+        # reads as a random shuffle next to every other slot-ordered list
+        # this module publishes.
+        "icons": {
+            name: sorted(sizes, key=lambda slot: SLOTS[slot]) for name, sizes in ICONS.items()
+        },
         "icon_sizes": icon_sizes,
+        "icon_aliases": icon_aliases,
         "ops": ops,
         "fmt_fields": list(system_fields({}).keys()),
         "limits": {"max_bytes": max_bytes},
@@ -837,7 +923,7 @@ def render_hash(doc: dict[str, Any]) -> str:
 
     Must stay byte-identical to `document_id()` in firmware/display_list.h;
     the panel compares its own reading of meta.hash against what we stamp.
-    samples/display.json hashes to 3cd62aa76e731d2d.
+    samples/display.json hashes to 1c772cd7a6ebc2c7.
     """
     core = {k: doc.get(k) for k in ("bg", "palette", "ops")}
     canon = json.dumps(core, sort_keys=True, separators=(",", ":"))
@@ -986,7 +1072,9 @@ def _anchor_of(op: dict[str, Any], ctx: Ctx, where: str) -> str:
     on a value `ANCHOR` doesn't have — the firmware's `align_of()` falls
     back the same way, silently, so this keeps the fallback and adds the
     warning on the Python side only."""
-    a_value = op.get("a", "left")
+    a_value = op.get("a")
+    if a_value is None:
+        a_value = "left"  # explicit null == absent, as the firmware's `| "left"`
     if a_value not in ANCHOR:
         ctx.problems.append(f"{where}: unknown alignment {a_value!r}, using left")
     return ANCHOR.get(a_value, "la")
@@ -1143,7 +1231,21 @@ def render(
 
             elif kind == "text":
                 c_name = op.get("c", "black")
-                font_name = op.get("f", "md")
+                font_name = op.get("f")
+                if font_name is None:
+                    font_name = "md"  # explicit null == absent
+                # docs/plans/fonts-and-icons.md B4b review item 2, mirroring
+                # firmware/display_list.h's kNameMaxLen: measured before
+                # resolve_font()'s alias/normalisation walk, the same
+                # "bound the raw value first" discipline `s` gets below --
+                # every real compiled spelling is at most 21 bytes
+                # (`weather-partly-cloudy`; the longest `f` is 20).
+                f_bytes = len(font_name.encode("utf-8"))
+                if f_bytes > NAME_MAX_LEN:
+                    ctx.problems.append(
+                        f"{where}: f is {f_bytes} bytes, more than {NAME_MAX_LEN}; skipped"
+                    )
+                    continue
                 f = ctx.font(font_name, where)
                 if f is None:
                     # Matches the firmware's `skipped++; continue`: abandon the
@@ -1312,7 +1414,17 @@ def render(
                     ctx.problems.append(f"{where}: fmt has no 's' template; nothing to draw")
                     continue
                 c_name = op.get("c", "black")
-                font_name = op.get("f", "xs")
+                font_name = op.get("f")
+                if font_name is None:
+                    font_name = "xs"  # explicit null == absent
+                # Same "measure the raw value first" bound as `text`'s `f`
+                # above (docs/plans/fonts-and-icons.md B4b review item 2).
+                f_bytes = len(font_name.encode("utf-8"))
+                if f_bytes > NAME_MAX_LEN:
+                    ctx.problems.append(
+                        f"{where}: f is {f_bytes} bytes, more than {NAME_MAX_LEN}; skipped"
+                    )
+                    continue
                 f = ctx.font(font_name, where)
                 if f is None:
                     # Same abandonment as `text`, and it matches the firmware:
@@ -1348,13 +1460,53 @@ def render(
                 )
 
             elif kind == "icon":
+                # z's default became "md" with Decision 4 (B4b) -- 36px,
+                # what the old default "sm" already meant before that
+                # batch re-keyed the size classes onto the font ladder, so
+                # an op that omits z still draws the same 36px icon it
+                # always did.
                 c_name = op.get("c", "black")
                 name = op.get("n")
-                z = op.get("z", "sm")
-                key = f"{name}/{z}"
-                if name not in ICONS or z not in ICONS[name]:
-                    ctx.problems.append(f"{where}: {key!r} is not compiled in")
-                size = ICON_SIZES.get(z, 36)
+                z_raw = op.get("z")
+                if z_raw is None:
+                    z_raw = "md"  # explicit null == absent
+                # Same "measure the raw value first" bound as text/fmt's `f`
+                # above (docs/plans/fonts-and-icons.md B4b review item 2):
+                # `n` is already guaranteed a `str` here (a required field,
+                # checked before dispatch), and `z_raw` is either the
+                # literal default or a value `_op_optional_field_type_problem()`
+                # has already guaranteed is a `str` too.
+                n_bytes, z_bytes = len(name.encode("utf-8")), len(z_raw.encode("utf-8"))
+                if n_bytes > NAME_MAX_LEN or z_bytes > NAME_MAX_LEN:
+                    ctx.problems.append(
+                        f"{where}: n/z longer than {NAME_MAX_LEN} bytes "
+                        f"({n_bytes}/{z_bytes}); skipped"
+                    )
+                    continue
+                slot = resolve_icon_size(z_raw)
+                key = f"{name}/{z_raw}"
+                if name not in ICONS or slot is None:
+                    # Every icon in ICONS now has all five slots (Decision
+                    # 4: "there is no icon ladder"), so the only way to miss
+                    # is an unknown name or a z that isn't one of the five
+                    # slots/pixel counts -- unlike an unknown font, which
+                    # still draws nothing but leaves the rest of the op's
+                    # checks to run, this one has no size to draw at, so it
+                    # abandons the op exactly the way a missing required
+                    # field does.
+                    if name in ICONS:
+                        slots = " ".join(f"{s}={px}" for s, px in SLOTS.items())
+                        ctx.problems.append(
+                            f"{where}: {key!r} is not compiled in: {name} is "
+                            f"compiled at {slots}"
+                        )
+                    else:
+                        names = ", ".join(sorted(ICONS))
+                        ctx.problems.append(
+                            f"{where}: {key!r} is not compiled in: names are {names}"
+                        )
+                    continue
+                size = ICON_SIZES[slot]
                 x, y = _int_coord(op["x"]), _int_coord(op["y"])
                 box = (x, y, x + size, y + size)
                 draw_fn = lambda dr, col: draw_icon(dr, name, x, y, size, col)  # noqa: E731
@@ -1705,15 +1857,20 @@ def bezel_problems(doc: dict[str, Any]) -> list[str]:
         elif x < BEZEL_MARGIN:
             edges.append("left")
         if kind == "icon":
-            z = op.get("z", "sm")
+            z = op.get("z")
+            if z is None:
+                z = "md"
             if not isinstance(z, str):
-                z = "sm"
-            if x + ICON_SIZES.get(z, 0) > WIDTH - BEZEL_MARGIN:
+                z = "md"
+            size = ICON_SIZES.get(resolve_icon_size(z), 0)
+            if x + size > WIDTH - BEZEL_MARGIN:
                 edges.append("right")
         if y < BEZEL_MARGIN:
             edges.append("top")
         if kind != "icon":
-            font_name = op.get("f", "md" if kind == "text" else "xs")
+            font_name = op.get("f")
+            if font_name is None:
+                font_name = "md" if kind == "text" else "xs"
             if not isinstance(font_name, str):
                 font_name = "md" if kind == "text" else "xs"
             # A font name this check can't resolve falls back to `md` --

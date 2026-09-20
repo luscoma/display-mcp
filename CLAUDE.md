@@ -24,7 +24,7 @@ semantics.
   sprite/rect/circle harnesses, the device-safety constants,
   `test_mix_table.py`'s mix_on()/built-in-mix table diff).
 - `deploy/` systemd unit, setup.sh, fonts fetch
-- `samples/display.json` known-good document, hash `3cd62aa76e731d2d`
+- `samples/display.json` known-good document, hash `1c772cd7a6ebc2c7`
 - `firmware/` ESPHome project, the source of truth for the panel:
   `epaper-schedule.yaml`, `display_list.h`, `fetch_and_watch.py`.
   `secrets.yaml` and `.esphome/` live there too and are gitignored.

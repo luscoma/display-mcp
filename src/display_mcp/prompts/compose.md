@@ -41,7 +41,7 @@ than building from a blank `ops` list:
     {"op": "text", "x": 48,  "y": 1552, "s": "Updated: 6:31 AM", "f": "xs"},
     {"op": "fmt",  "x": 1045, "y": 1552, "s": "{hash}@{time24}", "f": "xs",
      "a": "right", "c": "grey-mid"},
-    {"op": "icon", "x": 1058, "y": 1545, "n": "battery", "z": "sm", "c": "grey-mid"},
+    {"op": "icon", "x": 1058, "y": 1545, "n": "battery", "z": "md", "c": "grey-mid"},
     {"op": "fmt",  "x": 1100, "y": 1552, "s": "{battery}", "f": "xs", "c": "grey-mid"}
   ]
 }
@@ -110,11 +110,24 @@ warning saying where they belong. Check `warnings` either way.
     line's own descenders, so a tight `lh` collides with the glyphs before
     it ever collides with the rule; and on a mixed ink the rule reads lighter than the glyphs it
     decorates, like any thin feature.
-- **`icon`** — `x y n z`. `x,y` is the top-left of the icon's box. `n` is the
-  MDI name; only these eleven exist, anything else is skipped. `z` is the
-  size class — `lg` (88 px): `weather-sunny`, `weather-partly-cloudy`,
-  `weather-cloudy`, `weather-rainy`, `weather-snowy`, `weather-night`; `sm`
-  (36 px): `check`, `map-marker`, `clock`, `alert`, `battery`. `bgc` is
+- **`icon`** — `x y n z`. `x,y` is the top-left of the icon's box. `n` is one
+  of nineteen names; anything else is skipped. `z` is a font slot or its
+  pixel count — `xs` 22, `sm` 28, `md` 36, `lg` 48, `xl` 84 — the same
+  ladder fonts use, and defaults to `md` (36 px) when omitted. Every name
+  compiles at all five slots, so `check/lg` and `check/48` are the same
+  bitmap and there is no icon ladder beyond those five: an off-ladder size
+  (`check/40`) is "not compiled in", same as an unknown name.
+  `describe().icons` lists each name's slots (all five, today) and
+  `describe().icon_aliases` lists the five px spellings. Eleven names are
+  Material Design icons, drawn as a procedural stand-in here (real MDI
+  bitmaps on the panel): `weather-sunny`, `weather-partly-cloudy`,
+  `weather-cloudy`, `weather-rainy`, `weather-snowy`, `weather-night`,
+  `check`, `map-marker`, `clock`, `alert`, `battery`. Eight name a family
+  activity and blit the identical committed PNG the firmware compiles, so
+  these draw real artwork here too: `school-day`, `daycare`, `taekwondo`,
+  `swim`, `helper`, `appointment`, `family-meeting`, `closed`. `xs` is
+  marginal for a detailed glyph (a stethoscope, two people) — reach for it
+  only beside `xs` text or a chip glyph; `sm` and up read cleanly. `bgc` is
   accepted and ignored (every compiled icon is transparent).
 - **`sprite`** — `x y cell rows palette`, `mirror` (only `"x"`, reverses
   every row before drawing; anything else warns and is not mirrored).
@@ -224,14 +237,18 @@ Draw each row at `y`, `y + h`, `y + 2h`, … where `h` is
 `describe().fonts["mono/24"].ink_height` (or whichever mono size you're
 using) and they meet exactly.
 
-Aligning a **36 px `z: "sm"` icon** beside a line of `f: "sm"` text at the
-same `y` (two different fields that happen to share the name `"sm"` —
-one an icon size class, the other a font): the icon's own box doesn't
-share the text's metrics, so centre it by eye against each font size with
-this offset from the text op's `y` — `lg` → `y+6`, `md` → `y`, `sm` →
-`y−4`, `xs` → `y−7`. (Not meaningful for `xl`, which dwarfs a 36 px icon.)
-These offsets were measured against `instrument` text; Petrona and Karla
-sit a few px off at the same size (B4b re-measures them).
+Icons and fonts share one size vocabulary now (docs/plans/fonts-and-icons.md
+Decision 4), so an icon at slot `S` beside text at the same slot `S` is the
+common case, not a mismatch of two things that happen to share a name.
+The icon's own box still doesn't share the text's metrics — it's centred
+on the glyph box, the text's `y` is the top of the ascender line — so
+centre it by eye against the text's x-height with this offset from the
+text op's `y`: `xs` → `y+5`, `sm` → `y+6`, `md` → `y+8`, `lg` → `y+10`,
+`xl` → `y+18`. Measured against `instrument` (regular) text at each slot's
+own size; `instrument-bold` matches it exactly at every slot (weight
+doesn't move the x-height here), but Petrona and Karla, with their own
+smaller x-heights, sit a few px off — Petrona's `xl` is the widest gap,
+`y+12` rather than `y+18`.
 
 ## Colours
 

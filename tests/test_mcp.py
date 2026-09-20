@@ -391,6 +391,7 @@ async def test_describe_shape(mcp):
         "anchors",
         "icons",
         "icon_sizes",
+        "icon_aliases",
         "ops",
         "fmt_fields",
         "limits",
@@ -406,16 +407,26 @@ async def test_describe_shape(mcp):
     assert data["anchors"] == list(render.ANCHOR)
 
 
-async def test_describe_icon_sizes_only_advertises_classes_some_icon_has(mcp):
-    """`ICON_SIZES` has `md: 56` for arithmetic elsewhere, but no icon
-    compiles to `md` today — advertising it would invite `{"n": ...,
-    "z": "md"}`, which `check()` then rejects as not compiled in."""
+async def test_describe_icon_sizes_is_the_font_slot_table(mcp):
+    """Every icon now compiles at all five font slots (docs/plans/
+    fonts-and-icons.md Decision 4, B4b), so `icon_sizes` is simply
+    `ICON_SIZES` -- there is no longer a slot advertised only for
+    arithmetic elsewhere with no icon actually compiled at it."""
     async with Client(mcp) as c:
         result = await c.call_tool("describe", {})
     used = {z for sizes in render.ICONS.values() for z in sizes}
-    assert set(result.structured_content["icon_sizes"]) == used == {"sm", "lg"}
-    for z in used:
-        assert result.structured_content["icon_sizes"][z] == render.ICON_SIZES[z]
+    assert used == set(render.SLOTS)
+    assert result.structured_content["icon_sizes"] == render.ICON_SIZES == render.SLOTS
+
+
+async def test_describe_icon_aliases_is_the_reverse_of_icon_sizes(mcp):
+    async with Client(mcp) as c:
+        result = await c.call_tool("describe", {})
+    aliases = result.structured_content["icon_aliases"]
+    assert aliases == {str(px): slot for slot, px in render.ICON_SIZES.items()}
+    for px_str, slot in aliases.items():
+        assert render.resolve_icon_size(px_str) == slot
+        assert render.resolve_icon_size(slot) == slot
 
 
 async def test_describe_inks_match_the_ink_table(mcp):
@@ -591,6 +602,9 @@ async def test_describe_icons_matches_icons_table(mcp):
     assert set(icons) == set(render.ICONS)
     for name, sizes in render.ICONS.items():
         assert set(icons[name]) == set(sizes)
+        # Slot order (xs sm md lg xl), not alphabetical -- "lg" would
+        # otherwise sort before "md" (B4b review, nit 10).
+        assert icons[name] == sorted(sizes, key=lambda slot: render.SLOTS[slot])
 
 
 async def test_describe_is_under_a_generous_byte_budget(mcp):
@@ -796,7 +810,7 @@ async def test_sample_resource(mcp):
     async with Client(mcp) as c:
         result = await c.read_resource("display://sample")
     doc = json.loads(result.contents[0].text)
-    assert doc["meta"]["hash"] == "3cd62aa76e731d2d"
+    assert doc["meta"]["hash"] == "1c772cd7a6ebc2c7"
 
 
 async def test_current_resource(mcp, store, sample_doc):

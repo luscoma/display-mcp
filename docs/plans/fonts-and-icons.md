@@ -890,6 +890,186 @@ and verdicts:
 - *Compile gate* — `esphome compile` after the merge: `Flash: 15.2%
   (1,237,671 of 8,126,464)`, +916 bytes over the baseline, RAM unchanged.
 
+**B2 — the firmware's font vocabulary generated from the renderer's
+table.** Implemented by a Sonnet agent (`91bc8d1`), cherry-picked here
+with the review's fixes folded in. `display-mcp-cli firmware-fonts`
+rewrites two fenced regions of `epaper-schedule.yaml` (`#` markers in the
+YAML, `//` markers inside the C++ lambda): 33 `font:` entries and 53
+`a.fonts[...]` lines (33 canonical + 15 px spellings + 5 bare names). The
+implementer also found that the firmware's "no display list" fallback
+screen named `font_lg`/`font_sm` by ESPHome id, outside any fence, and
+re-pointed it at the same faces under their new ids. The reviewer (Opus)
+diffed every entry against `FONTS`, mutated the YAML five ways to prove
+each parity test bites, fed the rewriter six malformed fences, and read
+ESPHome's gfonts cache: 33 entries cost 3 downloads, ~1.8 s of
+rasterising, and an estimated ~1.3 MB of flash. Findings and verdicts:
+
+- *Should-fix* — two comments in `display_list.h` still described the old
+  vocabulary (`id(font_xl)`, "xl, lg, md, sm, xs, mono"). **Fixed here.**
+- *Should-fix* — the CLI died with a traceback when run from an installed
+  copy (no `firmware/` beside site-packages). **Fixed**: exit 2 with a
+  one-line message, like every other subcommand; the write is now
+  temp-then-rename.
+- *Nits taken* — the `a.fonts` parity test parses only the fenced lines
+  and asserts one line per spelling (a self-consistent duplicate would
+  have passed a set comparison); tests for a missing end marker and
+  reversed markers; `ruff format` on the new files.
+- *Nits deferred to B6* — the YAML header's hand-typed "33 fonts" is
+  covered by no test; CRLF input would produce mixed line endings (no
+  `.gitattributes`, low risk).
+- *For the final firmware-safety reviewer* — `a.fonts` is a
+  `std::map<std::string, …>` rebuilt in the lambda on every wake: 53 keys,
+  16 of them past libstdc++'s 15-char SSO limit, is ~2.6 KB of heap per
+  draw (was ~0.3 KB); at B3b + B4b (~165 font spellings + ~95 icon keys)
+  roughly 15–18 KB per draw. Same map-of-strings pattern as the sprite
+  incident, far smaller magnitude; worth the reviewer's number.
+- *Generality, recorded* — `glyphs:` and the gfonts flow mapping are
+  emitted unescaped; fine for every name and code point in the plan.
+- *Compile gate* — `esphome compile` after the merge: `Flash: 29.1%
+  (2,367,727 of 8,126,464)`, +1.13 MB for 33 faces against the reviewer's
+  ~1.3 MB estimate; `RAM: 34.6% (118,391)`, +1,080 bytes of static RAM.
+  Scaled to 110 faces that is ~3.8 MB of fonts, as Decision 2 estimated.
+
+**B3b — Petrona and Karla; every family in three styles at eleven
+sizes.** Implemented by a Sonnet agent (`da4f9aa`, fixes `3e7aa89`),
+squashed here with the re-review's remaining fix and nits folded in.
+`FONTS` is 110 faces, `font_metrics.json` 110 rows, the YAML 110 `font:`
+entries and 165 `a.fonts` lines; the legacy Instrument Sans filenames and
+the deploy shim are gone; `compose.md`'s type scale is rewritten. The
+reviewer (Opus) proved every instance selection against
+`set_variation_by_axes()` and against the static TTFs Google Fonts served
+the firmware, rendered all four documents before and after the file
+rename (byte-identical), mutated the YAML five ways, and ran the deploy
+scripts for real. Findings and verdicts:
+
+- *Should-fix* — the new distinct-advances test could not see Petrona
+  losing its `SemiBold`/`ExtraBold`/`Medium Italic` instances (its styles
+  are distinct at 400 too); a dropped instance would render 400-weight
+  serif while `describe()` says 600. **Fixed**: every face's advance at
+  `lg` is checked against the same file at `face.weight` on the axis,
+  within 0.05 px; also catches an adjacent weight and a lying `weight`.
+- *Should-fix* — `load_font()`'s "don't re-select the file's default"
+  guard compared against the literal `"Regular"`, so on the three
+  `-Italic.ttf` files (default subfamily `Italic`) it selected by name —
+  the call B1 removed — and drifted 0.016–0.06 px from the static TTFs.
+  **Fixed**: the guard compares against `f.getname()[1]`; the two italics
+  now match the firmware's files 77/77; a new test pins that every
+  default-instance face loads exactly as the file default at every size.
+- *Should-fix* — the documented "add a size, run `font-metrics`" workflow
+  deadlocked: the import raised on the missing row before the CLI could
+  run (the implementer had monkeypatched around it). **Fixed**:
+  `DISPLAY_MCP_FONT_METRICS_BOOTSTRAP`, set only inside the subcommand's
+  process (and unset in a `finally`), lets the writer import with a stale
+  row or no file at all; every normal import stays strict; the CLI's
+  imports became lazy so the flag can be set first. Verified end to end
+  in a scratch copy with a twelfth size.
+- *Nits taken* — YAML header comment says 110 fonts / four families;
+  compose.md's "each … (except mono)", the ambiguous "and slot", and the
+  design-guidance column marked as the write-up's usage; stale B1-era
+  comments in `fonts.py` and a test; the fonts error message derives its
+  filenames from `FONTS`; a render-through test for the seven new
+  family-styles; the fresh-process metrics test asserts the committed file
+  is untouched; an honest `types.ModuleType` annotation.
+- *Deferred to B6* — RUNBOOK's "nine files"/"two legacy copies"/"Petrona
+  and Karla aren't wired in yet"; README's counts; SPEC's six-name Fonts
+  line (served live); `setup.sh`'s F4 diagnostic comment.
+- *Recorded* — `describe()` is 19.7 KB at 110 faces; `_load_fonts()` 5 ms.
+- *Compile gate* — `esphome compile` after the merge: `Flash: 60.5%
+  (4,916,567 of 8,126,464)`, i.e. ~3.68 MB for the 110 faces against
+  Decision 2's ~3.8 MB estimate; `RAM: 35.5% (121,471)`, +4 KB of static
+  RAM over the baseline. 3.2 MB of the app slot remains.
+
+**B4b — every icon at the five slots, generated with the fonts; pixel
+spellings normalised on the panel.** Implemented by a Sonnet agent
+(`0389fc6`, `9164cb4`, fixes `339c34f`), squashed here. The first launch
+died on a rate limit before writing anything and was relaunched. Icons
+use the font slot table (`ICON_SIZES = SLOTS`), all nineteen at all five;
+`z` accepts slot or px; the default `z` is `md` so an op that omits it
+keeps its 36 px icon; the preview blits the committed PNGs for the eight
+lucide icons; `firmware_yaml.py` generates the `image:` block (95 entries)
+and `a.icons` lines with the fonts (`display-mcp-cli firmware-vocabulary`,
+`firmware-fonts` kept as an alias). Design change made here rather than
+in the plan: instead of 95 icon and 50 font alias map entries, a
+five-entry normaliser in `display_list.h` maps the size half
+`22/28/36/48/84` to the slot before the lookup, host-compiled and diffed
+against the renderer's resolver; the YAML now carries 115 `a.fonts` lines
+(110 canonical + 5 bare). The reviewer (Opus) ran ESPHome's BINARY encoder
+and the preview blit over all 40 PNGs (0 mismatches), drove the normaliser
+with every edge string, costed the per-wake maps on a 32-bit target, and
+proved `esphome config` gates the PNG paths. Findings and verdicts:
+
+- *Blocker* — only one of the sample's four icon ops had been re-set, so
+  `samples/display.json` reflowed by 4,371 pixels (the weather hero 88 →
+  48 px) with `check()` silent, and `docs/images/sample.png` no longer
+  matched. **Fixed**: hero → `xl`, the 36 px ones → `md` (also
+  `sprite.json`'s footer), both re-stamped (`1c772cd7a6ebc2c7`,
+  `f6b199c715336753`), the hero image re-rendered, every hash pin updated,
+  and pixel-hash pins added for both samples. Pixel diff against the
+  pre-B4b render: only the 84-vs-88 glyph box and the footer hash text.
+- *Should-fix* — `normalize_font_key()` built the joined key with two
+  allocations, so a legal document with a 64 KB `f` peaked at ~180 KB of
+  transient heap (the old code: 60 KB) — the D1 abort path. **Fixed**: a
+  name-length bound in the D6 shape on `f`, `n` and `z`, checked on the
+  raw C string before any `std::string`, warn-and-skip, mirrored in the
+  renderer and read by the parity harness; the key is reserved.
+- *Should-fix* — the normaliser's comment claimed it "halves" the map
+  heap; measured, `a.fonts` falls 165 → 115 keys and `a.icons` rises 11 →
+  95, ~10.5 KB → ~12.6 KB per wake in total, against ~21.9 KB without it.
+  **Fixed**: the comment says what is measured.
+- *Should-fix* — the firmware silently drew the default for a non-string
+  `f`/`z` where the renderer skips. **Fixed**: warn and skip on the panel.
+- *Should-fix* — SPEC's Vocabulary Icons line (served live) still listed
+  eleven icons at the old sizes; RUNBOOK's two "done when the hash is …"
+  instructions; PLAN.md's stale vocabulary-sample hash. **Fixed**
+  surgically, plus a strict-xfail prose test for the icon count.
+- *Should-fix* — compose.md claimed bold shifts the icon offset further
+  (bold measures identical); the MDI slug table was unpinned; the YAML
+  header still said eleven icons and claimed `firmware/` is
+  self-contained (it now references the PNGs under `src/`). **Fixed.**
+- *Nits taken* — slots listed in slot order in `describe()`; the wheel
+  test asserts the 40 PNGs ship; the normaliser test carries the edge
+  cases; stale comments.
+- *Recorded, not changed* — `bezel_problems()` still assumes 36 px for a
+  non-string `z` the op skips on; the unknown-name stencil branch is now
+  unreachable from `render()`; `ICON_SIZES` is `SLOTS` by identity;
+  ESPHome's `image:` deprecation warning now covers 95 entries (a 2027.1
+  removal; B6 notes it, a later change migrates the block).
+- *Behaviour change on the wall, accepted by Decision 4* — a published
+  `weather-*/lg` draws 48 px, not 88; `*/sm` 28, not 36. Re-set in the
+  samples; anything else published is regenerated from `describe()`.
+- *Compile gate* — `esphome compile` after the merge: `Flash: 60.8%
+  (4,943,939 of 8,126,464)`, +27 KB over B3b for the 95 icons, the
+  normaliser and the name bound (Decision 4 estimated ~30 KB for the
+  icons); `RAM: 36.3% (124,159)`, +2.7 KB static. The twelve `-Wformat`
+  warnings in `display_list.h` are the baseline's, unchanged through every
+  batch. ESPHome's `image:` deprecation warning (removal in 2027.1) now
+  covers 95 entries; migrating the block to the platform form is a
+  follow-up outside this plan.
+- *Re-review, landed as a follow-up commit* — the fixes above were
+  re-verified (pixel diff clean, the 64 KB-`f` heap peak now 72 bytes,
+  the type guards allocation-free against ArduinoJson 7.4.3), verdict
+  merge as is, with two consistency gaps to decide: an explicit JSON
+  `null` on `f`/`a`/`z` skipped the op in the renderer but drew the
+  default on the panel (`isNull()` is true for null and absent alike),
+  and a non-string `a` skipped in the renderer but drew left-aligned on
+  the panel. **Decided**: explicit null is absent, on both sides — the
+  same rule `lh: null` already follows — so the renderer's type check and
+  every `f`/`a`/`z` read treat `None` as the default (a test pins that a
+  nulled document renders byte-identical to the plain one, and caught
+  that the downstream reads needed it too); the panel gains the same
+  non-string guard on `a` as on `f`. Also taken: the length messages
+  match the renderer's wording, the "22 characters" comments say 21
+  (`weather-partly-cloudy`) and 20 (`instrument-italic/48`), the prose
+  test's number words run to twenty so "nineteen icons" can flip it,
+  and a stale harness comment. *For the safety reviewer* —
+  `resolve_ink()` still builds a `std::string` from `c`/`bgc` of the
+  value's own length (one allocation, not bounded by `kNameMaxLen`).
+  *Recorded* — no firmware-side op-loop test exercises the type/length
+  guards; the harness has no ArduinoJson, the pre-existing division of
+  labour for every op-loop check.
+- *Compile gate (follow-up)* — `Flash: 60.8% (4,944,227)`, +288 bytes;
+  RAM unchanged.
+
 ## Verification
 
 - `esphome compile` from `firmware/` after P1: the build log's flash line,

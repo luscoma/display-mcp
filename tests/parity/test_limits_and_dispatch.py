@@ -12,7 +12,9 @@ import pytest
 from display_mcp.render import (
     FONT_ALIASES,
     FONTS,
+    ICONS,
     MAX_COORD,
+    NAME_MAX_LEN,
     POLY_MAX_PTS,
     SPRITE_MAX_CELL,
     SPRITE_MAX_COLS,
@@ -41,6 +43,7 @@ def test_device_safety_limits_match_the_firmware():
     assert _firmware_const_value("kSpriteMaxRows") == SPRITE_MAX_ROWS
     assert _firmware_const_value("kSpriteMaxPalette") == SPRITE_MAX_PALETTE
     assert _firmware_const_value("kPolyMaxPts") == POLY_MAX_PTS
+    assert _firmware_const_value("kNameMaxLen") == NAME_MAX_LEN
 
 
 # ESPHome's own metric prefixes (config_validation.py's METRIC_SUFFIXES) are
@@ -186,6 +189,15 @@ def _yaml_font_ids() -> list[str]:
     return re.findall(r"^\s*id:\s*(\w+)\s*$", block, re.MULTILINE)
 
 
+def _bare_font_aliases() -> dict[str, str]:
+    """The five legacy bare names (`xl lg md sm xs`) out of `FONT_ALIASES`
+    -- the only ones B4b's `render_fonts_lines()` still emits as their own
+    `a.fonts[...]` line. The other fifty aliases (a face's own pixel-count
+    spelling) are resolved by `display_list.h`'s `normalize_font_key()`
+    instead of a map entry -- see firmware_yaml.py's module docstring."""
+    return {alias: target for alias, target in FONT_ALIASES.items() if "/" not in alias}
+
+
 def _yaml_a_fonts_entries() -> dict[str, str]:
     """Every `a.fonts["key"] = id(some_id);` line inside the display
     lambda, as `{key: id}` -- parsed from the YAML text directly."""
@@ -200,33 +212,36 @@ def _yaml_a_fonts_entries() -> dict[str, str]:
     fence = src[start:end]
     entries = re.findall(r'a\.fonts\["([^"]+)"\]\s*=\s*id\((\w+)\);', fence)
     # One line per spelling, no repeats (N4): a set comparison alone would
-    # pass a self-consistent duplicate.
-    assert len(entries) == len(FONTS) + len(FONT_ALIASES), len(entries)
+    # pass a self-consistent duplicate. B4b: only the five bare aliases are
+    # carried as their own entry any more (110 + 5 = 115), not all 55
+    # (B2's count) -- the fifty pixel-count aliases are normalised by the
+    # firmware itself instead (docs/plans/fonts-and-icons.md Decision 4).
+    assert len(entries) == len(FONTS) + len(_bare_font_aliases()), len(entries)
     return dict(entries)
 
 
-def test_yaml_font_fences_match_the_generated_table():
-    """The YAML's two font fences are exactly what
+def test_yaml_font_and_icon_fences_match_the_generated_tables():
+    """The YAML's four font/icon fences are exactly what
     `firmware_yaml.generate_firmware_yaml()` emits from today's
-    `FONTS`/`FONT_ALIASES` -- the font analogue of the glyph-set parity
-    test above. Run on a copy of the YAML text (never written back), so a
-    stale committed file fails this test instead of being silently
-    accepted."""
+    `FONTS`/`FONT_ALIASES`/`ICONS`/`ICON_SIZES` -- the font/icon analogue of
+    the glyph-set parity test above. Run on a copy of the YAML text (never
+    written back), so a stale committed file fails this test instead of
+    being silently accepted."""
     from display_mcp.render.firmware_yaml import generate_firmware_yaml
 
     src = YAML.read_text()
     assert generate_firmware_yaml(src) == src, (
-        "epaper-schedule.yaml's font fences are stale -- run "
-        "`display-mcp-cli firmware-fonts` to regenerate them"
+        "epaper-schedule.yaml's font/icon fences are stale -- run "
+        "`display-mcp-cli firmware-vocabulary` to regenerate them"
     )
 
 
-def test_a_fonts_keys_are_exactly_fonts_and_aliases():
+def test_a_fonts_keys_are_exactly_fonts_and_bare_aliases():
     keys = set(_yaml_a_fonts_entries())
-    expected = set(FONTS) | set(FONT_ALIASES)
+    expected = set(FONTS) | set(_bare_font_aliases())
     assert keys == expected, (
         f"only in the YAML: {sorted(keys - expected)}; "
-        f"only in FONTS/FONT_ALIASES: {sorted(expected - keys)}"
+        f"only in FONTS + the five bare aliases: {sorted(expected - keys)}"
     )
 
 
@@ -241,6 +256,68 @@ def test_no_duplicate_font_ids():
     ids = _yaml_font_ids()
     dupes = {i for i in ids if ids.count(i) > 1}
     assert not dupes, f"duplicate id(s) in the YAML's font: block: {sorted(dupes)}"
+
+
+# --------------------------------------------------------------------------
+# The icon vocabulary (docs/plans/fonts-and-icons.md Decision 4, B4b): the
+# YAML's `image:`/`a.icons[...]` fences must say exactly what ICONS/
+# ICON_SIZES say -- unlike fonts, every key is canonical (`name/slot`); there
+# is no bare or pixel-count alias to carry as its own map entry, since
+# `display_list.h`'s `normalize_size_alias()` handles a pixel-count `z` the
+# same way it handles a pixel-count font size.
+# --------------------------------------------------------------------------
+
+_ALL_ICON_KEYS: set[str] = {f"{name}/{slot}" for name, slots in ICONS.items() for slot in slots}
+
+
+def _yaml_icon_ids() -> list[str]:
+    """Every `id:` the YAML's `image:` list defines, in order."""
+    from display_mcp.render.firmware_yaml import ICON_YAML_END, ICON_YAML_START
+
+    src = YAML.read_text()
+    start = src.index(ICON_YAML_START)
+    end = src.index(ICON_YAML_END, start)
+    fence = src[start:end]
+    return re.findall(r"id:\s*(\w+)\s*,", fence)
+
+
+def _yaml_a_icons_entries() -> dict[str, str]:
+    """Every `a.icons["key"] = id(some_id);` line inside the display
+    lambda, as `{key: id}` -- parsed from the fenced text directly."""
+    from display_mcp.render.firmware_yaml import ICON_LAMBDA_END, ICON_LAMBDA_START
+
+    src = YAML.read_text()
+    start = src.index(ICON_LAMBDA_START)
+    end = src.index(ICON_LAMBDA_END, start)
+    fence = src[start:end]
+    entries = re.findall(r'a\.icons\["([^"]+)"\]\s*=\s*id\((\w+)\);', fence)
+    assert len(entries) == len(_ALL_ICON_KEYS), len(entries)
+    return dict(entries)
+
+
+def test_a_icons_keys_are_exactly_icons_and_slots():
+    keys = set(_yaml_a_icons_entries())
+    assert keys == _ALL_ICON_KEYS, (
+        f"only in the YAML: {sorted(keys - _ALL_ICON_KEYS)}; "
+        f"only in ICONS: {sorted(_ALL_ICON_KEYS - keys)}"
+    )
+
+
+def test_every_a_icons_id_is_defined_in_the_image_block():
+    used = set(_yaml_a_icons_entries().values())
+    defined = set(_yaml_icon_ids())
+    missing = used - defined
+    assert not missing, f"a.icons[...] references undefined image id(s): {sorted(missing)}"
+
+
+def test_no_duplicate_icon_ids():
+    ids = _yaml_icon_ids()
+    dupes = {i for i in ids if ids.count(i) > 1}
+    assert not dupes, f"duplicate id(s) in the YAML's image: block: {sorted(dupes)}"
+
+
+def test_image_block_entry_count_matches_icons():
+    assert len(_yaml_icon_ids()) == len(_ALL_ICON_KEYS) == 95
 
 
 # --------------------------------------------------------------------------

@@ -24,6 +24,7 @@ from display_mcp.render import (
     FONTS,
     INK,
     MAX_COORD,
+    NAME_MAX_LEN,
     SIZES,
     SLOTS,
     TEXT_MAX_LEN,
@@ -779,6 +780,37 @@ def test_fmt_past_the_length_bound_is_skipped(font_dir):
     doc = {"bg": "white", "ops": [{"op": "fmt", "x": 10, "y": 10, "s": s, "f": "xs"}]}
     _, problems = render(doc, font_dir)
     assert problems == [f"ops[0] fmt: s is {len(s)} bytes, more than {TEXT_MAX_LEN}; skipped"]
+
+
+# docs/plans/fonts-and-icons.md B4b review item 2: `text`/`fmt`'s own `f`,
+# bounded by NAME_MAX_LEN the same way `s` is bounded by TEXT_MAX_LEN --
+# mirrors firmware/display_list.h's kNameMaxLen, which exists because
+# normalize_font_key() builds a std::string from `f` and a legal multi-KB
+# `f` would have made that peak at several times its own length of
+# transient heap.
+
+
+def test_text_f_at_the_length_bound_is_accepted(font_dir):
+    f = "a" * NAME_MAX_LEN
+    doc = {"bg": "white", "ops": [{"op": "text", "x": 10, "y": 10, "s": "hi", "f": f}]}
+    _, problems = render(doc, font_dir)
+    assert not any("f is" in p and "skipped" in p for p in problems)
+
+
+def test_text_f_past_the_length_bound_is_skipped(font_dir):
+    f = "a" * (NAME_MAX_LEN + 1)
+    doc = {"bg": "white", "ops": [{"op": "text", "x": 10, "y": 10, "s": "hi", "f": f}]}
+    img, problems = render(doc, font_dir)
+    assert problems == [f"ops[0] text: f is {len(f)} bytes, more than {NAME_MAX_LEN}; skipped"]
+    blank, _ = render({"bg": "white", "ops": []}, font_dir)
+    assert img.tobytes() == blank.tobytes()
+
+
+def test_fmt_f_past_the_length_bound_is_skipped(font_dir):
+    f = "a" * (NAME_MAX_LEN + 1)
+    doc = {"bg": "white", "ops": [{"op": "fmt", "x": 10, "y": 10, "s": "{time}", "f": f}]}
+    _, problems = render(doc, font_dir)
+    assert problems == [f"ops[0] fmt: f is {len(f)} bytes, more than {NAME_MAX_LEN}; skipped"]
 
 
 def test_text_wrap_lines_past_the_bound_is_clamped_not_skipped(font_dir):

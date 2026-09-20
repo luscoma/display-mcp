@@ -154,7 +154,7 @@ sudo -u display-mcp /opt/display-mcp/venv/bin/display-mcp-cli check \
   samples/display.json --font-dir /opt/display-mcp/fonts
 ```
 
-**Done when:** `display-mcp-cli check` reports `3cd62aa76e731d2d` with no
+**Done when:** `display-mcp-cli check` reports `1c772cd7a6ebc2c7` with no
 problems, and `systemd-analyze verify /etc/systemd/system/display-mcp.service`
 is silent.
 
@@ -304,7 +304,7 @@ Ask for `status` an hour after publishing. This is the healthy shape:
 ```json
 {
   "published": true,
-  "hash": "3cd62aa76e731d2d",
+  "hash": "1c772cd7a6ebc2c7",
   "ops": 54,
   "bytes": 3137,
   "published_at": "2026-09-08T06:31:00-07:00",

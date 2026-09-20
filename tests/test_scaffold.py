@@ -10,11 +10,13 @@ the tests below hold that shut.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import subprocess
 import sys
 import zipfile
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -22,9 +24,16 @@ from mcp import Client
 
 from display_mcp import mcp_server
 from display_mcp.config import Settings
-from display_mcp.render import BUILTIN_MIXES, OP_FIELDS, check, render_hash
+from display_mcp.render import BUILTIN_MIXES, OP_FIELDS, check, render, render_hash
 from display_mcp.render.fonts import SIZES
 from fakes import FakeStore
+
+# Fixed for every pixel-pin test below: both samples' footers print
+# {time}/{time24}, so a bare `render(doc, font_dir)` would pin against
+# whatever second the test happened to run in. This repo's own convention
+# for a short pixel-identity check (docs/plans/fonts-and-icons.md B4b
+# review, item 1) -- see test_swatches.py's pre-B1 pin for the pattern.
+_PIXEL_PIN_NOW = datetime(2026, 9, 9, 13, 43)
 
 ROOT = Path(__file__).resolve().parents[1]
 PROMPTS = ROOT / "src" / "display_mcp" / "prompts"
@@ -38,14 +47,14 @@ BUNDLED = {
 
 
 def test_sample_hash(sample_doc):
-    assert render_hash(sample_doc) == "3cd62aa76e731d2d"
+    assert render_hash(sample_doc) == "1c772cd7a6ebc2c7"
 
 
 def test_sprite_sample_hash(sprite_sample_doc):
     """samples/sprite.json (docs/plans/dragon-feedback.md B1) — the second
     sample, showing off the `sprite` op the way samples/display.json shows
     off everything else."""
-    assert render_hash(sprite_sample_doc) == "16274a2fe47fbd06"
+    assert render_hash(sprite_sample_doc) == "f6b199c715336753"
 
 
 def test_sprite_sample_checks_clean(sprite_sample_doc, font_dir):
@@ -54,14 +63,42 @@ def test_sprite_sample_checks_clean(sprite_sample_doc, font_dir):
     assert check(sprite_sample_doc, font_dir) == []
 
 
+def test_sample_renders_pixel_identical(sample_doc, font_dir):
+    """`render_hash` alone (`test_sample_hash` above) covers `bg`+`palette`+
+    `ops` -- it cannot see a vocabulary change that leaves an icon op's `n`/
+    `z` looking like valid JSON but silently changes what pixels they
+    resolve to. That's exactly what slipped through the first pass of
+    docs/plans/fonts-and-icons.md's B4b: `weather-partly-cloudy/lg`,
+    `map-marker/sm` and `check/sm` were left with their pre-B4b spellings,
+    still legal keys under the new slot table but no longer the sizes they
+    used to draw, and `check()` had nothing to say about it (B4b review,
+    item 1). This pins the actual rendered pixels at a fixed clock, so a
+    future vocabulary change that reflows the sample without touching
+    `render_hash` fails loudly here instead."""
+    img, problems = render(sample_doc, font_dir, now=_PIXEL_PIN_NOW)
+    assert problems == []
+    digest = hashlib.sha256(img.tobytes()).hexdigest()[:16]
+    assert digest == "3b736f169ee472d0"
+
+
+def test_sprite_sample_renders_pixel_identical(sprite_sample_doc, font_dir):
+    """Same guard as `test_sample_renders_pixel_identical`, for the second
+    sample's own icon op."""
+    img, problems = render(sprite_sample_doc, font_dir, now=_PIXEL_PIN_NOW)
+    assert problems == []
+    digest = hashlib.sha256(img.tobytes()).hexdigest()[:16]
+    assert digest == "a2777e10b45469a2"
+
+
 def test_vocabulary_sample_hash(vocabulary_sample_doc):
     """samples/vocabulary.json — the third sample, a labelled page putting
     every primitive only the wall can judge on the glass at once (a
     rounded rect and a max-radius pill, mono block art and ligature-free
     text, a sprite with mirror and a document mix and a built-in mix, a
     filled poly in a mix and an outline poly, a thick circle outline, a
-    thick line), for the flash-and-judge step in RUNBOOK.md."""
-    assert render_hash(vocabulary_sample_doc) == "168ec2ea749851e3"
+    thick line, and — added in B4b — the eight new activity icons at `md`
+    and a couple at `xl`), for the flash-and-judge step in RUNBOOK.md."""
+    assert render_hash(vocabulary_sample_doc) == "101dd11be8557e3f"
 
 
 def test_vocabulary_sample_checks_clean(vocabulary_sample_doc, font_dir):
@@ -173,6 +210,21 @@ def test_wheel_bundles_the_real_file(wheel, source):
     )
 
 
+def test_wheel_bundles_every_icon_png(wheel):
+    """The eight lucide activity icons' committed rasters (docs/plans/
+    fonts-and-icons.md Decision 4) are git-tracked non-`.py` files under a
+    package directory with no `[tool.hatch.build.targets.wheel.artifacts]`
+    entry of their own -- unlike `compose.md`, which needed one. Confirmed
+    here rather than assumed: hatchling's default VCS-based file selection
+    includes them because they're tracked, but a future `.gitignore`/build
+    config change could silently drop them from an install `draw_icon()`
+    would then find nothing under (B4b review, nit 11)."""
+    icon_dir = ROOT / "src" / "display_mcp" / "render" / "icons"
+    expected = {f"display_mcp/render/icons/{p.name}" for p in icon_dir.glob("*.png")}
+    assert len(expected) == 40
+    assert expected <= set(wheel.namelist())
+
+
 # --------------------------------------------------------------------------
 # Prose counts vs. the tables they describe: README.md, docs/SPEC.md and
 # docs/RUNBOOK.md each state, in words, how many tools/ops/font sizes/
@@ -183,7 +235,8 @@ def test_wheel_bundles_the_real_file(wheel, source):
 _WORDNUM = {
     "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
     "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11,
-    "twelve": 12, "twenty-one": 21,
+    "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15, "sixteen": 16,
+    "seventeen": 17, "eighteen": 18, "nineteen": 19, "twenty": 20, "twenty-one": 21,
 }
 # Word forms only: the vocabulary counts below are always spelled out in
 # prose ("eight ops"), while a bare digit ("56 ops") names a specific
@@ -248,3 +301,23 @@ def test_prose_font_size_count_matches_the_code():
     spec = (ROOT / "docs" / "SPEC.md").read_text()
     fonts_found = _found(rf"\b({_NUM_RE})\s+font sizes\b", readme, spec)
     assert fonts_found == {len(SIZES)}, fonts_found
+
+
+@pytest.mark.xfail(
+    strict=True, reason="README/SPEC say eleven icons until batch B6 rewrites them"
+)
+def test_prose_icon_count_matches_the_code():
+    """Same shape as `test_prose_font_size_count_matches_the_code` (docs/plans/
+    fonts-and-icons.md B4b review, item 4): `len(ICONS)` grew from 11 to 19
+    in B4b (the eight lucide activity icons), but README.md's header count
+    sentence and docs/SPEC.md's header line are B6's to rewrite, not B4b's
+    -- the ### icon section and the Vocabulary section's own Icons line, both
+    in scope for B4b, already say nineteen names. `strict=True` so this
+    flips red-to-green (an unexpected pass fails the suite) the moment B6
+    lands, rather than staying silently green forever."""
+    from display_mcp.render import ICONS
+
+    readme = (ROOT / "README.md").read_text()
+    spec = (ROOT / "docs" / "SPEC.md").read_text()
+    icons_found = _found(rf"\b({_NUM_RE})\s+icons\b", readme, spec)
+    assert icons_found == {len(ICONS)}, icons_found

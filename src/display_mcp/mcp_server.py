@@ -741,7 +741,7 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
         "display://sample",
         name="sample",
         title="Sample display document",
-        description="A known-good display-list document (hash 3cd62aa76e731d2d) to start from.",
+        description="A known-good display-list document (hash 1c772cd7a6ebc2c7) to start from.",
         mime_type="application/json",
     )
     def sample_resource() -> str:

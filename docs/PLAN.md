@@ -39,10 +39,10 @@ display-mcp/
     cli.py                  `display-mcp-cli check|stamp|render <file>`
     prompts/compose.md      the compose_display prompt text
   tests/
-  samples/display.json      the sample document (hash 3cd62aa76e731d2d)
-  samples/sprite.json       the second sample: sprite and poly (hash 16274a2fe47fbd06)
+  samples/display.json      the sample document (hash 1c772cd7a6ebc2c7)
+  samples/sprite.json       the second sample: sprite and poly (hash f6b199c715336753)
   samples/vocabulary.json   the third sample: a labelled page for judging on
-                             the wall after a flash (hash 91500ec10b0c26f7)
+                             the wall after a flash (hash 101dd11be8557e3f)
   docs/
     PLAN.md                 this file
     SPEC.md                 carried over from the earlier repo, unchanged
@@ -169,7 +169,7 @@ preview beats publishing three times).
 | `get_display` | `name="default"` | the published document, or an error if none |
 | `status` | `name?` | one display, or all: `{published, hash, ops, bytes, published_at, first_fetch_at, recent_fetch_at, recent_fetch_status, recent_fetch_ip, panel_battery, panel_volts, panel_draw_at, panel_wakes}`; timestamps are ISO 8601 plus a matching `*_ago` string. The `panel_*` fields are what the panel reported about itself on that fetch (see Panel endpoint); `panel_draw_at` is the draw *before* it, so a `200` older than an unmoved `panel_draw_at` means the panel fetched and failed to draw. With no `name`, also `{displays: {name: ...above...}, requested: {name: {recent_fetch_at, recent_fetch_ago, recent_fetch_status, recent_fetch_ip, panel_battery, panel_volts, panel_draw_at, panel_draw_ago, panel_wakes}}, auth}` — `requested` covers every name in `Store.fetched_names()`, published or not, which is the answer to "which name is the panel on" |
 | `clear_display` | `name="default"` | `{name, cleared}` |
-| `describe` | none | the renderer's vocabulary as one JSON object: `{canvas, inks, mixes, densities, fonts, font_families, anchors, icons, icon_sizes, ops, fmt_fields, limits}`, built from the renderer's own tables at call time — `anchors` is the list of values `text.a`/`fmt.a` accept (`left`, `center`, `right`) |
+| `describe` | none | the renderer's vocabulary as one JSON object: `{canvas, inks, mixes, densities, fonts, font_families, anchors, icons, icon_sizes, icon_aliases, ops, fmt_fields, limits}`, built from the renderer's own tables at call time — `anchors` is the list of values `text.a`/`fmt.a` accept (`left`, `center`, `right`); `icon_aliases` is the pixel-count spelling of each of the five slots (`icon_sizes`' own reverse), so a composer can see `z` accepts either (docs/plans/fonts-and-icons.md Decision 4) |
 | `guide` | none | the text of `prompts/compose.md` — the composing guide, as a tool call for a client that cannot read prompts |
 | `swatches` | `document?` (dict or JSON string), `include_document=False` | PNG **and** a text list: every ink and built-in mix as a labelled chip, flat (`dithered_colors=False`); `document`'s own `palette` is appended as a final group, capped to what fits the page (`+N more not shown` past that). The sheet is itself a valid document; `include_document=True` adds it as a third block (JSON), to `set_display` |
 
@@ -209,7 +209,7 @@ Access AUD tag and team domain.
 
 ## Tests
 
-- `render_hash(samples/display.json) == "3cd62aa76e731d2d"`.
+- `render_hash(samples/display.json) == "1c772cd7a6ebc2c7"`.
 - wrap/fit cases from the spec (multibyte truncation, overlong single word,
   exact fit, empty) as pytest fixtures, so a later C++ diff has something to
   run against.

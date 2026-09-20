@@ -4,7 +4,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SAMPLE = ROOT / "samples" / "display.json"
-SAMPLE_HASH = "3cd62aa76e731d2d"
+SAMPLE_HASH = "1c772cd7a6ebc2c7"
 SPRITE_SAMPLE = ROOT / "samples" / "sprite.json"
 VOCABULARY_SAMPLE = ROOT / "samples" / "vocabulary.json"
 

@@ -1,7 +1,7 @@
 {
   "v": 1,
   "meta": {
-    "hash": "168ec2ea749851e3"
+    "hash": "101dd11be8557e3f"
   },
   "bg": "white",
   "palette": {
@@ -124,6 +124,102 @@
       "x": 48,
       "y": 761,
       "s": "mono: shade ramp, 25/50/75/solid block elements",
+      "f": "xs",
+      "c": "black"
+    },
+    {
+      "op": "icon",
+      "x": 48,
+      "y": 789,
+      "n": "school-day",
+      "z": "md",
+      "c": "black"
+    },
+    {
+      "op": "icon",
+      "x": 201,
+      "y": 789,
+      "n": "daycare",
+      "z": "md",
+      "c": "black"
+    },
+    {
+      "op": "icon",
+      "x": 353,
+      "y": 789,
+      "n": "taekwondo",
+      "z": "md",
+      "c": "black"
+    },
+    {
+      "op": "icon",
+      "x": 506,
+      "y": 789,
+      "n": "swim",
+      "z": "md",
+      "c": "black"
+    },
+    {
+      "op": "icon",
+      "x": 658,
+      "y": 789,
+      "n": "helper",
+      "z": "md",
+      "c": "black"
+    },
+    {
+      "op": "icon",
+      "x": 811,
+      "y": 789,
+      "n": "appointment",
+      "z": "md",
+      "c": "black"
+    },
+    {
+      "op": "icon",
+      "x": 963,
+      "y": 789,
+      "n": "family-meeting",
+      "z": "md",
+      "c": "black"
+    },
+    {
+      "op": "icon",
+      "x": 1116,
+      "y": 789,
+      "n": "closed",
+      "z": "md",
+      "c": "black"
+    },
+    {
+      "op": "text",
+      "x": 48,
+      "y": 829,
+      "s": "icon: eight activities, md (36px)",
+      "f": "xs",
+      "c": "black"
+    },
+    {
+      "op": "icon",
+      "x": 900,
+      "y": 190,
+      "n": "school-day",
+      "z": "xl",
+      "c": "black"
+    },
+    {
+      "op": "icon",
+      "x": 1000,
+      "y": 190,
+      "n": "swim",
+      "z": "xl",
+      "c": "black"
+    },
+    {
+      "op": "text",
+      "x": 900,
+      "y": 280,
+      "s": "icon: xl (84px)",
       "f": "xs",
       "c": "black"
     },
@@ -291,7 +387,7 @@
       "x": 1058,
       "y": 1545,
       "n": "battery",
-      "z": "sm",
+      "z": "md",
       "c": "grey-mid"
     },
     {

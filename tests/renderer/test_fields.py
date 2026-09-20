@@ -27,7 +27,7 @@ from display_mcp.render import (
     render_hash,
 )
 
-SAMPLE_HASH = "3cd62aa76e731d2d"
+SAMPLE_HASH = "1c772cd7a6ebc2c7"
 
 
 def test_hash_ignores_meta_generated(sample_doc):
@@ -538,3 +538,26 @@ def test_arbitrary_drawing_exception_gets_the_catchall_message_and_next_op_still
     img, problems = render(doc, font_dir)
     assert problems == ["ops[0] circle: could not be drawn (RuntimeError: boom); skipped"]
     assert img.getpixel((15, 15)) == INK["red"]
+
+
+def test_explicit_null_on_a_string_field_is_the_same_as_absent(font_dir):
+    """`f: null`, `a: null`, `z: null` draw exactly as the field omitted --
+    the firmware's `o["f"] | "md"` cannot tell an explicit null from an
+    absent key, so the renderer must not either (B4b re-review; the same
+    rule `lh: null` already follows). A non-null wrong type still skips."""
+    from display_mcp.render import render
+
+    for op, null_field in (
+        ({"op": "text", "x": 40, "y": 40, "s": "Hello"}, "f"),
+        ({"op": "text", "x": 40, "y": 40, "s": "Hello"}, "a"),
+        ({"op": "icon", "x": 40, "y": 40, "n": "check"}, "z"),
+    ):
+        plain = {"bg": "white", "ops": [dict(op)]}
+        nulled = {"bg": "white", "ops": [dict(op, **{null_field: None})]}
+        img_a, p_a = render(plain, font_dir)
+        img_b, p_b = render(nulled, font_dir)
+        assert p_a == p_b == [], (null_field, p_a, p_b)
+        assert img_a.tobytes() == img_b.tobytes(), null_field
+        typed = {"bg": "white", "ops": [dict(op, **{null_field: 5})]}
+        _, p_c = render(typed, font_dir)
+        assert p_c and "is not a string; skipped" in p_c[0], (null_field, p_c)

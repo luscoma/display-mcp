@@ -12,7 +12,7 @@ from PIL import Image
 from display_mcp import cli
 from display_mcp.render import render_hash
 
-SAMPLE_HASH = "3cd62aa76e731d2d"
+SAMPLE_HASH = "1c772cd7a6ebc2c7"
 SAMPLE = Path(__file__).resolve().parents[1] / "samples" / "display.json"
 
 
@@ -288,36 +288,55 @@ def test_font_metrics_subcommand_calls_write_metrics(font_dir, monkeypatch, caps
     assert "font_metrics.json" in out
 
 
-def test_firmware_fonts_subcommand_rewrites_a_scratch_yaml(tmp_path, capsys):
-    """`display-mcp-cli firmware-fonts <yaml_path>` (docs/plans/
-    fonts-and-icons.md Decision 3, B2) rewrites the file's two font
-    fences in place -- exercised on a scratch copy here, never the repo's
-    own YAML, so a botched run can't leave the committed file stale.
-    `generate_firmware_yaml()`'s own correctness (which entries, which
-    ids) is `tests/parity/test_limits_and_dispatch.py`'s job; this is only
-    "does the subcommand read the given file, rewrite it and say so"."""
+def _scratch_yaml_text() -> str:
+    """A minimal scratch YAML with all four generated fences empty --
+    what `generate_firmware_yaml()` needs to find before it can rewrite
+    anything, independent of the real epaper-schedule.yaml."""
     from display_mcp.render.firmware_yaml import (
         FONT_LAMBDA_END,
         FONT_LAMBDA_START,
         FONT_YAML_END,
         FONT_YAML_START,
+        ICON_LAMBDA_END,
+        ICON_LAMBDA_START,
+        ICON_YAML_END,
+        ICON_YAML_START,
     )
 
-    yaml_path = tmp_path / "epaper-schedule.yaml"
-    yaml_path.write_text(
+    return (
         f"font:\n{FONT_YAML_START}\n{FONT_YAML_END}\n"
         f"\n"
+        f"image:\n{ICON_YAML_START}\n{ICON_YAML_END}\n"
+        f"\n"
         f"lambda: |-\n{FONT_LAMBDA_START}\n{FONT_LAMBDA_END}\n"
+        f"{ICON_LAMBDA_START}\n{ICON_LAMBDA_END}\n"
     )
-    code, out, err = _run(["firmware-fonts", str(yaml_path)], capsys)
+
+
+@pytest.mark.parametrize("subcommand", ["firmware-vocabulary", "firmware-fonts"])
+def test_firmware_vocabulary_subcommand_rewrites_a_scratch_yaml(tmp_path, capsys, subcommand):
+    """`display-mcp-cli firmware-vocabulary <yaml_path>` (docs/plans/
+    fonts-and-icons.md Decision 3/4, B2/B4b) rewrites the file's four
+    font/icon fences in place, under either name -- `firmware-fonts` is
+    kept as an alias so nothing that already calls it by that name breaks
+    -- exercised on a scratch copy here, never the repo's own YAML, so a
+    botched run can't leave the committed file stale.
+    `generate_firmware_yaml()`'s own correctness (which entries, which
+    ids) is `tests/parity/test_limits_and_dispatch.py`'s job; this is only
+    "does the subcommand read the given file, rewrite it and say so"."""
+    yaml_path = tmp_path / "epaper-schedule.yaml"
+    yaml_path.write_text(_scratch_yaml_text())
+    code, out, err = _run([subcommand, str(yaml_path)], capsys)
     assert code == 0
     assert str(yaml_path) in out
     text = yaml_path.read_text()
     assert "id: font_instrument_xs" in text
     assert 'a.fonts["instrument/xs"] = id(font_instrument_xs);' in text
+    assert "id: ic_check_sm" in text
+    assert 'a.icons["check/sm"] = id(ic_check_sm);' in text
 
 
-def test_firmware_fonts_default_yaml_path_is_the_repo_firmware_yaml():
+def test_firmware_vocabulary_default_yaml_path_is_the_repo_firmware_yaml():
     """No path given -> the repo's own `firmware/epaper-schedule.yaml`,
     resolved relative to this package, not the current working
     directory."""

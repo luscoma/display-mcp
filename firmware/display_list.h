@@ -110,6 +110,18 @@ static const int DOCUMENT_VERSION = 1;
 // kPolyMaxPts bounds how many points a poly's `pts` can push into its own
 // vector -- enforced while parsing, so the vector itself never grows past
 // it.
+// kNameMaxLen (docs/plans/fonts-and-icons.md Decision 4, B4b review item 2)
+// bounds `text`/`fmt`'s `f` and `icon`'s `n`/`z` -- checked on the raw C
+// string, before any std::string is built from it, the same "measure the
+// bound first" discipline kTextMaxLen already gets for `s`. Without it, a
+// legal document under MAX_DOC_BYTES with a several-KB `f` made
+// normalize_font_key() -- `std::string(name, ...) + normalize_size_alias(...)`,
+// two allocations -- peak at roughly three times that string's length of
+// transient heap on a panel with none to spare (the very `operator new`
+// failure firmware-bounds.md D1 exists to close). Every real compiled
+// spelling is at most 21 characters (`weather-partly-cloudy`; the longest
+// font spelling, `instrument-italic/48`, is 20);
+// 64 is generous headroom, not a tight fit.
 static const int kThickMax = 64;
 static const int kSpriteMaxCell = 1600;
 static const int32_t kMaxCoord = 4096;
@@ -119,6 +131,7 @@ static const int kSpriteMaxCols = 1200;
 static const int kSpriteMaxRows = 1600;
 static const int kSpriteMaxPalette = 64;
 static const int kPolyMaxPts = 1024;
+static const int kNameMaxLen = 64;
 
 // D3's backstop: draw_display_list() reads millis() once at entry and
 // checks it at the top of every op, stopping (not aborting) the loop once
@@ -130,11 +143,17 @@ static const int kPolyMaxPts = 1024;
 static const uint32_t kDrawBudgetMs = 20000;
 
 struct DisplayListAssets {
-  // Type scale, keyed by every spelling the JSON may use -- `family[-style]/slot`,
-  // `family[-style]/px`, and the five bare legacy names (xl lg md sm xs) -- as
-  // generated into the YAML from the renderer's table (docs/plans/fonts-and-icons.md).
+  // Type scale, keyed by `family[-style]/slot` and the five bare legacy
+  // names (xl lg md sm xs) -- generated into the YAML from the renderer's
+  // table (docs/plans/fonts-and-icons.md). A pixel-count spelling
+  // (`family[-style]/px`, e.g. "petrona/36") is NOT a key here since B4b:
+  // normalize_font_key() maps it to its slot spelling before this map is
+  // ever consulted, so the map itself only has to carry 115 keys, not 165.
   std::map<std::string, esphome::display::BaseFont *> fonts;
-  // Icons keyed "<name>/<size-class>", e.g. "weather-sunny/lg".
+  // Icons keyed "<name>/<slot>", e.g. "weather-sunny/lg" -- the same five
+  // slots fonts use (Decision 4). A pixel-count `z` is likewise normalised
+  // to its slot (normalize_size_alias()) before this map is consulted, so
+  // it only carries the 95 canonical keys.
   std::map<std::string, esphome::image::Image *> icons;
   // The panel's own clock at draw time, "1:43 PM" and "13:43". Empty when the
   // clock is not valid yet; the fmt op prints "--:--" then.
@@ -1387,6 +1406,63 @@ inline std::string document_id(const std::string &body) {
 // truncates it (review amendment to docs/plans/firmware-bounds.md D4).
 inline bool coord_ok(double v) { return v >= -static_cast<double>(kMaxCoord) && v <= static_cast<double>(kMaxCoord); }
 
+// docs/plans/fonts-and-icons.md Decision 4, B4b: the size half of an `f`/`z`
+// spelling, mapped from its pixel-count spelling to the slot it names, when
+// it's one of the five compiled sizes -- applied before either vocabulary
+// map (assets.fonts, assets.icons) is consulted, so those maps need only
+// the canonical-plus-bare-alias keys the YAML now generates: 115 font keys
+// (110 canonical + 5 bare, down from the 165 a fully-aliased map would need)
+// and 95 icon keys (canonical only -- an icon has no bare alias and, without
+// this normaliser, would need another 95 px-spelling entries on top, 190
+// total). Measured the way the B2 review measured the font map alone:
+// roughly 10.5 KB of per-wake std::map heap for both maps together with
+// the normaliser against roughly 21.9 KB without it (355 keys instead of
+// 210, most past libstdc++'s 15-char SSO limit) -- the icon map is smaller
+// per key than fonts' but the font map's saving alone accounts for most of
+// the difference. A fixed 5-entry table, string-literal comparisons only,
+// no heap allocation -- every other size spelling (a bare legacy name with
+// no size half, a non-ladder pixel count like `petrona-italic/40`'s `40`,
+// or anything malformed) comes back unchanged, since the renderer already
+// treats those as canonical spellings in their own right and the map holds
+// them as typed.
+inline const char *normalize_size_alias(const char *size) {
+  static const struct { const char *px; const char *slot; } kSizeAliases[] = {
+      {"22", "xs"}, {"28", "sm"}, {"36", "md"}, {"48", "lg"}, {"84", "xl"},
+  };
+  for (const auto &alias : kSizeAliases) {
+    if (!strcmp(size, alias.px))
+      return alias.slot;
+  }
+  return size;
+}
+
+// Normalises the size half of a full `family[-style]/size` font spelling
+// (or a bare legacy name, which has no size half and is returned
+// unchanged) -- the whole-string counterpart `normalize_size_alias()`
+// needs for `assets.fonts`, whose keys carry the family with the size
+// rather than taking it as a separate field the way `icon`'s `z` already
+// is. The concatenation here is the same shape the call sites already
+// built before this existed (`key = name + "/" + z`, still true of
+// `icon`'s own key below) -- the allocation is that pre-existing string
+// build, not the normaliser (`normalize_size_alias()`) itself. `reserve()`
+// sizes that one allocation exactly (B4b review item 2), rather than
+// `operator+`'s usual shape of a temporary substring plus a second buffer
+// for the sum -- `name` is already bounded to `kNameMaxLen` bytes by every
+// caller before this runs, so the difference is small in absolute terms,
+// but it costs nothing to do once here rather than twice.
+inline std::string normalize_font_key(const char *name) {
+  const char *slash = strrchr(name, '/');
+  if (slash == nullptr)
+    return name;  // a bare legacy alias (xl lg md sm xs) -- nothing to normalise
+  const char *slotted = normalize_size_alias(slash + 1);
+  const size_t prefix_len = static_cast<size_t>(slash - name) + 1;
+  std::string key;
+  key.reserve(prefix_len + strlen(slotted));
+  key.append(name, prefix_len);
+  key.append(slotted);
+  return key;
+}
+
 /// Execute a display list against `it`. Returns false if the JSON did not parse
 /// or carried no ops — the caller should then draw its own fallback.
 inline bool draw_display_list(esphome::display::Display &it, const std::string &body,
@@ -1556,9 +1632,43 @@ inline bool draw_display_list(esphome::display::Display &it, const std::string &
         }
 
       } else if (!strcmp(kind, "text")) {
-        auto fit = assets.fonts.find(o["f"] | "md");
+        // A present-but-wrong-typed `f` (a JSON number, bool, array or
+        // object) must not silently draw at the default the way
+        // `o["f"] | "md"` alone would -- the renderer already warns and
+        // abandons the op for this (`_op_optional_field_type_problem()`),
+        // so the firmware matching it closes a real drawing difference,
+        // not just a log-message one (B4b review item 6). Absent and an
+        // explicit JSON null are the same thing here: `isNull()` is true
+        // for both, the default below applies, and the renderer treats
+        // null the same way (B4b re-review). `a` gets the same guard: a
+        // numeric `a` used to draw left-aligned here while the renderer
+        // skipped the op.
+        if (!o["f"].isNull() && !o["f"].is<const char *>()) {
+          ESP_LOGW(TAG, "text: f is not a string; skipped");
+          skipped++;
+          continue;
+        }
+        if (!o["a"].isNull() && !o["a"].is<const char *>()) {
+          ESP_LOGW(TAG, "text: a is not a string; skipped");
+          skipped++;
+          continue;
+        }
+        // Length checked on the raw C string before normalize_font_key()
+        // ever builds a std::string from it (docs/plans/fonts-and-icons.md
+        // B4b review item 2, the same "measure first" discipline `s`
+        // already gets below): `f` on a field the document controls can be
+        // up to MAX_DOC_BYTES itself, and normalize_font_key()'s own
+        // allocation is sized off its length.
+        const char *f_name = o["f"] | "md";
+        if (strlen(f_name) > static_cast<size_t>(kNameMaxLen)) {
+          ESP_LOGW(TAG, "text: f is %d bytes, more than %d; skipped",
+                   static_cast<int>(strlen(f_name)), kNameMaxLen);
+          skipped++;
+          continue;
+        }
+        auto fit = assets.fonts.find(normalize_font_key(f_name));
         if (fit == assets.fonts.end()) {
-          ESP_LOGW(TAG, "unknown font '%s'", o["f"] | "md");
+          ESP_LOGW(TAG, "unknown font '%s'", f_name);
           skipped++;
           continue;
         }
@@ -1632,9 +1742,27 @@ inline bool draw_display_list(esphome::display::Display &it, const std::string &
         // {time24}. The values are never in the document (meta.hash covers
         // where this is drawn, not what it says), so a clock tick never
         // costs a refresh and the hash cannot be circular.
-        auto fit = assets.fonts.find(o["f"] | "xs");
+        // Same wrong-type check as `text`'s `f` above (B4b review item 6).
+        if (!o["f"].isNull() && !o["f"].is<const char *>()) {
+          ESP_LOGW(TAG, "fmt: f is not a string; skipped");
+          skipped++;
+          continue;
+        }
+        if (!o["a"].isNull() && !o["a"].is<const char *>()) {
+          ESP_LOGW(TAG, "fmt: a is not a string; skipped");
+          skipped++;
+          continue;
+        }
+        const char *f_name = o["f"] | "xs";
+        if (strlen(f_name) > static_cast<size_t>(kNameMaxLen)) {
+          ESP_LOGW(TAG, "fmt: f is %d bytes, more than %d; skipped",
+                   static_cast<int>(strlen(f_name)), kNameMaxLen);
+          skipped++;
+          continue;
+        }
+        auto fit = assets.fonts.find(normalize_font_key(f_name));
         if (fit == assets.fonts.end()) {
-          ESP_LOGW(TAG, "unknown font '%s'", o["f"] | "xs");
+          ESP_LOGW(TAG, "unknown font '%s'", f_name);
           skipped++;
           continue;
         }
@@ -1656,10 +1784,40 @@ inline bool draw_display_list(esphome::display::Display &it, const std::string &
         mix.print(x, y, font, c.a, align, s.c_str());
 
       } else if (!strcmp(kind, "icon")) {
-        std::string key = std::string(o["n"] | "") + "/" + std::string(o["z"] | "sm");
+        // Same wrong-type check as `text`/`fmt`'s `f` above (B4b review
+        // item 6): a present-but-non-string `z` must not silently draw at
+        // the default size.
+        if (!o["z"].isNull() && !o["z"].is<const char *>()) {
+          ESP_LOGW(TAG, "icon: z is not a string; skipped");
+          skipped++;
+          continue;
+        }
+        // z's default became "md" with Decision 4 (B4b) -- 36px, what the
+        // old default "sm" already meant before that batch re-keyed the
+        // size classes onto the font ladder, so an op that omits z still
+        // draws the same 36px icon it always did.
+        const char *name_raw = o["n"] | "";
+        const char *z_raw = o["z"] | "md";
+        // Same "measure the raw C string first" discipline as `text`/`fmt`'s
+        // `f` above (B4b review item 2): `key`'s own concatenation, and
+        // normalize_size_alias()'s strcmp() table, must never see an
+        // unbounded document-controlled string.
+        if (strlen(name_raw) > static_cast<size_t>(kNameMaxLen) ||
+            strlen(z_raw) > static_cast<size_t>(kNameMaxLen)) {
+          ESP_LOGW(TAG, "icon: n/z longer than %d bytes (%d/%d); skipped", kNameMaxLen,
+                   static_cast<int>(strlen(name_raw)), static_cast<int>(strlen(z_raw)));
+          skipped++;
+          continue;
+        }
+        const char *slotted = normalize_size_alias(z_raw);
+        std::string key;
+        key.reserve(strlen(name_raw) + 1 + strlen(slotted));
+        key.append(name_raw);
+        key.append("/");
+        key.append(slotted);
         auto iit = assets.icons.find(key);
         if (iit == assets.icons.end()) {
-          ESP_LOGW(TAG, "icon '%s' is not compiled in", key.c_str());
+          ESP_LOGW(TAG, "icon '%s/%s' is not compiled in", name_raw, z_raw);
           skipped++;
           continue;
         }
