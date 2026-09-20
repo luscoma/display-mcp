@@ -85,14 +85,13 @@ The preview must use the *same faces the firmware compiles in*, or it will
 wrap text in different places than the panel does — which defeats the point
 of previewing. `fetch-fonts.sh` fetches four families — Petrona, Instrument
 Sans and Karla (each an upright and an italic variable font) and JetBrains
-Mono (upright only) — seven files in all, plus two temporary copies of
-Instrument Sans under legacy names the renderer still looks for today.
-Petrona and Karla aren't wired into the renderer yet; fetching them now
-just saves a second round of downloads once they are.
+Mono (upright only) — seven files in all, every one of them wired into the
+renderer today (`docs/plans/fonts-and-icons.md` Decisions 1–3): 110 compiled
+faces, ten family-styles at eleven sizes apiece.
 
 ```bash
 sudo -u display-mcp ./deploy/fetch-fonts.sh /opt/display-mcp/fonts
-file /opt/display-mcp/fonts/*.ttf     # all nine should say TrueType, not "JSON text"
+file /opt/display-mcp/fonts/*.ttf     # all seven should say TrueType, not "JSON text"
 ```
 
 Google Fonts ships every weight of a family in one upright variable font
@@ -100,9 +99,11 @@ and, where the family has an italic, a second variable font for that one;
 the renderer selects the named instance it wants out of whichever of the
 two it loaded. If the GitHub API is rate limited or a raw URL 404s, just
 re-run once it clears — or pass `--fonts-from <dir>` to `setup.sh install`
-with all seven files already sitting in `<dir>`, named exactly as
-`fetch-fonts.sh`'s header comment lists them; that path requires every one
-of the seven and does not fetch whatever's missing for you.
+with all seven files already sitting in `<dir>`, named exactly:
+`Petrona.ttf`, `Petrona-Italic.ttf`, `InstrumentSans.ttf`,
+`InstrumentSans-Italic.ttf`, `Karla.ttf`, `Karla-Italic.ttf`,
+`JetBrainsMono-Regular.ttf`; that path requires every one of the seven and
+does not fetch whatever's missing for you.
 
 On a host already running an older install, `setup.sh sync` — the everyday
 code-only redeploy — deliberately never touches fonts. Run
@@ -111,7 +112,7 @@ renames or removes a font file (as this one does) or a compiled face (as
 B3 did for `mono`), so the new files land in `/opt/display-mcp/fonts`
 without a full `install` run.
 
-**Done when:** `file *.ttf` reports TrueType for all nine. Step 3 checks
+**Done when:** `file *.ttf` reports TrueType for all seven. Step 3 checks
 that the renderer can actually load them.
 
 ## Step 3 — Install the service
@@ -154,7 +155,7 @@ sudo -u display-mcp /opt/display-mcp/venv/bin/display-mcp-cli check \
   samples/display.json --font-dir /opt/display-mcp/fonts
 ```
 
-**Done when:** `display-mcp-cli check` reports `1c772cd7a6ebc2c7` with no
+**Done when:** `display-mcp-cli check` reports `ab71629b1ca76ea6` with no
 problems, and `systemd-analyze verify /etc/systemd/system/display-mcp.service`
 is silent.
 
@@ -304,7 +305,7 @@ Ask for `status` an hour after publishing. This is the healthy shape:
 ```json
 {
   "published": true,
-  "hash": "1c772cd7a6ebc2c7",
+  "hash": "ab71629b1ca76ea6",
   "ops": 54,
   "bytes": 3137,
   "published_at": "2026-09-08T06:31:00-07:00",
@@ -350,7 +351,7 @@ Assistant at the panel itself; it is asleep for most of the hour, and
 |---|---|
 | `503 no display list yet` | Expected before the first publish. After one, check `/var/lib/display-mcp/default.json` exists and parses. |
 | Service won't start | `journalctl -u display-mcp -n 50`. Usually the venv path or a missing font file. |
-| `preview` raises about fonts | `DISPLAY_MCP_FONT_DIR` and that all three `.ttf` names exist. |
+| `preview` raises about fonts | `DISPLAY_MCP_FONT_DIR` and that all seven `.ttf` names exist. |
 | `/healthz` says `fonts_loaded: false` | Same as above — fonts missing or unreadable by the `display-mcp` user. |
 | Panel: `select() timeout` | The panel cannot reach the host on 8080: a firewall between segments, if they differ. Not the server. |
 | Panel: `BUG: document has no meta.hash` | Something wrote the file directly, bypassing `set_display`. It stamps; nothing else does. |
@@ -367,6 +368,14 @@ A commit that adds an op, a field or a compiled face (a Phase B change in
 `docs/plans/dragon-feedback.md`) needs both sides of the deploy touched, in
 this order:
 
+0. **Dev-side, before committing:** after editing `fonts.py`'s
+   `FAMILIES`/`SIZES` or `render/__init__.py`'s `ICONS`, run
+   `display-mcp-cli font-metrics ./fonts` (re-measures every face's
+   `cell_height`/`ink_height` from the real font files) and then
+   `display-mcp-cli firmware-vocabulary` (regenerates
+   `epaper-schedule.yaml`'s font/icon fences from the updated tables) —
+   commit `render/font_metrics.json` and the YAML together with the table
+   edit that motivated them, not as a follow-up commit.
 1. `git pull` on the host.
 2. `sudo ./deploy/setup.sh sync` — the code-only redeploy, restarts the
    service.

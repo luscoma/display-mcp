@@ -52,30 +52,31 @@ SIZE_TO_SLOT: dict[int, str] = {px: slot for slot, px in SLOTS.items()}
 
 class StyleSpec(NamedTuple):
     """One style (`""`, `"bold"` or `"italic"`) of a `Family`: the file it
-    loads from, the weight it draws as, the named variable-font instance
-    `load_font()` selects, and whether it is slanted. `italic` is a
-    separate flag rather than derived from `style == "italic"` so a family
-    could in principle carry an italic under another name -- none does
-    today, so this is future-proofing, not a distinction B1 exercises."""
+    loads from, the weight it draws as, and the named variable-font
+    instance `load_font()` selects. No separate `italic` flag (dropped,
+    C9, final review): whether a style is slanted is always
+    `style == "italic"` -- every reader of the old field already had the
+    style key in scope to derive it from, so the field was `style ==
+    "italic"` re-typed, not new information."""
 
     file: str
     weight: int
     instance: str
-    italic: bool = False
 
 
 class Family(NamedTuple):
     """One typeface, compiled at every size in `SIZES` for every style it
     lists. `typeface` is the human name (`describe().font_families[*]`'s
-    own field) — `name` is the short key every canonical face name and
-    alias is built from, and the two can differ (`"instrument"` names
-    "Instrument Sans"). `layout`/`extra_glyphs`/`optional` are per-family,
-    matching yesterday's per-face fields exactly -- `mono` is still the
-    one `"basic"`-layout, extra-glyph, `optional` family; every
-    proportional family uses the raqm-layout, no-extra-glyph, non-optional
-    defaults."""
+    own field) — the short key every canonical face name and alias is
+    built from is `FAMILIES`' own dict key (dropped as a field here, C2,
+    final review: it was always that key repeated, and every reader
+    already had the key in hand from iterating `FAMILIES.items()`), and
+    the two can differ (`"instrument"` names "Instrument Sans").
+    `layout`/`extra_glyphs`/`optional` are per-family, matching
+    yesterday's per-face fields exactly -- `mono` is still the one
+    `"basic"`-layout, extra-glyph, `optional` family; every proportional
+    family uses the raqm-layout, no-extra-glyph, non-optional defaults."""
 
-    name: str
     typeface: str
     styles: dict[str, StyleSpec]
     layout: str = "raqm"
@@ -115,34 +116,30 @@ MONO_EXTRA_GLYPHS: range = range(0x2500, 0x25A0)
 # `InstrumentSans-Italic.ttf`. `mono` is unchanged.
 FAMILIES: dict[str, Family] = {
     "petrona": Family(
-        "petrona",
         "Petrona",
         styles={
             "": StyleSpec("Petrona.ttf", 600, "SemiBold"),
             "bold": StyleSpec("Petrona.ttf", 800, "ExtraBold"),
-            "italic": StyleSpec("Petrona-Italic.ttf", 500, "Medium Italic", italic=True),
+            "italic": StyleSpec("Petrona-Italic.ttf", 500, "Medium Italic"),
         },
     ),
     "instrument": Family(
-        "instrument",
         "Instrument Sans",
         styles={
             "": StyleSpec("InstrumentSans.ttf", 400, "Regular"),
             "bold": StyleSpec("InstrumentSans.ttf", 700, "Bold"),
-            "italic": StyleSpec("InstrumentSans-Italic.ttf", 400, "Italic", italic=True),
+            "italic": StyleSpec("InstrumentSans-Italic.ttf", 400, "Italic"),
         },
     ),
     "karla": Family(
-        "karla",
         "Karla",
         styles={
             "": StyleSpec("Karla.ttf", 400, "Regular"),
             "bold": StyleSpec("Karla.ttf", 700, "Bold"),
-            "italic": StyleSpec("Karla-Italic.ttf", 400, "Italic", italic=True),
+            "italic": StyleSpec("Karla-Italic.ttf", 400, "Italic"),
         },
     ),
     "mono": Family(
-        "mono",
         "JetBrains Mono",
         styles={"": StyleSpec("JetBrainsMono-Regular.ttf", 400, "Regular")},
         layout="basic",
@@ -339,20 +336,20 @@ def _build_fonts() -> dict[str, Face]:
     point the mismatch actually happened, rather than a page quietly
     reflowing around a wrong 0."""
     fonts: dict[str, Face] = {}
-    for family in FAMILIES.values():
+    for family_name, family in FAMILIES.items():
         for style, spec in family.styles.items():
-            key = _family_style_key(family.name, style)
+            key = _family_style_key(family_name, style)
             for size in SIZES:
                 name = _canonical_name(key, size)
                 metrics = _metrics_for(name)
                 fonts[name] = Face(
-                    family=family.name,
+                    family=family_name,
                     style=style,
                     size=size,
                     file=spec.file,
                     weight=spec.weight,
                     variation=spec.instance,
-                    italic=spec.italic,
+                    italic=style == "italic",
                     cell_height=metrics["cell_height"],
                     ink_height=metrics.get("ink_height"),
                     extra_glyphs=family.extra_glyphs,
@@ -419,14 +416,14 @@ def _build_font_families() -> dict[str, dict[str, Any]]:
     worse). `describe().fonts[*]` keeps `family`/`style` so a caller can
     still join back to this table."""
     out: dict[str, dict[str, Any]] = {}
-    for family in FAMILIES.values():
+    for family_name, family in FAMILIES.items():
         glyphs = "GF_Latin_Core" + (" + U+2500–U+259F" if family.extra_glyphs else "")
         for style, spec in family.styles.items():
-            key = _family_style_key(family.name, style)
+            key = _family_style_key(family_name, style)
             out[key] = {
                 "typeface": family.typeface,
                 "weight": spec.weight,
-                "italic": spec.italic,
+                "italic": style == "italic",
                 "glyphs": glyphs,
             }
     return out
@@ -453,7 +450,9 @@ def resolve_font(name: str) -> str | None:
 # "instrument-bold", "mono"} in B1 -- the "is the *family* half of this name
 # real" half of unknown_font_message()'s check.
 _FAMILY_STYLE_KEYS: frozenset[str] = frozenset(
-    _family_style_key(family.name, style) for family in FAMILIES.values() for style in family.styles
+    _family_style_key(family_name, style)
+    for family_name, family in FAMILIES.items()
+    for style in family.styles
 )
 
 
@@ -466,8 +465,11 @@ def _sizes_of(key: str) -> list[int]:
 # The five legacy bare names (`FONT_ALIASES`' only entries with no `/`),
 # derived rather than typed out a second time -- if the bare-alias set
 # ever changed, this and unknown_font_message()'s bad-family message
-# couldn't silently disagree with FONT_ALIASES about what they are.
-_BARE_ALIASES: dict[str, str] = {
+# couldn't silently disagree with FONT_ALIASES about what they are. Public
+# (C3, final review): `firmware_yaml.py` and the parity tests import it
+# directly instead of each keeping an independent copy of "the aliases with
+# no slash in them".
+BARE_ALIASES: dict[str, str] = {
     alias: target for alias, target in FONT_ALIASES.items() if "/" not in alias
 }
 
@@ -479,13 +481,13 @@ def _families_summary() -> str:
     on its own as `FAMILIES` grows, so a future family needs no change
     here."""
     parts = []
-    for family in FAMILIES.values():
+    for family_name, family in FAMILIES.items():
         extra_styles = [style for style in family.styles if style]
         if extra_styles:
             named = ", ".join(f"-{style}" for style in extra_styles)
-            parts.append(f"{family.name} (also {named})")
+            parts.append(f"{family_name} (also {named})")
         else:
-            parts.append(family.name)
+            parts.append(family_name)
     if len(parts) == 1:
         return parts[0]
     return ", ".join(parts[:-1]) + " and " + parts[-1]
@@ -493,28 +495,49 @@ def _families_summary() -> str:
 
 def unknown_font_message(name: str) -> str:
     """"unknown font '<name>'", plus which half is wrong (docs/plans/
-    fonts-and-icons.md Decision 1, B1 review item 7): a bad *size* on a
-    real family-style names that family-style's own compiled sizes, plus
-    the five slot names and their pixel counts (`"karla/41": karla is
-    compiled at 22 24 ... 84 (slots xs=22 sm=28 md=36 lg=48 xl=84)`) --
-    the size half of a bad name is as likely to be a mistyped slot as a
-    mistyped pixel count, and the slot table is the thing to check either
-    way. A bad *family* -- or a name with no `/` at all, like a typo'd
-    bare legacy name -- lists every compiled family and its styles, plus
-    the five bare legacy names themselves (they're a common thing to
-    almost get right: `"xl2"`, `"XL"`, `"extra-large"`). `Ctx.font()` and
-    the bezel/off-canvas default lookup are the two callers; both already
-    know `name` didn't resolve."""
+    fonts-and-icons.md Decision 1, B1 review item 7; sharpened by the final
+    review, "Composer over MCP"):
+
+    - A bare `"mono"` gets its own message: unlike the five legacy bare
+      names, `mono` was never a size on its own (Decision 1) and dropping
+      it silently on this path would leave a composer guessing why `md`
+      resolves but `mono` doesn't -- this says outright that there is no
+      bare `mono` and what to write instead.
+    - A bad *size* on a real family-style names that family-style's own
+      compiled sizes, plus the five slot names and their pixel counts
+      (`"karla/41": karla is compiled at 22 24 ... 84 (slots xs=22 sm=28
+      md=36 lg=48 xl=84)`) -- the size half of a bad name is as likely to
+      be a mistyped slot as a mistyped pixel count, and the slot table is
+      the thing to check either way.
+    - A bad *family* -- or a name with no `/` at all, like a typo'd bare
+      legacy name -- lists every compiled family and its styles, plus the
+      five bare legacy names themselves (they're a common thing to almost
+      get right: `"xl2"`, `"XL"`, `"extra-large"`); `italic`, `bold` or
+      `serif` written as if *they* were the family (`"italic/40"`, an
+      understandable guess from a composer who has seen `-italic`/`-bold`
+      suffixes but not yet read Decision 1) gets an extra sentence
+      pointing at the real shape, `<family>-italic/<size>`.
+
+    `Ctx.font()` and the bezel/off-canvas default lookup are the two
+    callers; both already know `name` didn't resolve."""
+    if name == "mono":
+        return (
+            "unknown font 'mono': there is no bare mono -- write mono/24 "
+            "(or another compiled size)"
+        )
     key = name.rsplit("/", 1)[0] if "/" in name else name
     if key in _FAMILY_STYLE_KEYS:
         sizes = " ".join(str(size) for size in _sizes_of(key))
         slots = " ".join(f"{slot}={px}" for slot, px in SLOTS.items())
         return f"unknown font {name!r}: {key} is compiled at {sizes} (slots {slots})"
-    bare = " ".join(sorted(_BARE_ALIASES, key=lambda alias: SLOTS.get(alias, 0)))
-    return (
+    bare = " ".join(sorted(BARE_ALIASES, key=lambda alias: SLOTS.get(alias, 0)))
+    message = (
         f"unknown font {name!r}: families are {_families_summary()}; "
         f"the bare names {bare} also work (Instrument Sans)"
     )
+    if key in ("italic", "bold", "serif"):
+        message += "; an italic or bold always names its family, e.g. petrona-italic/40"
+    return message
 
 
 _FACE_GLYPHS: dict[str, frozenset[int]] = {

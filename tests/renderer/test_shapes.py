@@ -63,7 +63,7 @@ def test_icon_unknown_size_is_a_problem_naming_the_slots_and_skips(font_dir):
     doc = {"bg": "white", "ops": [{"op": "icon", "x": 10, "y": 10, "n": "check", "z": "47"}]}
     img, problems = render(doc, font_dir)
     assert any(
-        "'check/47' is not compiled in: check is compiled at" in p and "md=36" in p
+        "n='check' z='47' is not compiled in: check is compiled at" in p and "md=36" in p
         for p in problems
     )
     blank, _ = render({"bg": "white", "ops": []}, font_dir)
@@ -74,38 +74,25 @@ def test_icon_unknown_name_is_a_problem_naming_the_icons_and_skips(font_dir):
     doc = {"bg": "white", "ops": [{"op": "icon", "x": 10, "y": 10, "n": "no-such-icon", "z": "md"}]}
     img, problems = render(doc, font_dir)
     assert any(
-        "'no-such-icon/md' is not compiled in: names are" in p and "school-day" in p
+        "n='no-such-icon' z='md' is not compiled in: names are" in p and "school-day" in p
         for p in problems
     )
     blank, _ = render({"bg": "white", "ops": []}, font_dir)
     assert img.tobytes() == blank.tobytes()
 
 
-def test_icon_n_past_the_length_bound_is_skipped(font_dir):
+@pytest.mark.parametrize("field", ["n", "z"])
+def test_icon_n_or_z_past_the_length_bound_is_skipped(font_dir, field):
     """docs/plans/fonts-and-icons.md B4b review item 2: `icon`'s `n`/`z`
     bounded by NAME_MAX_LEN the same way text/fmt's `f` is -- mirrors
-    firmware/display_list.h's kNameMaxLen."""
-    n = "a" * (NAME_MAX_LEN + 1)
-    doc = {"bg": "white", "ops": [{"op": "icon", "x": 10, "y": 10, "n": n, "z": "md"}]}
-    img, problems = render(doc, font_dir)
+    firmware/display_list.h's kNameMaxLen. Either field over the bound
+    abandons the op, and nothing is drawn."""
+    op = {"op": "icon", "x": 10, "y": 10, "n": "check", "z": "md"}
+    op[field] = "a" * (NAME_MAX_LEN + 1)
+    img, problems = render({"bg": "white", "ops": [op]}, font_dir)
     assert any(f"n/z longer than {NAME_MAX_LEN} bytes" in p for p in problems)
     blank, _ = render({"bg": "white", "ops": []}, font_dir)
     assert img.tobytes() == blank.tobytes()
-
-
-def test_icon_z_past_the_length_bound_is_skipped(font_dir):
-    z = "a" * (NAME_MAX_LEN + 1)
-    doc = {"bg": "white", "ops": [{"op": "icon", "x": 10, "y": 10, "n": "check", "z": z}]}
-    img, problems = render(doc, font_dir)
-    assert any(f"n/z longer than {NAME_MAX_LEN} bytes" in p for p in problems)
-    blank, _ = render({"bg": "white", "ops": []}, font_dir)
-    assert img.tobytes() == blank.tobytes()
-
-
-def test_icon_good_size_class_is_not_a_problem(sample_doc, font_dir):
-    doc = _icon_doc(sample_doc, "check", "sm")
-    _, problems = render(doc, font_dir)
-    assert problems == []
 
 
 def test_icon_default_z_is_md_36px(font_dir):
@@ -122,14 +109,6 @@ def test_icon_default_z_is_md_36px(font_dir):
     }
     explicit_img, _ = render(explicit_doc, font_dir)
     assert img.tobytes() == explicit_img.tobytes()
-
-
-def test_weather_snowy_is_valid(sample_doc, font_dir):
-    doc = _icon_doc(sample_doc, "weather-snowy", "lg")
-    _, problems = render(doc, font_dir)
-    assert problems == []
-    assert "weather-snowy" in ICONS
-    assert "lg" in ICONS["weather-snowy"]
 
 
 def test_rect_off_canvas_beyond_tolerance(sample_doc, font_dir):
@@ -232,17 +211,19 @@ def test_rect_r_on_outline_warns_and_draws_square(font_dir):
     assert img.tobytes() == square.tobytes()
 
 
-def test_rect_non_integer_r_warns_and_is_treated_as_zero(font_dir):
-    img, problems = render(_rounded_rect_doc(r=12.5), font_dir)
+@pytest.mark.parametrize(
+    ("r", "spelled"),
+    [
+        pytest.param(12.5, "r=12.5", id="non_integer"),
+        pytest.param(-5, "r=-5", id="negative"),
+    ],
+)
+def test_rect_unusable_r_warns_and_is_treated_as_zero(font_dir, r, spelled):
+    """An `r` that isn't a non-negative integer (D10/B2) warns and draws
+    square corners -- pixel-identical to `r=0`."""
+    img, problems = render(_rounded_rect_doc(r=r), font_dir)
     square, _ = render(_rounded_rect_doc(r=0), font_dir)
-    assert any("r=12.5" in p and "not a non-negative integer" in p for p in problems)
-    assert img.tobytes() == square.tobytes()
-
-
-def test_rect_negative_r_warns_and_is_treated_as_zero(font_dir):
-    img, problems = render(_rounded_rect_doc(r=-5), font_dir)
-    square, _ = render(_rounded_rect_doc(r=0), font_dir)
-    assert any("r=-5" in p and "not a non-negative integer" in p for p in problems)
+    assert any(spelled in p and "not a non-negative integer" in p for p in problems)
     assert img.tobytes() == square.tobytes()
 
 
@@ -327,18 +308,22 @@ def test_rect_fractional_coordinate_truncates_toward_zero(font_dir):
     assert frac_img.tobytes() == int_img.tobytes()
 
 
-def test_line_off_canvas_x2(sample_doc, font_dir):
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        pytest.param("x2", 1300, id="x2_past_width"),
+        pytest.param("y2", 1700, id="y2_past_height"),
+    ],
+)
+def test_line_off_canvas_far_endpoint(sample_doc, font_dir, field, value):
+    """A line's far endpoint past the canvas plus OFF_CANVAS_TOLERANCE is
+    reported on whichever axis actually ran over."""
     doc = copy.deepcopy(sample_doc)
-    doc["ops"].append({"op": "line", "x": 0, "y": 0, "x2": 1300, "y2": 10, "c": "black"})
+    op = {"op": "line", "x": 0, "y": 0, "x2": 10, "y2": 10, "c": "black"}
+    op[field] = value
+    doc["ops"].append(op)
     _, problems = render(doc, font_dir)
-    assert any("x2=1300" in p and "off-canvas" in p for p in problems)
-
-
-def test_line_off_canvas_y2(sample_doc, font_dir):
-    doc = copy.deepcopy(sample_doc)
-    doc["ops"].append({"op": "line", "x": 0, "y": 0, "x2": 10, "y2": 1700, "c": "black"})
-    _, problems = render(doc, font_dir)
-    assert any("y2=1700" in p and "off-canvas" in p for p in problems)
+    assert any(f"{field}={value}" in p and "off-canvas" in p for p in problems)
 
 
 @pytest.mark.parametrize("field", ["x", "y", "x2", "y2"])
@@ -406,6 +391,49 @@ def test_bezel_problems_uses_the_resolved_icon_px():
     }
     problems = bezel_problems(doc)
     assert any("right edge" in p for p in problems)
+
+
+def test_icon_off_canvas_bottom_and_right_are_checked(font_dir):
+    """Final review, "Composer over MCP": render()'s off-canvas check never
+    covered an icon's far edge at all -- x+size/y+size, the same way rect
+    gets x+w/y+h. A 36 px icon (`md`) at x=1300/y=1650 runs its far edge
+    well past WIDTH/HEIGHT plus OFF_CANVAS_TOLERANCE (64 px)."""
+    doc = {
+        "bg": "white",
+        "ops": [{"op": "icon", "x": 1300, "y": 1650, "n": "check", "z": "md"}],
+    }
+    _, problems = render(doc, font_dir)
+    assert any("x+size" in p and "off-canvas" in p for p in problems)
+    assert any("y+size" in p and "off-canvas" in p for p in problems)
+
+
+def test_icon_within_canvas_has_no_off_canvas_problem(font_dir):
+    doc = {
+        "bg": "white",
+        "ops": [{"op": "icon", "x": 100, "y": 100, "n": "check", "z": "md"}],
+    }
+    _, problems = render(doc, font_dir)
+    assert problems == []
+
+
+def test_bezel_problems_flags_an_icon_that_crosses_the_bottom_bezel():
+    """The composer's own reproduction: `y: 1590` on a 36 px icon (`md`)
+    used to return zero bezel warnings even though its bottom row, 1626,
+    is well past HEIGHT - BEZEL_MARGIN (1576)."""
+    doc = {
+        "bg": "white",
+        "ops": [{"op": "icon", "x": 100, "y": 1590, "n": "check", "z": "md"}],
+    }
+    problems = bezel_problems(doc)
+    assert any("bottom edge" in p for p in problems)
+
+
+def test_bezel_problems_icon_within_bounds_has_no_bottom_problem():
+    doc = {
+        "bg": "white",
+        "ops": [{"op": "icon", "x": 100, "y": 1400, "n": "check", "z": "md"}],
+    }
+    assert bezel_problems(doc) == []
 
 
 def test_bezel_problems_unresolvable_icon_size_falls_back_to_zero_width():

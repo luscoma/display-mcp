@@ -242,8 +242,10 @@ install_fonts() {
     fi
     warn "whatever did land is installed, so the service will still start."
     warn "Re-run install (or: $0 fonts) once the network/API rate limit"
-    warn "clears, or use --fonts-from <dir> with the seven filenames"
-    warn "fetch-fonts.sh's header comment lists."
+    warn "clears, or use --fonts-from <dir> with all seven of:"
+    local seven=() plan_entry
+    for plan_entry in "${plan[@]}"; do seven+=("${plan_entry%%:*}"); done
+    warn "  ${seven[*]}"
   fi
 }
 
@@ -549,17 +551,20 @@ do_check() {
   if as_svc "$cli" check "$sample" --font-dir "$PREFIX/fonts"; then
     ok "fonts load, document validates"
   else
-    # F4: --fonts-from only ever copied the Instrument Sans pair, so a host
-    # set up that way used to fail here with a generic "usually the fonts"
-    # that didn't say which font -- distinguish it from a font directory
-    # that's missing outright.
+    # F4: mono is the one optional face (fonts.py's FAMILIES) -- every other
+    # family missing or unreadable raises immediately, so "Instrument Sans
+    # present, mono absent" is the one common, nameable gap (an install from
+    # before mono was added, or a --fonts-from directory assembled by hand
+    # without it); call that one out by filename rather than the generic
+    # warning below, which does not mean every font is bad -- six of seven
+    # present is enough to reach this branch too.
     if is_font "$PREFIX/fonts/InstrumentSans.ttf" \
       && is_font "$PREFIX/fonts/InstrumentSans-Italic.ttf" \
       && ! is_font "$PREFIX/fonts/JetBrainsMono-Regular.ttf"; then
       warn "the mono face is missing ($PREFIX/fonts/JetBrainsMono-Regular.ttf)."
       warn "Run: $0 fonts"
     else
-      warn "the renderer could not process the sample — no usable fonts in $PREFIX/fonts."
+      warn "the renderer could not process the sample — a font in $PREFIX/fonts is missing, unreadable, or not a font (file $PREFIX/fonts/*.ttf to check)."
       warn "Run: $0 fonts"
     fi
     warn "The panel endpoint still works; only preview() is affected."

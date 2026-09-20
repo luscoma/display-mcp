@@ -35,16 +35,14 @@
         -- run this after adding a family, a style or a size to
         fonts.py's FAMILIES/SIZES.
 
-    display-mcp-cli firmware-vocabulary [yaml_path]  (alias: firmware-fonts)
+    display-mcp-cli firmware-vocabulary [yaml_path]
         regenerate firmware/epaper-schedule.yaml's `font:`/`image:` blocks
         and the `a.fonts[...]`/`a.icons[...]` lines from fonts.py's
         FONTS/FONT_ALIASES and render's ICONS/ICON_SIZES (docs/plans/
         fonts-and-icons.md Decision 3/4) -- run this after font-metrics,
         whenever FAMILIES/SIZES/ICONS change. Rewrites the file's four
         generated fences in place; everything else is untouched. Defaults
-        to firmware/epaper-schedule.yaml relative to the repo root. Named
-        `firmware-fonts` through B4b, when it only touched fonts; the old
-        name still works.
+        to firmware/epaper-schedule.yaml relative to the repo root.
 
 Font dir: --font-dir, else DISPLAY_MCP_FONT_DIR, else ./fonts. `check` and
 `render` exit 2 with a clear message if the fonts aren't there.
@@ -221,11 +219,11 @@ def _default_yaml_path() -> Path:
 
 
 def cmd_firmware_vocabulary(args: argparse.Namespace) -> int:
-    """`display-mcp-cli firmware-vocabulary [yaml_path]` (alias
-    `firmware-fonts`): regenerate the YAML's four font/icon fences from
-    FONTS/FONT_ALIASES and ICONS/ICON_SIZES (docs/plans/fonts-and-icons.md
-    Decision 3/4, B2/B4b) -- in a CLI subcommand, not a bare script, for the
-    same reason `font-metrics` is (see cmd_font_metrics's docstring)."""
+    """`display-mcp-cli firmware-vocabulary [yaml_path]`: regenerate the
+    YAML's four font/icon fences from FONTS/FONT_ALIASES and
+    ICONS/ICON_SIZES (docs/plans/fonts-and-icons.md Decision 3/4, B2/B4b)
+    -- in a CLI subcommand, not a bare script, for the same reason
+    `font-metrics` is (see cmd_font_metrics's docstring)."""
     from display_mcp.render.firmware_yaml import generate_firmware_yaml
 
     path = Path(args.yaml_path) if args.yaml_path else _default_yaml_path()
@@ -330,7 +328,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_ff = sub.add_parser(
         "firmware-vocabulary",
-        aliases=["firmware-fonts"],
         help="regenerate epaper-schedule.yaml's font:/image: blocks and "
         "a.fonts[...]/a.icons[...] lines",
     )

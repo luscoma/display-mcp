@@ -196,6 +196,45 @@ def test_sprite_two_character_palette_key_warns_and_is_ignored(font_dir):
     assert img.getpixel((105, 105)) == INK["black"]
 
 
+def test_sprite_over_long_palette_key_warns_with_length_not_content(font_dir):
+    """Final review, B7/F: past NAME_MAX_LEN characters, the warning names
+    the length, not the key itself -- a `!r` of an unbounded
+    document-supplied key is exactly the class of warning kNameMaxLen
+    exists to keep out of `problems` (the reviewer's reproduction turned
+    this exact line into a 65,486-character warning)."""
+    from display_mcp.render import NAME_MAX_LEN
+
+    long_key = "K" * (NAME_MAX_LEN + 1)
+    doc = _sprite_doc(palette={long_key: "red"}, rows=["K"])
+    img, problems = render(doc, font_dir)
+    assert problems == [
+        f"ops[0] sprite: sprite palette key is {len(long_key)} bytes, "
+        f"more than {NAME_MAX_LEN}; ignored",
+        "ops[0] sprite: no palette entry for 'K'; drawing black",
+    ]
+    assert long_key not in problems[0]
+    assert img.getpixel((105, 105)) == INK["black"]
+    # Bytes, not characters, so the renderer and the firmware's strlen()
+    # take the same branch: 30 four-byte code points is 120 bytes.
+    wide_key = "\U0001F600" * 30
+    _, wide_problems = render(_sprite_doc(palette={wide_key: "red"}, rows=["K"]), font_dir)
+    assert wide_problems[0] == (
+        f"ops[0] sprite: sprite palette key is 120 bytes, more than {NAME_MAX_LEN}; ignored"
+    )
+
+
+def test_sprite_palette_key_at_exactly_name_max_len_uses_the_content_message(font_dir):
+    """NAME_MAX_LEN itself is still short enough to name in the ordinary
+    message -- the boundary is `> NAME_MAX_LEN`, matching the firmware's
+    `strlen(key) > kNameMaxLen`."""
+    from display_mcp.render import NAME_MAX_LEN
+
+    key_64 = "K" * NAME_MAX_LEN
+    doc = _sprite_doc(palette={key_64: "red"}, rows=["K"])
+    _, problems = render(doc, font_dir)
+    assert problems[0] == f"ops[0] sprite: palette key {key_64!r} is not one character; ignored"
+
+
 def test_sprite_mixed_rows_type_skips_whole_op(font_dir):
     """Any non-string element in `rows` skips the whole op, same as
     `rows` not being a list of strings at all."""
@@ -354,17 +393,11 @@ def test_sprite_no_palette_entry_warning_is_capped(font_dir):
     assert len(warned_reprs) == 8
 
 
-def test_sprite_repeated_character_after_the_cap_is_not_an_overflow(font_dir):
-    """docs/plans/firmware-bounds.md's review amendment: exactly eight
-    distinct characters (A-H), the first (A) repeated once more at the
-    end -- once the set holds eight entries, a *repeat* of an
-    already-warned character must not fall into the "...and more" branch
-    just because the set happens to be full by then. There is no ninth
-    distinct character here at all, so no overflow line should ever
-    appear."""
-    doc = _sprite_doc(cell=1, rows=["ABCDEFGHA"], palette={})
-    problems = check(doc, font_dir)
-    own_lines = [p for p in problems if "no palette entry for" in p]
-    overflow_lines = [p for p in problems if "...and more" in p]
-    assert len(own_lines) == 8
-    assert overflow_lines == []
+# docs/plans/firmware-bounds.md's review amendment -- exactly eight distinct
+# characters (A-H) with the first repeated at the end, where a *repeat* of an
+# already-warned character must not fall into the "...and more" branch just
+# because the set happens to be full by then -- is asserted on this same
+# `check()` call, for this same `rows=["ABCDEFGHA"]` / `palette={}` op, by
+# tests/parity/test_sprite.py::test_sprite_repeated_character_after_the_cap_matches_the_firmware,
+# which adds the firmware side and the distinctness of the eight warned
+# characters on top.

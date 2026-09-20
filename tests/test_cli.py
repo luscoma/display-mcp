@@ -9,10 +9,10 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
+from conftest import SAMPLE_HASH  # the one SAMPLE_HASH (C5)
 from display_mcp import cli
 from display_mcp.render import render_hash
 
-SAMPLE_HASH = "1c772cd7a6ebc2c7"
 SAMPLE = Path(__file__).resolve().parents[1] / "samples" / "display.json"
 
 
@@ -41,12 +41,17 @@ def test_check_reports_problems_and_exits_1(font_dir, tmp_path, capsys):
     assert "unknown op" in out
 
 
-def test_check_missing_fonts_exits_2(tmp_path, capsys, sample_doc):
+@pytest.mark.parametrize("command", ["check", "render", "swatches"])
+def test_missing_fonts_exits_2(tmp_path, capsys, sample_doc, command):
+    """Every subcommand that renders goes through the one `_require_fonts`
+    gate: exit 2 with a clear message on stderr, not a traceback out of
+    Pillow. `swatches` takes no file argument, so it is driven without one."""
     f = tmp_path / "doc.json"
     f.write_text(json.dumps(sample_doc))
     empty_font_dir = tmp_path / "no-fonts-here"
     empty_font_dir.mkdir()
-    code, out, err = _run(["check", str(f), "--font-dir", str(empty_font_dir)], capsys)
+    argv = [command] if command == "swatches" else [command, str(f)]
+    code, out, err = _run([*argv, "--font-dir", str(empty_font_dir)], capsys)
     assert code == 2
     assert err  # a clear message on stderr
 
@@ -146,28 +151,26 @@ def test_cli_render_is_dithered(font_dir, tmp_path, capsys, sample_doc):
     assert set(px.crop((20, 20, 180, 180)).get_flattened_data()) == {(32, 32, 32), (222, 222, 216)}
 
 
-def test_render_has_no_ideal_flag(tmp_path):
-    """`--ideal` (pure framebuffer RGB) is gone; INK is the only colour table.
-
-    It was CLI-only, so no MCP caller could ever reach it, and the six-ink
-    invariant it nominally guarded is covered in INK mode by
-    test_render_emits_only_the_six_inks. Pinned so the flag is not revived
-    without revisiting that; docs/PLAN.md records the reversal.
-    """
+@pytest.mark.parametrize(
+    "argv",
+    [
+        # `--ideal` (pure framebuffer RGB) is gone; INK is the only colour
+        # table. It was CLI-only, so no MCP caller could ever reach it, and
+        # the six-ink invariant it nominally guarded is covered in INK mode
+        # by test_render_emits_only_the_six_inks. docs/PLAN.md records the
+        # reversal.
+        pytest.param(["render", "doc.json", "--ideal"], id="render---ideal"),
+        # The `firmware-fonts` alias is dropped (C7, final review) -- it only
+        # ever named the font half of what `firmware-vocabulary` now also
+        # does for icons.
+        pytest.param(["firmware-fonts"], id="firmware-fonts"),
+    ],
+)
+def test_removed_cli_surfaces_are_gone(argv):
+    """Pinned so neither is revived without revisiting the decision that
+    dropped it: an argparse error, not a working synonym."""
     with pytest.raises(SystemExit):
-        cli.build_parser().parse_args(["render", str(tmp_path / "doc.json"), "--ideal"])
-
-
-def test_render_missing_fonts_exits_2(tmp_path, capsys, sample_doc):
-    f = tmp_path / "doc.json"
-    f.write_text(json.dumps(sample_doc))
-    empty_font_dir = tmp_path / "no-fonts-here"
-    empty_font_dir.mkdir()
-    code, out, err = _run(
-        ["render", str(f), "--font-dir", str(empty_font_dir)], capsys
-    )
-    assert code == 2
-    assert err
+        cli.build_parser().parse_args(argv)
 
 
 def test_render_reports_stale_hash(font_dir, tmp_path, capsys, sample_doc):
@@ -313,20 +316,20 @@ def _scratch_yaml_text() -> str:
     )
 
 
-@pytest.mark.parametrize("subcommand", ["firmware-vocabulary", "firmware-fonts"])
-def test_firmware_vocabulary_subcommand_rewrites_a_scratch_yaml(tmp_path, capsys, subcommand):
+def test_firmware_vocabulary_subcommand_rewrites_a_scratch_yaml(tmp_path, capsys):
     """`display-mcp-cli firmware-vocabulary <yaml_path>` (docs/plans/
     fonts-and-icons.md Decision 3/4, B2/B4b) rewrites the file's four
-    font/icon fences in place, under either name -- `firmware-fonts` is
-    kept as an alias so nothing that already calls it by that name breaks
-    -- exercised on a scratch copy here, never the repo's own YAML, so a
-    botched run can't leave the committed file stale.
-    `generate_firmware_yaml()`'s own correctness (which entries, which
-    ids) is `tests/parity/test_limits_and_dispatch.py`'s job; this is only
-    "does the subcommand read the given file, rewrite it and say so"."""
+    font/icon fences in place -- exercised on a scratch copy here, never
+    the repo's own YAML, so a botched run can't leave the committed file
+    stale. The old `firmware-fonts` alias is gone (C7, final review): it
+    only ever named the font half of what this subcommand now also does
+    for icons. `generate_firmware_yaml()`'s own correctness (which
+    entries, which ids) is `tests/parity/test_limits_and_dispatch.py`'s
+    job; this is only "does the subcommand read the given file, rewrite it
+    and say so"."""
     yaml_path = tmp_path / "epaper-schedule.yaml"
     yaml_path.write_text(_scratch_yaml_text())
-    code, out, err = _run([subcommand, str(yaml_path)], capsys)
+    code, out, err = _run(["firmware-vocabulary", str(yaml_path)], capsys)
     assert code == 0
     assert str(yaml_path) in out
     text = yaml_path.read_text()

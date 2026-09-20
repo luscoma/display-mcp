@@ -18,6 +18,7 @@ from PIL import Image
 
 from .canvas import HEIGHT, WIDTH
 from .fonts import FONTS, _load_fonts, resolve_font, unknown_font_message
+from .shapes import NAME_MAX_LEN
 
 COLORS = ("black", "white", "yellow", "red", "blue", "green")
 
@@ -345,6 +346,9 @@ class Ctx:
         for _ in range(8):
             if not isinstance(n, str):
                 break  # an alias that lands on a list/number: unknown, below
+            if (problem := self._name_too_long(n, where)) is not None:
+                self.problems.append(problem)
+                return None
             if n in self.table:
                 return Ink(self.table[n], self.table[n], 100)
             entry = self.palette.get(n)
@@ -359,6 +363,34 @@ class Ctx:
             n = entry
         self.problems.append(f"{where}: unknown colour {n!r}")
         return None
+
+    @staticmethod
+    def _name_too_long(n: str, where: str) -> str | None:
+        """A colour name (or a palette alias hop landing on one) longer than
+        `NAME_MAX_LEN` bytes, or `None` when it's within bounds -- mirrors
+        `display_list.h`'s `color_name_too_long()`/`warn_color_name_too_long()`
+        (final safety review, B7/A1): checked at the same points the firmware
+        checks (the initial name, and every hop's candidate before it is
+        chased further), so an over-long `c` is treated exactly like any
+        other name that doesn't resolve -- warn, fall back to black -- on
+        both sides, in the same words. `bgc` is bounded this same way on
+        the firmware, which resolves it (for the chroma-keyed off colour
+        `icon` never actually uses on the wall) via the same
+        `resolve_ink()`; the renderer never resolves `bgc` at all --
+        `icon`'s own branch below reads only `c` -- so this function is
+        never reached for it here (final review, B7/F: an earlier version
+        of this comment claimed the bound covered `bgc` "on both sides",
+        which overstated what the renderer does with a field it accepts
+        and otherwise ignores). Unlike the firmware this buys no
+        allocation safety by itself (Python strings aren't a heap the panel
+        has none of), but it keeps `problems` from ever carrying a 64 KB
+        `!r` of a document-supplied name, and it's the one shared place a
+        65,400-byte `c` is caught before either walk below ever compares it
+        against a table."""
+        n_bytes = len(n.encode("utf-8"))
+        if n_bytes <= NAME_MAX_LEN:
+            return None
+        return f"{where}: colour name is {n_bytes} bytes, more than {NAME_MAX_LEN}; using black"
 
     def _mix(self, entry: dict[str, Any], name: str, where: str) -> Ink:
         black = self.table["black"]
@@ -383,6 +415,9 @@ class Ctx:
         for _ in range(8):
             if not isinstance(n, str):
                 break
+            if (problem := self._name_too_long(n, where)) is not None:
+                self.problems.append(problem)
+                return self.table["black"]
             if n in self.table:
                 return self.table[n]
             entry = self.palette.get(n)
@@ -655,6 +690,23 @@ def _check_drew_nothing(img: Image.Image, ctx: Ctx, before: tuple | None, where:
         )
 
 
+# Every built-in mix a chromatic-as-text warning could reasonably suggest
+# instead: the "dark" tier (TIERS), minus the one entry that isn't actually
+# a two-*dark-ink* mix -- `grey-dark` is black+white, and recommending an
+# achromatic mix as the fix for a *chromatic* mix reading wrong is not the
+# same claim `_check_mix_as_text()` makes about that pair (it's exempted
+# from the warning entirely, above). Derived from `TIERS`/`BUILTIN_MIXES`
+# rather than typed out a second time (final review, B7/B5) -- a
+# `TIERS` table already exists, so the prescription can't silently drift
+# from what "dark" actually lists; `test_dark_two_ink_mixes_matches_the_tiers`
+# pins the derivation.
+_DARK_TWO_INK_MIXES: tuple[str, ...] = tuple(
+    name
+    for name, (c, c2, _pct) in BUILTIN_MIXES.items()
+    if TIERS[name] == "dark" and "white" not in (c, c2)
+)
+
+
 def _check_mix_as_text(ctx: Ctx, ink: Ink, name: str, where: str) -> None:
     """Warning: a chromatic mix used as text shifts toward its lighter ink
     (docs/plans/ink-mixing.md decision 3).
@@ -676,10 +728,12 @@ def _check_mix_as_text(ctx: Ctx, ink: Ink, name: str, where: str) -> None:
     if gap > 0.2:
         a_name, b_name = ctx.name_of(ink.a), ctx.name_of(ink.b)
         lighter = a_name if _luminance(ink.a) > _luminance(ink.b) else b_name
+        suggestions = ", ".join(_DARK_TWO_INK_MIXES)
         ctx.problems.append(
             f"{where}: {name!r} mixes {a_name}+{b_name} (luminance gap "
             f"{gap:.2f}) — as text it will read shifted toward {lighter}, "
-            "not the blend a fill of the same mix would show"
+            "not the blend a fill of the same mix would show; for type use "
+            f"an ink, or a two-dark-ink mix: {suggestions}"
         )
 
 
@@ -710,7 +764,7 @@ def _check_thin_mix(ctx: Ctx, ink: Ink, where: str, feature: str, **dims) -> Non
         ctx.problems.append(
             f"{where}: {ink.mix}% mix on a {t}px {noun} renders at {outcome}, "
             f"not {ink.mix}%, and which one depends on the op's coordinate "
-            "parity"
+            "parity; use a 50% mix, or make the feature 2 px"
         )
     else:
         w, h = dims["w"], dims["h"]

@@ -2,13 +2,17 @@
 header extraction, one `_STUB` C++ prelude (a stand-in `esphome::Color`/
 `esphome::display::Display` with every primitive `display_list.h`'s
 free functions call -- `draw_pixel_at`, `filled_rectangle`, `line`,
-`circle`, `filled_circle`, `horizontal_line`, transcribed from the real
-esphome package, not reinvented -- plus a minimal ArduinoJson stand-in
-with `size()`, a bounds-checked `Canvas`, a tiny recursive-descent JSON
-parser, and the `run_harness()` glue that reads an op from stdin and
-writes a drew-byte plus the raw RGB raster to stdout), one `_compile()`
-that turns a harness's own header fragments and `main()` into an
-executable, and one `_OpHarness` that runs it.
+`circle`, `filled_circle`, `horizontal_line`, `get_text_bounds()` (final
+review, B7/F: transcribed verbatim, the one method draw_text_deco() needs
+beyond what was already here) -- transcribed from the real esphome
+package, not reinvented -- plus a `TextAlign` enum and a fixed-advance
+stand-in `BaseFont` (same review; get_text_bounds()'s only font
+dependency), a minimal ArduinoJson stand-in with `size()`, a
+bounds-checked `Canvas`, a tiny recursive-descent JSON parser, and the
+`run_harness()` glue that reads an op from stdin and writes a drew-byte
+plus the raw RGB raster to stdout), one `_compile()` that turns a
+harness's own header fragments and `main()` into an executable, and one
+`_OpHarness` that runs it.
 
 Every harness needs a host C++ compiler; every fixture here skips
 cleanly (`pytest.skip`) without one, so the pure-data tests elsewhere in
@@ -126,6 +130,48 @@ struct Color {
 };
 namespace display {
 enum class DisplayType { DISPLAY_TYPE_COLOR };
+
+// TextAlign's bit layout, transcribed verbatim from
+// esphome/components/display/display.h -- Display::get_text_bounds()
+// below decodes the same two masks (0x18 for x-align, 0x07 for y-align)
+// the real one does, so a harness driving TOP_LEFT/TOP_CENTER/TOP_RIGHT
+// (the only three align_of() ever produces) exercises the identical
+// branch the panel takes.
+enum class TextAlign {
+  TOP = 0x00,
+  CENTER_VERTICAL = 0x01,
+  BASELINE = 0x02,
+  BOTTOM = 0x04,
+  LEFT = 0x00,
+  CENTER_HORIZONTAL = 0x08,
+  RIGHT = 0x10,
+  TOP_LEFT = TOP | LEFT,
+  TOP_CENTER = TOP | CENTER_HORIZONTAL,
+  TOP_RIGHT = TOP | RIGHT,
+};
+
+// A minimal stand-in for esphome::display::BaseFont (draw_text_deco()'s
+// only font dependency, via Display::get_text_bounds()'s font->measure()
+// call) -- a fixed advance per character, no kerning, no bearing, which
+// is all get_text_bounds()'s arithmetic needs to be exercised for real:
+// `width` (what draw_text_deco() actually uses, via lw) scales with
+// strlen(); `x_offset` stays 0 rather than modelling real bearing, since
+// only its *presence* in the alignment arithmetic is being exercised
+// here, not a real face's metrics (`deco_rule_geometry()`'s own numbers
+// come from the caller's `h`/`baseline` args, never from this font).
+class BaseFont {
+ public:
+  int advance = 10;
+  virtual void print(int x, int y, class Display *display, Color color, const char *text,
+                      Color background) {}
+  virtual void measure(const char *str, int *width, int *x_offset, int *baseline, int *height) {
+    *width = advance * static_cast<int>(strlen(str));
+    *x_offset = 0;
+    *baseline = 10;
+    *height = 20;
+  }
+};
+
 class Display {
  public:
   virtual ~Display() = default;
@@ -136,6 +182,46 @@ class Display {
   virtual void clear() {}
   virtual DisplayType get_display_type() = 0;
   virtual void update() {}
+  // Transcribed verbatim from esphome/components/display/display.cpp:
+  // pure arithmetic over font->measure()'s own outputs, no other Display
+  // state, so this is a faithful copy, not a reimplementation -- the one
+  // method draw_text_deco() (via clipped_filled_rectangle()) leans on
+  // besides filled_rectangle()/get_width()/get_height(), all three
+  // already on this stub.
+  void get_text_bounds(int x, int y, const char *text, BaseFont *font, TextAlign align, int *x1,
+                        int *y1, int *width, int *height) {
+    int x_offset, baseline;
+    font->measure(text, width, &x_offset, &baseline, height);
+    auto x_align = TextAlign(int(align) & 0x18);
+    auto y_align = TextAlign(int(align) & 0x07);
+    switch (x_align) {
+      case TextAlign::RIGHT:
+        *x1 = x - *width - x_offset;
+        break;
+      case TextAlign::CENTER_HORIZONTAL:
+        *x1 = x - (*width + x_offset) / 2;
+        break;
+      case TextAlign::LEFT:
+      default:
+        *x1 = x;
+        break;
+    }
+    switch (y_align) {
+      case TextAlign::BOTTOM:
+        *y1 = y - *height;
+        break;
+      case TextAlign::BASELINE:
+        *y1 = y - baseline;
+        break;
+      case TextAlign::CENTER_VERTICAL:
+        *y1 = y - (*height) / 2;
+        break;
+      case TextAlign::TOP:
+      default:
+        *y1 = y;
+        break;
+    }
+  }
   void horizontal_line(int x, int y, int width, Color c) {
     for (int i = x; i < x + width; i++) this->draw_pixel_at(i, y, c);
   }
@@ -225,16 +311,26 @@ class JsonVariant {
   operator JsonObject() const;
   template <typename T> T operator|(T def) const;
 };
+// Real ArduinoJson's JsonString is a non-owning view into the document's
+// own memory pool -- kv.key().c_str() stays valid long after the
+// temporary JsonString itself is gone, because the temporary never owned
+// the characters. An earlier version of this stand-in owned a std::string
+// copy instead, so `kv.key().c_str()` pointed into a buffer that was
+// freed at the end of that statement -- invisible for a short key (small-
+// string optimisation keeps it inline, and the freed stack bytes usually
+// survive one more statement by luck) but a real dangling-pointer read
+// for anything longer, exactly the "sprite palette key is bytes" harness
+// case this stand-in exists to prove (final review, B7/F).
 class JsonString {
  public:
-  std::string v;
-  const char *c_str() const { return v.c_str(); }
+  const char *p = "";
+  const char *c_str() const { return p; }
 };
 class JsonPair {
  public:
-  std::string k;
+  const std::string *k;
   NodePtr v;
-  JsonString key() const { return JsonString{k}; }
+  JsonString key() const { return JsonString{k->c_str()}; }
   JsonVariant value() const { return JsonVariant(v); }
 };
 class JsonArray {
@@ -281,7 +377,7 @@ class JsonObject {
     size_t i;
     bool operator!=(const iterator &o) const { return i != o.i; }
     void operator++() { i++; }
-    JsonPair operator*() const { return JsonPair{(*v)[i].first, (*v)[i].second}; }
+    JsonPair operator*() const { return JsonPair{&(*v)[i].first, (*v)[i].second}; }
   };
   iterator begin() const { return iterator{n ? &n->obj : nullptr, 0}; }
   iterator end() const { return iterator{n ? &n->obj : nullptr, n ? n->obj.size() : 0}; }
@@ -500,15 +596,19 @@ int run_harness(F draw) {
 }
 """
 
-# draw_*()'s resolve_ink(name, palette) is a big alias/built-in walk over a
-# real document palette; this stand-in only needs the names the scenarios
-# below actually use, and gives them exactly display_mcp.render.INK's own
-# RGB triples (the panel's muted inks, not primary colours) so a pixel diff
-# means something. "navy" and "grey-dark" are BUILTIN_MIXES entries;
-# "flame" is samples/sprite.json's own document-palette recipe
-# (red+yellow 50) -- real recipes, not stand-ins.
+# draw_*()'s resolve_ink(name, palette, ctx) is a big alias/built-in walk
+# over a real document palette; this stand-in only needs the names the
+# scenarios below actually use, and gives them exactly
+# display_mcp.render.INK's own RGB triples (the panel's muted inks, not
+# primary colours) so a pixel diff means something. "navy" and "grey-dark"
+# are BUILTIN_MIXES entries; "flame" is samples/sprite.json's own
+# document-palette recipe (red+yellow 50) -- real recipes, not stand-ins.
+# The third parameter matches the real resolve_ink()'s `ctx` (final review,
+# B7/F, item 9 -- an op/field label for its length warning) so an extracted
+# draw_sprite()/draw_poly()/etc. that calls the three-argument form still
+# links against this stand-in; unused here since this stub never warns.
 _RESOLVE_INK = r"""
-inline Ink resolve_ink(const char *name, JsonObject) {
+inline Ink resolve_ink(const char *name, JsonObject, const char * = "") {
   std::string n = name ? name : "black";
   auto BLACK = esphome::Color(32, 32, 32);
   auto WHITE = esphome::Color(222, 222, 216);
@@ -682,6 +782,10 @@ def sprite_harness(tmp_path_factory) -> _OpHarness:
         _extract(r"^static const int kSpriteMaxCols = \d+;$", "kSpriteMaxCols"),
         _extract(r"^static const int kSpriteMaxRows = \d+;$", "kSpriteMaxRows"),
         _extract(r"^static const int kSpriteMaxPalette = \d+;$", "kSpriteMaxPalette"),
+        # kNameMaxLen (final review, B7/F): draw_sprite() bounds a palette
+        # key and a row's raw byte length on it now, the same "measure
+        # first" discipline f/n/z/colour names already use.
+        _extract(r"^static const int kNameMaxLen = \d+;$", "kNameMaxLen"),
         _extract_block(r"^inline size_t utf8_prev\(", "utf8_prev()"),
         _extract_block(r"^inline size_t utf8_next\(", "utf8_next()"),
         _extract_block(r"^struct Ink \{", "struct Ink"),

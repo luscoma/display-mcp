@@ -11,6 +11,7 @@ import pytest
 from mcp import Client
 from starlette.testclient import TestClient
 
+from conftest import SAMPLE_HASH  # the one SAMPLE_HASH (C5)
 from display_mcp import mcp_server, render
 from display_mcp.config import Settings
 from fakes import FakeStore, fake_check, fake_render
@@ -92,6 +93,20 @@ async def test_list_tools_and_annotations(mcp):
     assert by_name["copy_display"].annotations.idempotent_hint is True
 
 
+async def test_describe_and_guide_are_listed_first(mcp):
+    """Final review, "Composer over MCP": a cold client reading tools in
+    listing order should meet the vocabulary and the prose guide before
+    the tools that act on a document."""
+    async with Client(mcp) as c:
+        tools = (await c.list_tools()).tools
+    assert [t.name for t in tools[:2]] == ["describe", "guide"]
+
+
+def test_server_instructions_mention_describe_and_guide(mcp):
+    assert "describe()" in mcp.instructions
+    assert "guide()" in mcp.instructions
+
+
 async def test_set_display_shape_and_stamped_hash(mcp, store, sample_doc):
     async with Client(mcp) as c:
         result = await c.call_tool("set_display", {"document": sample_doc})
@@ -126,15 +141,12 @@ async def test_set_display_named(mcp, store, sample_doc):
     assert store.names() == ["kitchen"]
 
 
-async def test_preview_published_returns_image_and_no_new_publish(mcp, store, sample_doc):
-    store.publish(sample_doc)
-    async with Client(mcp) as c:
-        result = await c.call_tool("preview", {})
-    assert result.is_error is not True
-    assert any(block.type == "image" for block in result.content)
-
-
 async def test_preview_draft_does_not_publish(mcp, store, sample_doc):
+    """Returns an image and publishes nothing. The no-`document` half (what
+    is already published under `name` is what gets rendered, and previewing
+    it publishes nothing new either) is pinned against the real renderer by
+    tests/test_mcp_preview_render.py::
+    test_preview_no_document_returns_the_published_document."""
     async with Client(mcp) as c:
         result = await c.call_tool("preview", {"document": sample_doc})
     assert result.is_error is not True
@@ -162,19 +174,6 @@ async def test_preview_returns_the_right_note_beside_the_image(mcp, sample_doc):
         assert [b.type for b in result.content] == ["image", "text"]
         assert result.content[1].text.startswith(want)
     assert mcp_server._FLAT_NOTE != mcp_server._DITHERED_NOTE
-
-
-async def test_preview_grid_parameter_is_accepted_and_notes_the_overlay(mcp, sample_doc):
-    """Plumbing only — that the PNG genuinely carries the overlay is pinned
-    for real in tests/test_mcp_preview_render.py, which doesn't stub the
-    renderer out."""
-    async with Client(mcp) as c:
-        plain = await c.call_tool("preview", {"document": sample_doc})
-        gridded = await c.call_tool("preview", {"document": sample_doc, "grid": True})
-    assert plain.is_error is not True
-    assert gridded.is_error is not True
-    assert mcp_server._GRID_NOTE not in plain.content[1].text
-    assert mcp_server._GRID_NOTE in gridded.content[1].text
 
 
 def test_the_two_notes_each_describe_their_own_image():
@@ -390,10 +389,12 @@ async def test_describe_shape(mcp):
         "font_families",
         "anchors",
         "icons",
+        "icon_depicts",
         "icon_sizes",
         "icon_aliases",
         "ops",
         "fmt_fields",
+        "font_aliases",
         "limits",
     }
     assert data["canvas"] == {
@@ -417,6 +418,34 @@ async def test_describe_icon_sizes_is_the_font_slot_table(mcp):
     used = {z for sizes in render.ICONS.values() for z in sizes}
     assert used == set(render.SLOTS)
     assert result.structured_content["icon_sizes"] == render.ICON_SIZES == render.SLOTS
+
+
+async def test_describe_icon_depicts_names_every_icon(mcp):
+    """Final review, "Composer over MCP": a wrong activity icon (`daycare`
+    for a swim lesson, say) validated clean because nothing said what any
+    icon actually draws -- `icon_depicts` is name -> a few words on the
+    picture, for every icon `ICONS` lists, MDI and lucide alike."""
+    async with Client(mcp) as c:
+        result = await c.call_tool("describe", {})
+    depicts = result.structured_content["icon_depicts"]
+    assert depicts == render.ICON_DEPICTS
+    assert set(depicts) == set(render.ICONS)
+    assert all(isinstance(v, str) and v for v in depicts.values())
+
+
+async def test_describe_font_aliases_is_the_bare_legacy_names(mcp):
+    async with Client(mcp) as c:
+        result = await c.call_tool("describe", {})
+    aliases = result.structured_content["font_aliases"]
+    assert aliases == {
+        "xs": "instrument-bold/xs",
+        "sm": "instrument/sm",
+        "md": "instrument/md",
+        "lg": "instrument-bold/lg",
+        "xl": "instrument-bold/xl",
+    }
+    for bare, target in aliases.items():
+        assert render.resolve_font(bare) == target
 
 
 async def test_describe_icon_aliases_is_the_reverse_of_icon_sizes(mcp):
@@ -480,12 +509,13 @@ async def test_describe_icon_required_includes_n(mcp):
 
 
 async def test_describe_fonts_table(mcp):
-    """33 faces in B1 (docs/plans/fonts-and-icons.md): keyed by canonical
-    name (`family[-style]/size`), each with `px`/`slot`/`aliases` plus
+    """110 faces (B1 introduced the scheme at 33; B3b landed the full
+    ladder, docs/plans/fonts-and-icons.md): keyed by canonical name
+    (`family[-style]/size`), each with `px`/`slot`/`aliases` plus
     `family`/`style`/`line_height`/`cell_height`/`ink_height` -- checked
     against the same `FONTS`/`SIZE_TO_SLOT`/`ALIASES_BY_TARGET` tables
     `vocabulary()` itself reads (so this pins the *shape* every entry must
-    have, not a hand-typed copy of all 33), plus a few named spot-checks
+    have, not a hand-typed copy of all 110), plus a few named spot-checks
     so it can't just trivially agree with whatever the code under test
     happens to compute. `mono`'s wrap-default `line_height` stays like
     every other face's, not its `cell_height` (D11, docs/plans/
@@ -515,6 +545,11 @@ async def test_describe_fonts_table(mcp):
         assert row["ink_height"] == face.ink_height
 
     assert "mono" not in fonts  # the dropped bare alias, not a face
+    # cell_height/ink_height below are pinned as data: FreeType measurements
+    # of the real committed font files (font_metrics.json), not derived from
+    # anything else in this test (C10, final review) -- a font swap that
+    # moves them is exactly what test_font_metrics_file_matches_a_fresh_measurement
+    # (tests/renderer/test_text.py) exists to catch.
     assert fonts["instrument/lg"] == {
         "px": 48, "slot": "lg", "aliases": ["instrument/48"], "family": "instrument",
         "style": "", "line_height": 60, "cell_height": 59, "ink_height": None,
@@ -663,6 +698,11 @@ async def test_swatches_with_no_document_has_no_document_palette_group(mcp):
 
 
 async def test_swatches_appends_a_documents_own_palette(mcp):
+    """A document's own `palette` becomes a final group, mix recipe and hex
+    and all. `document` reaching this tool as a JSON string is the same SDK
+    pre-parsing every `document` tool relies on -- covered once, for all of
+    them, by test_validate_json_string_round_trips_to_the_same_hash (see the
+    section comment below)."""
     doc = {
         "v": 1,
         "bg": "white",
@@ -675,14 +715,6 @@ async def test_swatches_appends_a_documents_own_palette(mcp):
     assert "document palette:" in text
     assert "flame — red+yellow 50 — #B56D2B" in text
     assert "ghost" not in text  # unresolvable, skipped rather than guessed at
-
-
-async def test_swatches_accepts_a_json_string_document(mcp):
-    doc = {"v": 1, "bg": "white", "palette": {"accent": "blue"}, "ops": []}
-    async with Client(mcp) as c:
-        result = await c.call_tool("swatches", {"document": json.dumps(doc)})
-    assert result.is_error is not True
-    assert "accent — ink — #2E3E80" in result.content[1].text
 
 
 async def test_swatches_include_document_adds_the_sheet_as_a_third_block(mcp, store):
@@ -717,17 +749,11 @@ async def test_swatches_include_document_adds_the_sheet_as_a_third_block(mcp, st
 # docs/plans/dragon-feedback.md D2 for why that is left as it is.
 
 
-async def test_tool_schema_still_accepts_a_plain_dict(mcp):
-    """The `document` parameter's declared type widened to dict | str; a
-    plain object is still valid input, not narrowed to string-only."""
-    async with Client(mcp) as c:
-        tools = (await c.list_tools()).tools
-    schema = {t.name: t.input_schema for t in tools}["set_display"]
-    variants = schema["properties"]["document"]["anyOf"]
-    assert {"object", "string"} == {v["type"] for v in variants}
-
-
 async def test_validate_json_string_round_trips_to_the_same_hash(mcp, sample_doc):
+    """`document`'s declared type is `dict | str`, and neither variant is
+    narrowed away: the object form is what every other test in this file
+    sends, and the string form has to reach the tool and land on the same
+    hash rather than tripping the SDK's schema validation."""
     as_string = json.dumps(sample_doc)
     async with Client(mcp) as c:
         from_dict = await c.call_tool("validate", {"document": sample_doc})
@@ -810,7 +836,7 @@ async def test_sample_resource(mcp):
     async with Client(mcp) as c:
         result = await c.read_resource("display://sample")
     doc = json.loads(result.contents[0].text)
-    assert doc["meta"]["hash"] == "1c772cd7a6ebc2c7"
+    assert doc["meta"]["hash"] == SAMPLE_HASH
 
 
 async def test_current_resource(mcp, store, sample_doc):
@@ -819,6 +845,17 @@ async def test_current_resource(mcp, store, sample_doc):
         result = await c.read_resource("display://current/default")
     doc = json.loads(result.contents[0].text)
     assert doc["meta"]["hash"] == store.get("default").hash
+
+
+async def test_bare_current_resource_hints_at_the_template(mcp):
+    """Final review, "Composer over MCP": `display://current` alone (no
+    name segment) used to fall through to the SDK's own generic "no
+    resource or template matches" error, which names neither
+    `display://current/<name>` nor an example."""
+    async with Client(mcp) as c:
+        with pytest.raises(Exception) as exc_info:
+            await c.read_resource("display://current")
+    assert "display://current/" in str(exc_info.value)
 
 
 # ---- prompt -------------------------------------------------------------

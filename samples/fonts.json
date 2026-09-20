@@ -1,0 +1,505 @@
+{
+  "v": 1,
+  "meta": {
+    "hash": "9bc560ee2ec1ce01"
+  },
+  "bg": "white",
+  "palette": {},
+  "ops": [
+    {
+      "op": "rect",
+      "x": 0,
+      "y": 0,
+      "w": 1200,
+      "h": 196,
+      "c": "navy"
+    },
+    {
+      "op": "text",
+      "x": 48,
+      "y": 36,
+      "s": "Type specimen",
+      "f": "petrona-bold/xl",
+      "c": "white"
+    },
+    {
+      "op": "text",
+      "x": 52,
+      "y": 140,
+      "s": "Every family and style the panel compiles",
+      "f": "petrona-italic/40",
+      "c": "white"
+    },
+    {
+      "op": "text",
+      "x": 48,
+      "y": 228,
+      "s": "petrona/md \u00b7 600",
+      "f": "karla-bold/xs",
+      "c": "grey-mid"
+    },
+    {
+      "op": "text",
+      "x": 48,
+      "y": 258,
+      "s": "Hamburgefonstiv 0123 \u2014 \u00c1g",
+      "f": "petrona/md",
+      "w": 580
+    },
+    {
+      "op": "text",
+      "x": 48,
+      "y": 324,
+      "s": "petrona-bold/md \u00b7 800",
+      "f": "karla-bold/xs",
+      "c": "grey-mid"
+    },
+    {
+      "op": "text",
+      "x": 48,
+      "y": 354,
+      "s": "Hamburgefonstiv 0123 \u2014 \u00c1g",
+      "f": "petrona-bold/md",
+      "w": 580
+    },
+    {
+      "op": "text",
+      "x": 48,
+      "y": 420,
+      "s": "petrona-italic/md \u00b7 500",
+      "f": "karla-bold/xs",
+      "c": "grey-mid"
+    },
+    {
+      "op": "text",
+      "x": 48,
+      "y": 450,
+      "s": "Hamburgefonstiv 0123 \u2014 \u00c1g",
+      "f": "petrona-italic/md",
+      "w": 580
+    },
+    {
+      "op": "text",
+      "x": 48,
+      "y": 516,
+      "s": "instrument/md \u00b7 400",
+      "f": "karla-bold/xs",
+      "c": "grey-mid"
+    },
+    {
+      "op": "text",
+      "x": 48,
+      "y": 546,
+      "s": "Hamburgefonstiv 0123 \u2014 \u00c1g",
+      "f": "instrument/md",
+      "w": 580
+    },
+    {
+      "op": "text",
+      "x": 48,
+      "y": 612,
+      "s": "instrument-bold/md \u00b7 700",
+      "f": "karla-bold/xs",
+      "c": "grey-mid"
+    },
+    {
+      "op": "text",
+      "x": 48,
+      "y": 642,
+      "s": "Hamburgefonstiv 0123 \u2014 \u00c1g",
+      "f": "instrument-bold/md",
+      "w": 580
+    },
+    {
+      "op": "text",
+      "x": 48,
+      "y": 708,
+      "s": "instrument-italic/md \u00b7 400",
+      "f": "karla-bold/xs",
+      "c": "grey-mid"
+    },
+    {
+      "op": "text",
+      "x": 48,
+      "y": 738,
+      "s": "Hamburgefonstiv 0123 \u2014 \u00c1g",
+      "f": "instrument-italic/md",
+      "w": 580
+    },
+    {
+      "op": "text",
+      "x": 48,
+      "y": 804,
+      "s": "karla/md \u00b7 400",
+      "f": "karla-bold/xs",
+      "c": "grey-mid"
+    },
+    {
+      "op": "text",
+      "x": 48,
+      "y": 834,
+      "s": "Hamburgefonstiv 0123 \u2014 \u00c1g",
+      "f": "karla/md",
+      "w": 580
+    },
+    {
+      "op": "text",
+      "x": 48,
+      "y": 900,
+      "s": "karla-bold/md \u00b7 700",
+      "f": "karla-bold/xs",
+      "c": "grey-mid"
+    },
+    {
+      "op": "text",
+      "x": 48,
+      "y": 930,
+      "s": "Hamburgefonstiv 0123 \u2014 \u00c1g",
+      "f": "karla-bold/md",
+      "w": 580
+    },
+    {
+      "op": "text",
+      "x": 48,
+      "y": 996,
+      "s": "karla-italic/md \u00b7 400",
+      "f": "karla-bold/xs",
+      "c": "grey-mid"
+    },
+    {
+      "op": "text",
+      "x": 48,
+      "y": 1026,
+      "s": "Hamburgefonstiv 0123 \u2014 \u00c1g",
+      "f": "karla-italic/md",
+      "w": 580
+    },
+    {
+      "op": "text",
+      "x": 48,
+      "y": 1092,
+      "s": "mono/24 \u00b7 400",
+      "f": "karla-bold/xs",
+      "c": "grey-mid"
+    },
+    {
+      "op": "text",
+      "x": 48,
+      "y": 1122,
+      "s": "Hamburgefonstiv 0123",
+      "f": "mono/24",
+      "w": 580
+    },
+    {
+      "op": "text",
+      "x": 48,
+      "y": 1154,
+      "s": "\u250c\u2500\u2500\u252c\u2500\u2500\u2510 \u2588\u2593\u2592\u2591 <> -> ligature-free",
+      "f": "mono/24",
+      "w": 580
+    },
+    {
+      "op": "text",
+      "x": 690,
+      "y": 228,
+      "s": "size ladder \u00b7 petrona at every compiled size",
+      "f": "karla-bold/xs",
+      "c": "grey-mid"
+    },
+    {
+      "op": "text",
+      "x": 690,
+      "y": 258,
+      "s": "Aa 22 px",
+      "f": "petrona/22",
+      "w": 460
+    },
+    {
+      "op": "text",
+      "x": 690,
+      "y": 285,
+      "s": "Aa 24 px",
+      "f": "petrona/24",
+      "w": 460
+    },
+    {
+      "op": "text",
+      "x": 690,
+      "y": 315,
+      "s": "Aa 26 px",
+      "f": "petrona/26",
+      "w": 460
+    },
+    {
+      "op": "text",
+      "x": 690,
+      "y": 347,
+      "s": "Aa 28 px",
+      "f": "petrona/28",
+      "w": 460
+    },
+    {
+      "op": "text",
+      "x": 690,
+      "y": 382,
+      "s": "Aa 32 px",
+      "f": "petrona/32",
+      "w": 460
+    },
+    {
+      "op": "text",
+      "x": 690,
+      "y": 422,
+      "s": "Aa 36 px",
+      "f": "petrona/36",
+      "w": 460
+    },
+    {
+      "op": "text",
+      "x": 690,
+      "y": 467,
+      "s": "Aa 40 px",
+      "f": "petrona/40",
+      "w": 460
+    },
+    {
+      "op": "text",
+      "x": 690,
+      "y": 517,
+      "s": "Aa 44 px",
+      "f": "petrona/44",
+      "w": 460
+    },
+    {
+      "op": "text",
+      "x": 690,
+      "y": 572,
+      "s": "Aa 48 px",
+      "f": "petrona/48",
+      "w": 460
+    },
+    {
+      "op": "text",
+      "x": 690,
+      "y": 632,
+      "s": "Aa 54 px",
+      "f": "petrona/54",
+      "w": 460
+    },
+    {
+      "op": "text",
+      "x": 690,
+      "y": 723,
+      "s": "bare names \u00b7 Instrument Sans, unchanged",
+      "f": "karla-bold/xs",
+      "c": "grey-mid",
+      "w": 460
+    },
+    {
+      "op": "text",
+      "x": 690,
+      "y": 753,
+      "s": "xl",
+      "f": "xl"
+    },
+    {
+      "op": "text",
+      "x": 810,
+      "y": 781,
+      "s": "= instrument-bold/xl",
+      "f": "karla/sm",
+      "c": "grey-mid",
+      "w": 340
+    },
+    {
+      "op": "text",
+      "x": 690,
+      "y": 857,
+      "s": "lg",
+      "f": "lg"
+    },
+    {
+      "op": "text",
+      "x": 810,
+      "y": 867,
+      "s": "= instrument-bold/lg",
+      "f": "karla/sm",
+      "c": "grey-mid",
+      "w": 340
+    },
+    {
+      "op": "text",
+      "x": 690,
+      "y": 917,
+      "s": "md",
+      "f": "md"
+    },
+    {
+      "op": "text",
+      "x": 810,
+      "y": 921,
+      "s": "= instrument/md",
+      "f": "karla/sm",
+      "c": "grey-mid",
+      "w": 340
+    },
+    {
+      "op": "text",
+      "x": 690,
+      "y": 962,
+      "s": "sm",
+      "f": "sm"
+    },
+    {
+      "op": "text",
+      "x": 810,
+      "y": 962,
+      "s": "= instrument/sm",
+      "f": "karla/sm",
+      "c": "grey-mid",
+      "w": 340
+    },
+    {
+      "op": "text",
+      "x": 690,
+      "y": 997,
+      "s": "xs",
+      "f": "xs"
+    },
+    {
+      "op": "text",
+      "x": 810,
+      "y": 997,
+      "s": "= instrument-bold/xs",
+      "f": "karla/sm",
+      "c": "grey-mid",
+      "w": 340
+    },
+    {
+      "op": "text",
+      "x": 690,
+      "y": 1054,
+      "s": "deco \u00b7 text only",
+      "f": "karla-bold/xs",
+      "c": "grey-mid"
+    },
+    {
+      "op": "text",
+      "x": 690,
+      "y": 1084,
+      "s": "underline a phrase",
+      "f": "karla/md",
+      "deco": "underline"
+    },
+    {
+      "op": "text",
+      "x": 690,
+      "y": 1134,
+      "s": "strike a done to-do",
+      "f": "karla/md",
+      "deco": "strike",
+      "c": "grey-mid"
+    },
+    {
+      "op": "text",
+      "x": 690,
+      "y": 1184,
+      "s": "navy holds as type",
+      "f": "petrona-italic/sm",
+      "c": "navy",
+      "w": 460
+    },
+    {
+      "op": "text",
+      "x": 48,
+      "y": 1224,
+      "s": "the five slots \u00b7 karla; a pixel count spells the same face",
+      "f": "karla-bold/xs",
+      "c": "grey-mid",
+      "w": 580
+    },
+    {
+      "op": "text",
+      "x": 48,
+      "y": 1254,
+      "s": "karla/xs is karla/22",
+      "f": "karla/xs",
+      "w": 580
+    },
+    {
+      "op": "text",
+      "x": 48,
+      "y": 1281,
+      "s": "karla/sm is karla/28",
+      "f": "karla/sm",
+      "w": 580
+    },
+    {
+      "op": "text",
+      "x": 48,
+      "y": 1316,
+      "s": "karla/md is karla/36",
+      "f": "karla/md",
+      "w": 580
+    },
+    {
+      "op": "text",
+      "x": 48,
+      "y": 1361,
+      "s": "karla/lg is karla/48",
+      "f": "karla/lg",
+      "w": 580
+    },
+    {
+      "op": "text",
+      "x": 48,
+      "y": 1421,
+      "s": "xl is 84 px: the day name in the header",
+      "f": "karla/sm",
+      "c": "grey-mid",
+      "w": 580
+    },
+    {
+      "op": "line",
+      "x": 48,
+      "y": 1528,
+      "x2": 1152,
+      "y2": 1528,
+      "c": "grey-light",
+      "t": 2
+    },
+    {
+      "op": "text",
+      "x": 48,
+      "y": 1546,
+      "s": "samples/fonts.json",
+      "f": "karla/xs",
+      "c": "grey-mid"
+    },
+    {
+      "op": "fmt",
+      "x": 1045,
+      "y": 1546,
+      "s": "{hash}@{time24}",
+      "f": "xs",
+      "a": "right",
+      "c": "grey-mid"
+    },
+    {
+      "op": "icon",
+      "x": 1062,
+      "y": 1546,
+      "n": "battery",
+      "z": "sm",
+      "c": "grey-mid"
+    },
+    {
+      "op": "fmt",
+      "x": 1100,
+      "y": 1546,
+      "s": "{battery}",
+      "f": "xs",
+      "c": "grey-mid"
+    }
+  ]
+}

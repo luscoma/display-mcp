@@ -15,8 +15,6 @@ Needs a host C++ compiler; skips cleanly without one (see conftest.py).
 
 from __future__ import annotations
 
-import math
-
 import pytest
 from PIL import Image, ImageDraw
 
@@ -158,12 +156,25 @@ def _ring_vs_filled_circles(harness, r: int, t: int, pad: int = 4):
     return ring, outer, inner, n
 
 
-@pytest.mark.parametrize("r", [0, 1, 2, 3, 6, 20, 60])
+# r = 10 and 15 came from the old `test_circle_ring_has_no_diagonal_holes`,
+# whose radii this parametrization absorbed; 0-3 are where t_offset=5 already
+# puts t past r, so the degenerate "no inner circle at all" case the old
+# `test_circle_ring_past_the_radius_equals_a_plain_filled_circle` asserted
+# separately is covered here too.
+@pytest.mark.parametrize("r", [0, 1, 2, 3, 6, 10, 15, 20, 60])
 @pytest.mark.parametrize("t_offset", [2, 5])  # t relative to nothing; see below
 def test_circle_ring_matches_filled_circle_difference(circle_ring_harness, r, t_offset):
     """The annulus equals filled_circle(r) minus filled_circle(r - t),
     pixel for pixel, for every t from 2 up to well past r (where there is
-    no inner circle at all)."""
+    no inner circle at all).
+
+    This pixel-exact identity is also what rules out the bug the whole fix
+    is for -- stacking concentric filled circles of shrinking radius left
+    single-pixel background holes near the 45-degree diagonals from t == 2
+    up. A hole is a pixel where `outer` is lit, `inner` is not, and `ring`
+    is not: exactly what the diff below catches, at every pixel rather than
+    at the 360 sampled angles along the outer radius the removed
+    `test_circle_ring_has_no_diagonal_holes` walked."""
     t = t_offset
     ring, outer, inner, n = _ring_vs_filled_circles(circle_ring_harness, r, t)
     diffs = [
@@ -173,40 +184,6 @@ def test_circle_ring_matches_filled_circle_difference(circle_ring_harness, r, t_
         if ring[y][x] != (outer[y][x] and not inner[y][x])
     ]
     assert not diffs, diffs[:5]
-
-
-@pytest.mark.parametrize("r", [5, 40])
-def test_circle_ring_past_the_radius_equals_a_plain_filled_circle(circle_ring_harness, r):
-    """t >= r + 1 leaves no inner circle at all -- the ring degenerates to
-    exactly filled_circle(r), the same identity a t == 1 circle() call is
-    kept exact to by not going through the ring at all."""
-    t = r + 5
-    ring, outer, inner, n = _ring_vs_filled_circles(circle_ring_harness, r, t)
-    assert not any(any(row) for row in inner)
-    assert ring == outer
-
-
-@pytest.mark.parametrize("r,t", [(10, 2), (20, 3), (15, 4)])
-def test_circle_ring_has_no_diagonal_holes(circle_ring_harness, r, t):
-    """The bug this whole fix is for: stacking concentric filled circles of
-    shrinking radius left single-pixel background holes near the 45-degree
-    diagonals from t == 2 up. Walk the annulus's own outer edge (the
-    outermost ring of the disc, taken from filled_circle(r) itself minus
-    one step in) and check every one of those pixels is actually lit --
-    a hole would show up here first, in the annulus's own boundary."""
-    ring, outer, _inner, n = _ring_vs_filled_circles(circle_ring_harness, r, t)
-    cx = cy = n // 2
-    # Sample the ring at every angle along its own outer radius: this is
-    # exactly the outer boundary of filled_circle(r), which the annulus
-    # must fully cover (its outer half is that same boundary).
-    holes = []
-    for deg in range(360):
-        th = math.radians(deg)
-        x = cx + round(r * math.cos(th))
-        y = cy + round(r * math.sin(th))
-        if outer[y][x] and not ring[y][x]:
-            holes.append((deg, x, y))
-    assert not holes, holes[:8]
 
 
 def test_circle_ring_past_the_coordinate_bound_draws_nothing(circle_ring_harness):

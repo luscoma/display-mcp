@@ -36,7 +36,7 @@ DIR=${1:?"usage: $0 <dir>"}
 # `local` with a RETURN trap: a RETURN trap set inside a function is global
 # and fires on *every* later function return, so it ran again when main()
 # returned with $tmp already out of scope, and `set -u` turned that into
-# "tmp: unbound variable" -- exit 1 after both faces had installed fine,
+# "tmp: unbound variable" -- exit 1 after every face had installed fine,
 # which made setup.sh discard the scratch dir it had just filled.
 #
 # on_exit re-raises the status it was entered with: an EXIT trap that falls
@@ -71,12 +71,6 @@ is_font() {
     00010000|4f54544f|74746366|74727565) return 0 ;;
     *) return 1 ;;
   esac
-}
-
-all_present() {
-  local f
-  for f in "$@"; do is_font "$f" || return 1; done
-  return 0
 }
 
 # GitHub's listing of one ofl/<slug> directory, fetched at most once per
@@ -158,7 +152,14 @@ fetch_one() {
 }
 
 # Skips the fetch (and the network round trip) when the destination already
-# looks like a font, same as fetch_one's caller used to do inline.
+# looks like a font, same as fetch_one's caller used to do inline. This is
+# also the whole "is everything already here" check now (C9, final review):
+# a separate all_present() pre-check calling is_font() a second time on
+# every destination just to print one combined "fonts already present"
+# line was folded into this -- family_listing() below already skips its
+# own API call per slug when every one of that slug's destinations passes
+# is_font(), so a fully-populated $DIR still does zero network work, it
+# just says so per file (seven "already present" lines) rather than once.
 fetch_if_missing() {
   local label=$1 listing=$2 italic=$3 fallback_url=$4 dest=$5
   if is_font "$dest"; then
@@ -174,12 +175,6 @@ main() {
   local instrument="$DIR/$FONT_INSTRUMENT" instrument_i="$DIR/$FONT_INSTRUMENT_ITALIC"
   local karla="$DIR/$FONT_KARLA" karla_i="$DIR/$FONT_KARLA_ITALIC"
   local mono="$DIR/$FONT_MONO"
-
-  if all_present "$petrona" "$petrona_i" "$instrument" "$instrument_i" \
-                 "$karla" "$karla_i" "$mono"; then
-    ok "fonts already present in $DIR"
-    return 0
-  fi
 
   local failed=0
   local listing

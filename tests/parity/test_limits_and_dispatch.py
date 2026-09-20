@@ -10,7 +10,7 @@ import re
 import pytest
 
 from display_mcp.render import (
-    FONT_ALIASES,
+    BARE_ALIASES,
     FONTS,
     ICONS,
     MAX_COORD,
@@ -189,15 +189,6 @@ def _yaml_font_ids() -> list[str]:
     return re.findall(r"^\s*id:\s*(\w+)\s*$", block, re.MULTILINE)
 
 
-def _bare_font_aliases() -> dict[str, str]:
-    """The five legacy bare names (`xl lg md sm xs`) out of `FONT_ALIASES`
-    -- the only ones B4b's `render_fonts_lines()` still emits as their own
-    `a.fonts[...]` line. The other fifty aliases (a face's own pixel-count
-    spelling) are resolved by `display_list.h`'s `normalize_font_key()`
-    instead of a map entry -- see firmware_yaml.py's module docstring."""
-    return {alias: target for alias, target in FONT_ALIASES.items() if "/" not in alias}
-
-
 def _yaml_a_fonts_entries() -> dict[str, str]:
     """Every `a.fonts["key"] = id(some_id);` line inside the display
     lambda, as `{key: id}` -- parsed from the YAML text directly."""
@@ -216,7 +207,7 @@ def _yaml_a_fonts_entries() -> dict[str, str]:
     # carried as their own entry any more (110 + 5 = 115), not all 55
     # (B2's count) -- the fifty pixel-count aliases are normalised by the
     # firmware itself instead (docs/plans/fonts-and-icons.md Decision 4).
-    assert len(entries) == len(FONTS) + len(_bare_font_aliases()), len(entries)
+    assert len(entries) == len(FONTS) + len(BARE_ALIASES), len(entries)
     return dict(entries)
 
 
@@ -238,7 +229,7 @@ def test_yaml_font_and_icon_fences_match_the_generated_tables():
 
 def test_a_fonts_keys_are_exactly_fonts_and_bare_aliases():
     keys = set(_yaml_a_fonts_entries())
-    expected = set(FONTS) | set(_bare_font_aliases())
+    expected = set(FONTS) | set(BARE_ALIASES)
     assert keys == expected, (
         f"only in the YAML: {sorted(keys - expected)}; "
         f"only in FONTS + the five bare aliases: {sorted(expected - keys)}"
@@ -334,39 +325,33 @@ def test_rewrite_fenced_region_leaves_outside_text_untouched():
     assert out == "before\nSTART\nnew body\nEND\nafter\n"
 
 
-def test_rewrite_fenced_region_is_idempotent():
+# Idempotence has no synthetic test of its own: applying
+# `rewrite_fenced_region()` a second time with the same body to the exact
+# output the test above pins is the same call re-derived by the same code,
+# and the idempotence that matters -- on the real YAML, from the real tables
+# -- is `test_yaml_font_and_icon_fences_match_the_generated_tables`'s
+# `generate_firmware_yaml(src) == src`.
+
+
+@pytest.mark.parametrize(
+    ("text", "match"),
+    [
+        # no marker at all -- names the marker it could not find
+        pytest.param("no markers here", "START", id="missing-start"),
+        # a marker twice: which start/end pair would it be?
+        pytest.param("STARTfirst\nSTART\nbody\nEND\nafter\n", r"appears 2 times", id="duplicate"),
+        # a start with no end
+        pytest.param("START\nbody\nno end\n", "END", id="missing-end"),
+        # both present but in the wrong order (the `end < start` guard)
+        pytest.param("END\nbody\nSTART\n", r"appears before its start marker", id="reversed"),
+    ],
+)
+def test_rewrite_fenced_region_broken_fence_raises_clearly(text, match):
+    """Each of the four ways the fence can be broken raises `RuntimeError`
+    naming which marker and why, rather than silently rewriting the wrong
+    span of a file the generator owns. One case per branch of
+    `rewrite_fenced_region()`'s own guard block."""
     from display_mcp.render.firmware_yaml import rewrite_fenced_region
 
-    text = "before\nSTART\nold body\nEND\nafter\n"
-    once = rewrite_fenced_region(text, "START", "END", "new body")
-    twice = rewrite_fenced_region(once, "START", "END", "new body")
-    assert once == twice
-
-
-def test_rewrite_fenced_region_missing_fence_raises_clearly():
-    from display_mcp.render.firmware_yaml import rewrite_fenced_region
-
-    with pytest.raises(RuntimeError, match="START"):
-        rewrite_fenced_region("no markers here", "START", "END", "body")
-
-
-def test_rewrite_fenced_region_duplicate_marker_raises_clearly():
-    from display_mcp.render.firmware_yaml import rewrite_fenced_region
-
-    text = "STARTfirst\nSTART\nbody\nEND\nafter\n"
-    with pytest.raises(RuntimeError, match=r"appears 2 times"):
+    with pytest.raises(RuntimeError, match=match):
         rewrite_fenced_region(text, "START", "END", "body")
-
-
-def test_rewrite_fenced_region_missing_end_marker_raises_clearly():
-    from display_mcp.render.firmware_yaml import rewrite_fenced_region
-
-    with pytest.raises(RuntimeError, match="END"):
-        rewrite_fenced_region("START\nbody\nno end\n", "START", "END", "body")
-
-
-def test_rewrite_fenced_region_reversed_markers_raise_clearly():
-    from display_mcp.render.firmware_yaml import rewrite_fenced_region
-
-    with pytest.raises(RuntimeError):
-        rewrite_fenced_region("END\nbody\nSTART\n", "START", "END", "body")

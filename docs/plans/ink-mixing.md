@@ -158,7 +158,9 @@ change later; it is decided.
 
 Three densities only, not a 4×4 Bayer's seventeen — 17 steps is false
 precision on a six-ink panel, and a 4×4 tile is 0.68 mm, large enough to
-read as texture. Same kind of commitment as the five-size font scale.
+read as texture. Same kind of commitment as the eleven-size font ladder
+(`docs/plans/fonts-and-icons.md` Decision 2 superseded the five-size scale
+this line originally compared to).
 
 Implementation is the proxy of decision 6, which applies the mask uniformly
 to fills, shapes and glyphs alike. `bg` is the one exception and needs fill

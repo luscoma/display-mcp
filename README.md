@@ -27,18 +27,23 @@ a redraw does. It runs for months on a battery.
   <img src="docs/images/sample.png" alt="The sample document rendered: a dark header with the day, date and weather; a schedule with a timeline; a todo list; a footer stamp." width="480">
 </p>
 
-That is [`samples/display.json`](samples/display.json) — 56 ops, 4.4 KB, hash
-`1c772cd7a6ebc2c7` — rendered by the same code the preview tool uses, and the
+That is [`samples/display.json`](samples/display.json) — 58 ops, 4.6 KB, hash
+`ab71629b1ca76ea6` — rendered by the same code the preview tool uses, and the
 best thing to copy and edit. Every op in the vocabulary appears between it
 and [`samples/sprite.json`](samples/sprite.json), the second sample, which
 shows off pixel art drawn with the `sprite` op. A third,
 [`samples/vocabulary.json`](samples/vocabulary.json), is a labelled page
 built for the wall rather than for op coverage — a rounded rect and a
 max-radius pill, mono block art and ligature-free text, a mirrored sprite,
-a filled and an outlined `poly`, a thick circle outline and a thick line —
-the document `docs/RUNBOOK.md` has you publish after flashing new
-vocabulary, to judge what only the glass can show. The vocabulary itself is
-in [`docs/SPEC.md`](docs/SPEC.md).
+a filled and an outlined `poly`, a thick circle outline and a thick line,
+all eight activity icons at `md` and two of them at `xl` — the document
+`docs/RUNBOOK.md` has you publish after flashing new vocabulary, to judge
+what only the glass can show. The vocabulary itself is in
+[`docs/SPEC.md`](docs/SPEC.md). The fourth,
+[`samples/fonts.json`](samples/fonts.json), is the type specimen: every
+family-style, Petrona at every size, the bare names, mono and both
+decorations on one page -- publish it to judge the faces on the glass
+(regenerate with `samples/gen_fonts_sample.py`).
 
 ## How it fits together
 
@@ -158,8 +163,9 @@ a third block and `set_display` it, putting every named colour on the wall.
 design rules, so a scheduled session does not need the spec pasted into it.
 
 **Two renderers, one vocabulary.** The firmware draws the document on the
-panel; `display_mcp.render` draws it as a PNG. They share six font sizes,
-eleven icons, six inks plus twenty-one built-in two-ink mixes, and eight ops
+panel; `display_mcp.render` draws it as a PNG. They share 110 compiled
+faces (ten family-styles at eleven font sizes), nineteen icons, six inks plus
+twenty-one built-in two-ink mixes, and eight ops
 — and nothing else, which is what keeps "what Claude previewed" and "what the
 wall shows" from drifting. The wrap and truncate logic is differentially
 tested between them. The one deliberate divergence is colour: the panel
@@ -173,7 +179,7 @@ inks in any viewer that scales the image down. See
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -e '.[dev]'
-deploy/fetch-fonts.sh ./fonts        # Instrument Sans + JetBrains Mono; once, gitignored
+deploy/fetch-fonts.sh ./fonts        # Petrona, Instrument Sans, Karla, JetBrains Mono; once, gitignored
 .venv/bin/pytest
 
 DISPLAY_MCP_FONT_DIR=./fonts DISPLAY_MCP_STATE_DIR=./state .venv/bin/display-mcp

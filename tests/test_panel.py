@@ -50,27 +50,26 @@ def test_200_with_etag_after_publish(client, store, sample_doc):
     assert json.loads(resp.content) == store.get("default").doc
 
 
-def test_304_on_matching_if_none_match_quoted(client, store, sample_doc):
+@pytest.mark.parametrize(
+    "form",
+    [
+        pytest.param(lambda r: r.etag, id="quoted"),
+        pytest.param(lambda r: r.hash, id="unquoted"),
+        pytest.param(lambda r: f"W/{r.etag}", id="weak"),
+    ],
+)
+def test_304_on_matching_if_none_match(client, store, sample_doc, form):
+    """The three `If-None-Match` spellings `_etag_matches` accepts: the exact
+    quoted ETag, the bare hash, and a weak (`W/`) prefix. All three are the
+    same branch, which runs before the method check -- so a HEAD with a
+    matching If-None-Match is this same 304, not a path of its own (HEAD's
+    own behaviour is test_head_returns_headers_and_no_body's)."""
     result = store.publish(sample_doc, "default")
-    resp = client.get("/d/default.json", headers={"If-None-Match": result.etag})
+    resp = client.get("/d/default.json", headers={"If-None-Match": form(result)})
     assert resp.status_code == 304
     assert resp.headers["ETag"] == result.etag
     assert resp.headers["Content-Length"] == "0"
     assert resp.content == b""
-
-
-def test_304_on_matching_if_none_match_unquoted(client, store, sample_doc):
-    result = store.publish(sample_doc, "default")
-    unquoted = result.hash
-    resp = client.get("/d/default.json", headers={"If-None-Match": unquoted})
-    assert resp.status_code == 304
-
-
-def test_304_on_matching_if_none_match_weak(client, store, sample_doc):
-    result = store.publish(sample_doc, "default")
-    weak = f'W/{result.etag}'
-    resp = client.get("/d/default.json", headers={"If-None-Match": weak})
-    assert resp.status_code == 304
 
 
 def test_200_on_mismatched_if_none_match(client, store, sample_doc):
@@ -85,13 +84,6 @@ def test_head_returns_headers_and_no_body(client, store, sample_doc):
     assert resp.status_code == 200
     assert resp.headers["ETag"] == result.etag
     assert resp.headers["Content-Length"] == str(result.bytes)
-    assert resp.content == b""
-
-
-def test_head_304(client, store, sample_doc):
-    result = store.publish(sample_doc, "default")
-    resp = client.head("/d/default.json", headers={"If-None-Match": result.etag})
-    assert resp.status_code == 304
     assert resp.content == b""
 
 
@@ -217,15 +209,6 @@ def test_panel_headers_are_recorded_for_an_unpublished_name(client, store):
     assert store.fetch_record("ghost").panel_wakes == 412
 
 
-def test_a_fetch_without_panel_headers_is_still_served(client, store, sample_doc):
-    store.publish(sample_doc)
-    resp = client.get("/display.json")
-    assert resp.status_code == 200
-    rec = store.fetch_record("default")
-    assert rec.panel_battery is None
-    assert rec.panel_draw_at is None
-
-
 @pytest.mark.parametrize(
     "headers",
     [
@@ -241,7 +224,14 @@ def test_a_fetch_without_panel_headers_is_still_served(client, store, sample_doc
     ],
 )
 def test_a_garbled_panel_header_never_breaks_the_fetch(client, store, sample_doc, headers):
-    """This listener is unauthenticated: a bad header is hearsay, not a 500."""
+    """This listener is unauthenticated: a bad header is hearsay, not a 500.
+
+    Each case sends one bad header and no good ones, so this also covers a
+    fetch carrying no usable panel self-report at all: it is still served a
+    200, and every `panel_*` field stays null rather than being written some
+    partial or coerced value (`_panel_report` reads a missing header and an
+    empty one the same way).
+    """
     store.publish(sample_doc)
     resp = client.get("/display.json", headers=headers)
     assert resp.status_code == 200

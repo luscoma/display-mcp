@@ -201,22 +201,45 @@ def _icon_mask(name: str, size: int) -> Image.Image:
 # (B4a's note); this is the one place that reads out of it.
 _ICONS_DIR = Path(__file__).parent / "icons"
 
+# The eight names that have a committed lucide raster -- shared (C9, final
+# review) with `firmware_yaml.py`'s own MDI-vs-PNG decision, so the two
+# sides can't drift apart about which icons are "the lucide ones". Also
+# read by `firmware/icons/rasterize.py` (imported there as a data table,
+# under ESPHome's own Python) and by tests/renderer/test_icon_assets.py.
+LUCIDE_ICONS: frozenset[str] = frozenset(
+    (
+        "school-day",
+        "daycare",
+        "taekwondo",
+        "swim",
+        "helper",
+        "appointment",
+        "family-meeting",
+        "closed",
+    )
+)
+
 
 @functools.cache
 def _icon_bitmap(name: str, size: int) -> Image.Image | None:
     """The committed raster for `name` at `size`, already thresholded to a
-    mode `"1"` mask ready for `ImageDraw.bitmap()` -- or `None` when no such
-    file exists (the eleven MDI icons, which have no lucide source, and any
-    name this file doesn't recognise at all). Every committed PNG's alpha is
-    exactly 0 or 255 (B4a's own tests), so the `>= 128` threshold below never
-    actually has to choose; it exists so a corrupt or hand-edited PNG
-    degrades to a hard edge rather than PIL's own `"1"`-conversion dithering
-    smearing it. Cached: a document can draw the same icon many times, and
-    there are only forty of these files total, all small.
+    mode `"1"` mask ready for `ImageDraw.bitmap()` -- or `None` when `name`
+    isn't one of `LUCIDE_ICONS` (the eleven MDI icons, which have no lucide
+    source, and any name this file doesn't recognise at all) -- checked by
+    name, not by `path.is_file()` (C9: the old heuristic would have quietly
+    fallen back to the procedural stand-in for a lucide name whose PNG
+    happened to be missing, rather than the loud `FileNotFoundError` that
+    is the right failure for a committed asset that should always be
+    there). Every committed PNG's alpha is exactly 0 or 255 (B4a's own
+    tests), so the `>= 128` threshold below never actually has to choose;
+    it exists so a corrupt or hand-edited PNG degrades to a hard edge
+    rather than PIL's own `"1"`-conversion dithering smearing it. Cached: a
+    document can draw the same icon many times, and there are only forty
+    of these files total, all small.
     """
-    path = _ICONS_DIR / f"{name}-{size}.png"
-    if not path.is_file():
+    if name not in LUCIDE_ICONS:
         return None
+    path = _ICONS_DIR / f"{name}-{size}.png"
     alpha = Image.open(path).convert("RGBA").split()[-1]
     return alpha.point(lambda a: 255 if a >= 128 else 0).convert("1")
 
@@ -227,8 +250,15 @@ def draw_icon(d: ImageDraw.ImageDraw, name: str, x, y, size, fill):
     firmware compiles, so the wall and the preview show the identical
     bitmap, the first time any icon here has had real preview parity.
     Falls back to the procedural stand-in (`_icon_mask()`) for the eleven
-    MDI icons, which have no committed raster, and for a name neither table
-    recognises.
+    MDI icons, which have no committed raster.
+
+    `_icon_mask()`'s own fallback for a name *neither* table recognises
+    (a plain outlined square) is unreachable from `render()` (D6, final
+    review): `render()`'s icon branch already abandons the op -- `n not in
+    ICONS` -- before ever calling this function, so `draw_icon()` is only
+    ever reached with a name that is a real `ICONS` key. That branch stays
+    only for a caller other than `render()` (a test, say) that calls this
+    directly with a name neither table has ever heard of.
 
     Either way, stencilled into a `size x size` mask and blitted at (x, y),
     the way the firmware's `image->draw()` blits exactly get_width() x

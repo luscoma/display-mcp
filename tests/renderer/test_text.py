@@ -134,45 +134,34 @@ def _text_op(**overrides):
     return op
 
 
-def test_text_lh_null_matches_lh_omitted(font_dir):
-    doc_null = {"bg": "white", "ops": [_text_op(lh=None)]}
-    doc_omitted = {"bg": "white", "ops": [{k: v for k, v in _text_op().items() if k != "lh"}]}
-    img_null, problems = render(doc_null, font_dir)  # must not raise
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        pytest.param("lh", None, id="lh_null"),
+        pytest.param("w", None, id="w_null_with_wrap"),
+        # `wrap: true` stays set, but a `w` that isn't a number can't
+        # satisfy the firmware's `wrap && max_w > 0`, so this draws a
+        # single unwrapped line -- same as the op with `w` left out
+        # entirely.
+        pytest.param("w", "wide", id="w_non_numeric"),
+        pytest.param("lines", None, id="lines_null"),
+    ],
+)
+def test_text_optional_field_null_or_unusable_matches_it_omitted(font_dir, field, value):
+    """docs/plans/fonts-and-icons.md B4b follow-up: an explicit `null` is
+    absent on both sides. Each of `text`'s optional layout fields, set to
+    `null` (or to a value the firmware can't use), must render
+    byte-for-byte identically to the same op with the field left out
+    entirely -- and must not raise."""
+    doc_set = {"bg": "white", "ops": [_text_op(**{field: value})]}
+    doc_omitted = {
+        "bg": "white",
+        "ops": [{k: v for k, v in _text_op().items() if k != field}],
+    }
+    img_set, problems = render(doc_set, font_dir)  # must not raise
     img_omitted, _ = render(doc_omitted, font_dir)
     assert problems == []
-    assert img_null.tobytes() == img_omitted.tobytes()
-
-
-def test_text_w_null_with_wrap_matches_w_omitted(font_dir):
-    doc_null = {"bg": "white", "ops": [_text_op(w=None)]}
-    doc_omitted = {"bg": "white", "ops": [{k: v for k, v in _text_op().items() if k != "w"}]}
-    img_null, problems = render(doc_null, font_dir)  # must not raise
-    img_omitted, _ = render(doc_omitted, font_dir)
-    assert problems == []
-    assert img_null.tobytes() == img_omitted.tobytes()
-
-
-def test_text_w_non_numeric_matches_w_omitted(font_dir):
-    """`wrap: true` stays set, but a `w` that isn't a number can't satisfy
-    the firmware's `wrap && max_w > 0`, so this draws a single unwrapped
-    line — same as the op with `w` left out entirely."""
-    doc_bad = {"bg": "white", "ops": [_text_op(w="wide")]}
-    doc_omitted = {"bg": "white", "ops": [
-        {k: v for k, v in _text_op().items() if k != "w"}]}
-    img_bad, problems = render(doc_bad, font_dir)  # must not raise
-    img_omitted, _ = render(doc_omitted, font_dir)
-    assert problems == []
-    assert img_bad.tobytes() == img_omitted.tobytes()
-
-
-def test_text_lines_null_matches_lines_omitted(font_dir):
-    doc_null = {"bg": "white", "ops": [_text_op(lines=None)]}
-    doc_omitted = {"bg": "white", "ops": [
-        {k: v for k, v in _text_op().items() if k != "lines"}]}
-    img_null, problems = render(doc_null, font_dir)  # must not raise
-    img_omitted, _ = render(doc_omitted, font_dir)
-    assert problems == []
-    assert img_null.tobytes() == img_omitted.tobytes()
+    assert img_set.tobytes() == img_omitted.tobytes()
 
 
 def test_unknown_alignment_on_text_warns_and_falls_back_to_left(font_dir):
@@ -199,16 +188,6 @@ def test_known_alignment_never_warns(font_dir):
             {"op": "text", "x": 10, "y": 10, "s": "hi", "f": "sm", "a": a}]}
         _, problems = render(doc, font_dir)
         assert problems == []
-
-
-def test_unknown_font_is_one_problem_no_raise(font_dir):
-    doc = {
-        "bg": "white",
-        "ops": [{"op": "text", "x": 0, "y": 0, "s": "hi", "f": "huge"}],
-    }
-    _, problems = render(doc, font_dir)
-    assert len(problems) == 1
-    assert "unknown font" in problems[0]
 
 
 def test_unknown_font_skips_the_op_nothing_drawn(font_dir):
@@ -350,6 +329,31 @@ def test_unknown_font_message_names_the_wrong_half():
     )
 
 
+def test_unknown_font_message_bare_mono_says_there_is_no_bare_mono():
+    """Final review, "Composer over MCP": a bare `mono` used to fall into
+    the generic bad-family message, which never says outright that `mono`
+    on its own was never a size (Decision 1) -- unlike the five legacy bare
+    names it aliases nothing."""
+    assert unknown_font_message("mono") == (
+        "unknown font 'mono': there is no bare mono -- write mono/24 "
+        "(or another compiled size)"
+    )
+
+
+def test_unknown_font_message_italic_bold_serif_as_family_gets_a_hint():
+    """A composer who has seen `-italic`/`-bold` suffixes but not yet read
+    Decision 1 might guess `italic`/`bold` (or the write-up's earlier
+    `serif` role name) is itself a family -- the bad-family message now
+    says plainly that an italic or bold always names its own family."""
+    for guess in ("italic/40", "bold/40", "serif/40"):
+        msg = unknown_font_message(guess)
+        assert msg.endswith(
+            "an italic or bold always names its family, e.g. petrona-italic/40"
+        )
+    # An ordinary bad family (no such reserved-word confusion) does not.
+    assert not unknown_font_message("dragon/40").endswith("petrona-italic/40")
+
+
 def test_font_metrics_file_matches_a_fresh_measurement(font_dir):
     """`font_metrics.json` is committed data, generated by
     `display-mcp-cli font-metrics <font_dir>`, not hand-typed
@@ -430,8 +434,6 @@ def test_load_font_selects_the_intended_weight_for_every_face_at_lg(font_dir):
         if face.size != 48:
             continue
         path = font_dir / face.file
-        if not path.exists():
-            continue  # mono's file is the one this repo doesn't ship pre-fetched
         got = load_font(font_dir, face).getlength("Handgloves")
         if face.layout == "basic":
             want_font = ImageFont.truetype(str(path), 48, layout_engine=ImageFont.Layout.BASIC)
@@ -441,9 +443,12 @@ def test_load_font_selects_the_intended_weight_for_every_face_at_lg(font_dir):
         want = want_font.getlength("Handgloves")
         assert abs(got - want) < 0.05, (name, got, want)
         checked.append(name)
-    # Every family-style's `lg` face, at minimum -- proof the loop above
-    # didn't silently skip everything.
-    assert len(checked) >= 9, checked  # mono is the one optional file
+    # Every family-style's `lg` face -- ten, one per family-style -- proof
+    # the loop above didn't silently skip anything. `font_dir` always has
+    # all seven files fetched (deploy/fetch-fonts.sh), mono included, so
+    # there is no "mono's file might be missing" case to skip here (C8,
+    # final review).
+    assert len(checked) == 10, checked
 
 
 def test_stale_metrics_entry_raises_clearly(monkeypatch):
@@ -575,6 +580,9 @@ def test_mono_ink_height_matches_a_measured_block_glyph(font_dir):
     dr.text((10, 10), "█", font=f, fill=1)
     px = img.load()
     inked_rows = [y for y in range(80) if any(px[x, y] for x in range(60))]
+    # 31 is pinned as data (C10, final review): a real measurement of the
+    # committed JetBrains Mono file at 24px, not derived from anything else
+    # here -- a font swap that moves it fails this assertion directly.
     assert len(inked_rows) == FONTS["mono/24"].ink_height == 31
 
 

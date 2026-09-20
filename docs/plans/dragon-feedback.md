@@ -138,6 +138,12 @@ fmt_fields  [hash, hash16, time, time24, battery, battv]
 limits      {max_bytes: 65536}
 ```
 
+Superseded by `fonts-and-icons.md` Decisions 1-4: `fonts` is now keyed by
+canonical name (`family[-style]/size`), with `family`/`style`/`aliases`
+replacing `bold`, plus the per-family-style `font_families` block and
+`icon_depicts`/`font_aliases` (final review); `icons` is `{name: [slots]}`
+at the same five slots fonts use, not a separate "size class" table.
+
 The `tier` (dark / light / mid, the SPEC.md "named palette" headings) is a
 small table added beside `BUILTIN_MIXES`; `tests/test_render.py` already
 parses the SPEC tables to pin the hexes and extends to pin the tiers, so the
@@ -304,6 +310,9 @@ routine until someone asks.
 
 ### D11. One monospace face: JetBrains Mono, `mono`, 24 px regular
 
+Superseded by `docs/plans/fonts-and-icons.md` Decision 2: `mono` is now
+compiled at every size on the ladder, not 24 px alone.
+
 Adds a sixth entry to the type scale, not a family switch. It serves the
 report's ASCII-art case, aligned numeric columns, and code. Cost: one more
 compiled glyph set (small on 16 MB), one more TTF for the renderer, and a
@@ -384,6 +393,9 @@ Implementation:
   the Instrument Sans entries gain their file name the same way `mono` does,
   and `cell_height`/`ink_height` (see the amendments above) rather than a
   per-entry default line height. `ink_height` is `None` except for `mono`.
+  (Superseded by `fonts-and-icons.md` Decisions 1-4: `FONTS` is now
+  110 faces, generated from `FAMILIES` x `SIZES`, keyed by canonical
+  `family[-style]/size`; `bold` is gone, replaced by `family`/`style`.)
 - `deploy/fetch-fonts.sh` fetches `ofl/jetbrainsmono` from the google/fonts
   repo alongside Instrument Sans (a variable font; the Regular instance is
   selected the way Bold is today) and `fonts_available()` requires it.
@@ -391,11 +403,18 @@ Implementation:
   that a deploy is not also a decision — and instead `setup.sh` gains a
   `fonts` subcommand that re-runs `fetch-fonts.sh` into `$PREFIX/fonts`;
   the runbook says to run it once after B3 lands, before the sync.
+  (Superseded by `fonts-and-icons.md` Decisions 1-3, B3a: the script now
+  fetches seven files -- Petrona, Instrument Sans and Karla, upright and
+  italic, plus mono -- not two.)
 - A missing face is not fatal: `Ctx.font()` reports *"font 'mono' is not
   installed here"* and skips the op, the same abandonment an unknown font
   gets, instead of failing every render at `Ctx.__init__`.
 - `guide()`'s type-scale table gains the row: `mono` 24 regular, line
   height (default `lh`) 30, cell height 33, ink height 31.
+  (Superseded by `fonts-and-icons.md` Decisions 1-3: the guide's type
+  scale is now the family/slot table, not a per-face row list; `mono/24`
+  is still the way to name this size, but the bare `mono` this row
+  described is gone.)
 
 ### D12. A `poly` op, filled, with the scanline shared
 

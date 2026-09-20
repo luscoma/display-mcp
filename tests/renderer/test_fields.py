@@ -16,18 +16,74 @@ import time
 import pytest
 from PIL import ImageDraw
 
+from conftest import SAMPLE_HASH  # tests/conftest.py -- the one SAMPLE_HASH (C5)
 from display_mcp.render import (
     HEIGHT,
     INK,
     THICK_MAX,
     WIDTH,
+    _name_bound_problem,
     check,
     fonts_available,
     render,
     render_hash,
 )
 
-SAMPLE_HASH = "1c772cd7a6ebc2c7"
+
+def test_name_bound_problem_matrix():
+    """`_name_bound_problem()` (C4, final review): unknown/no-name-field
+    kinds are untouched; text/fmt check `f` (with their own default);
+    icon checks `n`/`z` together, in one message naming both lengths."""
+    assert _name_bound_problem({}, "rect", "ops[0] rect") is None
+    assert _name_bound_problem({}, None, "ops[0]") is None
+
+    long_name = "a" * 65
+    assert _name_bound_problem({"f": long_name}, "text", "ops[0] text") == (
+        "ops[0] text: f is 65 bytes, more than 64; skipped"
+    )
+    # No f at all -- text's own default ("md") is short, so no problem.
+    assert _name_bound_problem({}, "text", "ops[0] text") is None
+    assert _name_bound_problem({"f": long_name}, "fmt", "ops[0] fmt") == (
+        "ops[0] fmt: f is 65 bytes, more than 64; skipped"
+    )
+    assert _name_bound_problem(
+        {"n": long_name, "z": "md"}, "icon", "ops[0] icon"
+    ) == "ops[0] icon: n/z longer than 64 bytes (65/2); skipped"
+    assert _name_bound_problem(
+        {"n": "check", "z": long_name}, "icon", "ops[0] icon"
+    ) == "ops[0] icon: n/z longer than 64 bytes (5/65); skipped"
+    assert _name_bound_problem({"n": "check"}, "icon", "ops[0] icon") is None
+
+
+def test_name_bound_problem_is_checked_before_a_bad_c_or_a_missing_s(font_dir):
+    """`_name_bound_problem()` moved into the pre-dispatch chain, ahead of
+    every op-kind branch (final review, B7/F, item 5, pinning C4's
+    hoisting): a `text`/`fmt` op with an over-long `f` never reaches the
+    branch that would otherwise also complain about a malformed `c` or a
+    missing `s` -- the op is abandoned at the name-bound check, one warning
+    only, the same way a missing required field already abandons an op
+    before any of its other fields are even looked at.
+
+    Before C4, each of these checks lived inside its own op-kind branch, in
+    whatever order that branch happened to read its fields -- `text` read
+    `c` (building an Ink) before ever checking `f`'s length, so a document
+    with both problems would have reported the `c` one, not this one. This
+    pins the new order as deliberate, not an accident of refactoring."""
+    long_name = "a" * 65
+
+    # `c: 7` is not a string -- on its own (a short `f`) it warns "unknown
+    # colour 7"; here `f` is also too long, and only the `f` bound fires.
+    doc = {"v": 1, "bg": "white", "ops": [
+        {"op": "text", "x": 0, "y": 0, "s": "hi", "f": long_name, "c": 7}
+    ]}
+    _img, problems = render(doc, font_dir)
+    assert problems == ["ops[0] text: f is 65 bytes, more than 64; skipped"]
+
+    # No `s` at all -- on its own (a short `f`) it warns "fmt has no 's'
+    # template"; here `f` is also too long, and only the `f` bound fires.
+    doc = {"v": 1, "bg": "white", "ops": [{"op": "fmt", "x": 0, "y": 0, "f": long_name}]}
+    _img, problems = render(doc, font_dir)
+    assert problems == ["ops[0] fmt: f is 65 bytes, more than 64; skipped"]
 
 
 def test_hash_ignores_meta_generated(sample_doc):
@@ -107,18 +163,6 @@ def test_unknown_field_on_rect_warns(font_dir):
     ]
 
 
-def test_typo_field_colour_warns(font_dir):
-    doc = {
-        "bg": "white",
-        "ops": [{"op": "text", "x": 20, "y": 100, "s": "hi", "f": "sm", "colour": "red"}],
-    }
-    _, problems = render(doc, font_dir)
-    assert problems == [
-        "ops[0] text: no such field 'colour' "
-        "(text takes x, y, s, c, f, a, w, wrap, lines, lh, deco)"
-    ]
-
-
 def test_c2_and_mix_on_an_op_point_at_the_palette_and_draw_unchanged(font_dir):
     with_stray_mix = {
         "bg": "white",
@@ -189,92 +233,74 @@ def test_op_field_table_covers_every_op_the_renderer_handles():
 # ---- required fields: missing or mistyped, warn and skip -----------------
 
 
-def test_missing_required_field_text_warns_and_skips(font_dir):
-    """{"op": "text", "x": 100, "y": 100} with no `s` used to raise a bare
-    KeyError out of render() (the dragon session's report); it now warns
-    and the op is skipped, like an unknown font (docs/plans/
-    dragon-feedback.md D1 follow-up)."""
-    doc = {"bg": "white", "ops": [{"op": "text", "x": 100, "y": 100, "f": "xs"}]}
-    img, problems = render(doc, font_dir)
-    assert problems == [
-        "ops[0] text: missing field 's' (text needs x, y, s); skipped"
-    ]
-    blank, _ = render({"bg": "white", "ops": []}, font_dir)
-    assert img.tobytes() == blank.tobytes()
-
-
-def test_mistyped_required_field_string_x_warns_and_skips(font_dir):
-    doc = {"bg": "white", "ops": [{"op": "text", "x": "100", "y": 100, "s": "hi"}]}
-    img, problems = render(doc, font_dir)
-    assert problems == [
-        "ops[0] text: x='100' is not a number (text needs x, y, s); skipped"
-    ]
-    blank, _ = render({"bg": "white", "ops": []}, font_dir)
-    assert img.tobytes() == blank.tobytes()
-
-
-def test_missing_required_field_rect_w_warns_and_skips(font_dir):
-    doc = {"bg": "white", "ops": [{"op": "rect", "x": 0, "y": 0, "h": 10}]}
-    img, problems = render(doc, font_dir)
-    assert problems == [
-        "ops[0] rect: missing field 'w' (rect needs x, y, w, h); skipped"
-    ]
-    blank, _ = render({"bg": "white", "ops": []}, font_dir)
-    assert img.tobytes() == blank.tobytes()
-
-
-def test_bool_required_field_rect_w_warns_and_skips(font_dir):
-    """A JSON bool is not the number it subclasses in Python -- `w: true`
-    must not be silently read as `1`."""
-    doc = {"bg": "white", "ops": [{"op": "rect", "x": 0, "y": 0, "w": True, "h": 10}]}
-    img, problems = render(doc, font_dir)
-    assert problems == [
-        "ops[0] rect: w=True is not a number (rect needs x, y, w, h); skipped"
-    ]
-    blank, _ = render({"bg": "white", "ops": []}, font_dir)
-    assert img.tobytes() == blank.tobytes()
-
-
-def test_missing_required_field_icon_n_warns_and_skips(font_dir):
-    """`n` moved from optional to required (docs/plans/dragon-feedback.md
-    D1 follow-up): a missing one no longer reaches render() as `None` and
-    warns "'None/sm' is not compiled in" -- it is caught, and the op
-    skipped, before dispatch."""
-    doc = {"bg": "white", "ops": [{"op": "icon", "x": 0, "y": 0, "z": "sm"}]}
-    img, problems = render(doc, font_dir)
-    assert problems == [
-        "ops[0] icon: missing field 'n' (icon needs x, y, n); skipped"
-    ]
-    blank, _ = render({"bg": "white", "ops": []}, font_dir)
-    assert img.tobytes() == blank.tobytes()
-
-
-def test_poly_pts_not_a_list_warns_and_skips(font_dir):
-    doc = {"bg": "white", "ops": [{"op": "poly", "pts": "nope", "c": "black"}]}
-    img, problems = render(doc, font_dir)
-    assert problems == [
-        "ops[0] poly: pts='nope' is not a list (poly needs pts); skipped"
-    ]
-    blank, _ = render({"bg": "white", "ops": []}, font_dir)
-    assert img.tobytes() == blank.tobytes()
-
-
-def test_fmt_with_no_s_warns_and_skips(font_dir):
-    """`s` stays optional in OP_FIELDS -- a `fmt` legitimately has nothing
-    else it must carry -- but an empty or missing template has nothing to
-    draw, so it gets its own message and the same skip a missing required
-    field gets."""
-    doc = {"bg": "white", "ops": [{"op": "fmt", "x": 0, "y": 0}]}
-    img, problems = render(doc, font_dir)
-    assert problems == ["ops[0] fmt: fmt has no 's' template; nothing to draw"]
-    blank, _ = render({"bg": "white", "ops": []}, font_dir)
-    assert img.tobytes() == blank.tobytes()
-
-
-def test_fmt_with_empty_s_warns_and_skips(font_dir):
-    doc = {"bg": "white", "ops": [{"op": "fmt", "x": 0, "y": 0, "s": ""}]}
-    img, problems = render(doc, font_dir)
-    assert problems == ["ops[0] fmt: fmt has no 's' template; nothing to draw"]
+@pytest.mark.parametrize(
+    ("op", "expected"),
+    [
+        # {"op": "text", ...} with no `s` used to raise a bare KeyError out
+        # of render() (the dragon session's report); it now warns and the op
+        # is skipped, like an unknown font (docs/plans/dragon-feedback.md D1
+        # follow-up).
+        (
+            {"op": "text", "x": 100, "y": 100, "f": "xs"},
+            "ops[0] text: missing field 's' (text needs x, y, s); skipped",
+        ),
+        # A required field present but the wrong JSON type.
+        (
+            {"op": "text", "x": "100", "y": 100, "s": "hi"},
+            "ops[0] text: x='100' is not a number (text needs x, y, s); skipped",
+        ),
+        (
+            {"op": "rect", "x": 0, "y": 0, "h": 10},
+            "ops[0] rect: missing field 'w' (rect needs x, y, w, h); skipped",
+        ),
+        # A JSON bool is not the number it subclasses in Python -- `w: true`
+        # must not be silently read as `1`.
+        (
+            {"op": "rect", "x": 0, "y": 0, "w": True, "h": 10},
+            "ops[0] rect: w=True is not a number (rect needs x, y, w, h); skipped",
+        ),
+        # `n` moved from optional to required (docs/plans/dragon-feedback.md
+        # D1 follow-up): a missing one no longer reaches render() as `None`
+        # and warns `n=None z='sm' is not compiled in` -- it is caught, and
+        # the op skipped, before dispatch.
+        (
+            {"op": "icon", "x": 0, "y": 0, "z": "sm"},
+            "ops[0] icon: missing field 'n' (icon needs x, y, n); skipped",
+        ),
+        (
+            {"op": "poly", "pts": "nope", "c": "black"},
+            "ops[0] poly: pts='nope' is not a list (poly needs pts); skipped",
+        ),
+        # `s` stays optional in OP_FIELDS -- a `fmt` legitimately has nothing
+        # else it must carry -- but an empty or missing template has nothing
+        # to draw, so it gets its own message and the same skip a missing
+        # required field gets.
+        (
+            {"op": "fmt", "x": 0, "y": 0},
+            "ops[0] fmt: fmt has no 's' template; nothing to draw",
+        ),
+        (
+            {"op": "fmt", "x": 0, "y": 0, "s": ""},
+            "ops[0] fmt: fmt has no 's' template; nothing to draw",
+        ),
+    ],
+    ids=[
+        "text-missing-s-was-a-keyerror",
+        "text-mistyped-string-x",
+        "rect-missing-w",
+        "rect-bool-w-is-not-a-number",
+        "icon-missing-n-now-required",
+        "poly-pts-not-a-list",
+        "fmt-no-s-template",
+        "fmt-empty-s-template",
+    ],
+)
+def test_malformed_required_field_warns_and_skips(font_dir, op, expected):
+    """One warning, naming the field and every required field the op takes,
+    and the op abandoned outright -- the canvas is byte-identical to one
+    that never carried the op at all."""
+    img, problems = render({"bg": "white", "ops": [op]}, font_dir)
+    assert problems == [expected]
     blank, _ = render({"bg": "white", "ops": []}, font_dir)
     assert img.tobytes() == blank.tobytes()
 
@@ -298,28 +324,21 @@ def test_required_field_check_never_raises_through_check(font_dir):
 # ---- circle off-canvas -----------------------------------------------
 
 
-def test_circle_off_canvas_x_plus_r(font_dir):
-    doc = {"bg": "white", "ops": [{"op": "circle", "x": 1250, "y": 100, "r": 30, "c": "black"}]}
-    _, problems = render(doc, font_dir)
-    assert any("x+r=1280" in p and "off-canvas" in p for p in problems)
-
-
-def test_circle_off_canvas_x_minus_r(font_dir):
-    doc = {"bg": "white", "ops": [{"op": "circle", "x": -80, "y": 100, "r": 10, "c": "black"}]}
-    _, problems = render(doc, font_dir)
-    assert any("x-r=-90" in p and "off-canvas" in p for p in problems)
-
-
-def test_circle_off_canvas_y_plus_r(font_dir):
-    doc = {"bg": "white", "ops": [{"op": "circle", "x": 100, "y": 1650, "r": 30, "c": "black"}]}
-    _, problems = render(doc, font_dir)
-    assert any("y+r=1680" in p and "off-canvas" in p for p in problems)
-
-
-def test_circle_off_canvas_y_minus_r(font_dir):
-    doc = {"bg": "white", "ops": [{"op": "circle", "x": 100, "y": -80, "r": 10, "c": "black"}]}
-    _, problems = render(doc, font_dir)
-    assert any("y-r=-90" in p and "off-canvas" in p for p in problems)
+@pytest.mark.parametrize(
+    ("op", "edge"),
+    [
+        # Each of the four edges a circle's own x/y +/- r can cross, and the
+        # extreme the warning has to name for it.
+        ({"op": "circle", "x": 1250, "y": 100, "r": 30, "c": "black"}, "x+r=1280"),
+        ({"op": "circle", "x": -80, "y": 100, "r": 10, "c": "black"}, "x-r=-90"),
+        ({"op": "circle", "x": 100, "y": 1650, "r": 30, "c": "black"}, "y+r=1680"),
+        ({"op": "circle", "x": 100, "y": -80, "r": 10, "c": "black"}, "y-r=-90"),
+    ],
+    ids=["x-plus-r", "x-minus-r", "y-plus-r", "y-minus-r"],
+)
+def test_circle_off_canvas(font_dir, op, edge):
+    _, problems = render({"bg": "white", "ops": [op]}, font_dir)
+    assert any(edge in p and "off-canvas" in p for p in problems)
 
 
 def test_circle_within_tolerance_does_not_warn(font_dir):

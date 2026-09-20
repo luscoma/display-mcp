@@ -39,10 +39,12 @@ display-mcp/
     cli.py                  `display-mcp-cli check|stamp|render <file>`
     prompts/compose.md      the compose_display prompt text
   tests/
-  samples/display.json      the sample document (hash 1c772cd7a6ebc2c7)
-  samples/sprite.json       the second sample: sprite and poly (hash f6b199c715336753)
+  samples/display.json      the sample document (hash ab71629b1ca76ea6)
+  samples/sprite.json       the second sample: sprite and poly (hash 16274a2fe47fbd06)
   samples/vocabulary.json   the third sample: a labelled page for judging on
-                             the wall after a flash (hash 101dd11be8557e3f)
+                             the wall after a flash (hash a61aaa35fa2a186b)
+  samples/fonts.json        the fourth sample: the type specimen, every family-style
+                            and size on one page (samples/gen_fonts_sample.py)
   docs/
     PLAN.md                 this file
     SPEC.md                 carried over from the earlier repo, unchanged
@@ -51,7 +53,8 @@ display-mcp/
   deploy/
     setup.sh                ported from the earlier repo
     display-mcp.service
-    fetch-fonts.sh          the Instrument Sans download, for local dev too
+    fetch-fonts.sh          the four families' font files (Petrona, Instrument
+                             Sans, Karla, JetBrains Mono), for local dev too
   firmware/                 the ESPHome project; source of truth for the panel
     epaper-schedule.yaml    device config: vocabulary, wake cycle, deep sleep
     display_list.h          the on-device interpreter (authoritative semantics)
@@ -126,21 +129,30 @@ errors.
 
 Straight port of `dlpreview.py` with the same public surface:
 `render(doc, dithered_colors=True) -> (PIL.Image, problems)`,
-`render_hash(doc)`, `fit_line`, `wrap_lines`. Same Instrument Sans
-Regular/Bold pair, same variable-font "Bold" instance selection, same ink
-table (the ideal table is gone — see "Preview colours" above). A second
-family, JetBrains Mono (`mono`, docs/plans/dragon-feedback.md D11), joined
-in B3: loaded with `ImageFont.Layout.BASIC` (no ligatures, integer
-advances) and its own "Regular" instance selection, the same way Bold is
-for Instrument Sans; its file missing is not fatal the way Instrument
-Sans's is — `mono` text ops are abandoned like an unknown font instead.
+`render_hash(doc)`, `fit_line`, `wrap_lines`. Same ink table (the ideal
+table is gone — see "Preview colours" above). Fonts are generated, not
+hand-typed (`docs/plans/fonts-and-icons.md` Decisions 1–3, landed in
+batches B1/B3b): a `Family`/`SIZES` table produces every `Face` at import —
+four typefaces (Petrona, Instrument Sans, Karla, each regular/`-bold`/
+`-italic`; JetBrains Mono regular-only) at eleven sizes apiece, 110 faces
+in all. `resolve_font()` is the one lookup `Ctx.font()`, `check()` and the
+bezel check all go through: it accepts a canonical `family[-style]/size`
+name, a face's own pixel spelling, or one of the five legacy bare slot
+names (`xl lg md sm xs`), which still resolve to Instrument Sans. Only
+`mono`'s font file is optional — missing, its ops are abandoned like an
+unknown font instead of raising; every other family's file missing still
+raises at startup.
 
 Fixes carried in during the port:
 
 - `ICONS` is missing `weather-snowy`, which the firmware compiles in, so the
   preview flags a valid icon as unknown. Add it.
-- Icons become `{name: {size classes}}` so `z` is validated too; the firmware
-  keys icons as `name/z` and `check/lg` does not exist on the panel.
+- Icons become `{name: {slots}}` so `z` is validated too; the firmware
+  keys icons as `name/z`. (Updated by docs/plans/fonts-and-icons.md
+  Decision 4: every icon is now compiled at all five font slots, so
+  `check/lg` exists like every other `name/slot` pair — the era this
+  paragraph originally described, where an icon had its own three "size
+  classes" and `check/lg` didn't exist, is gone.)
 - The off-canvas check also covers `x+w`/`y+h` for rects and `x2`/`y2` for
   lines, with the same +/-64px tolerance already applied to every op's
   `x`/`y`.
@@ -169,15 +181,15 @@ preview beats publishing three times).
 | `get_display` | `name="default"` | the published document, or an error if none |
 | `status` | `name?` | one display, or all: `{published, hash, ops, bytes, published_at, first_fetch_at, recent_fetch_at, recent_fetch_status, recent_fetch_ip, panel_battery, panel_volts, panel_draw_at, panel_wakes}`; timestamps are ISO 8601 plus a matching `*_ago` string. The `panel_*` fields are what the panel reported about itself on that fetch (see Panel endpoint); `panel_draw_at` is the draw *before* it, so a `200` older than an unmoved `panel_draw_at` means the panel fetched and failed to draw. With no `name`, also `{displays: {name: ...above...}, requested: {name: {recent_fetch_at, recent_fetch_ago, recent_fetch_status, recent_fetch_ip, panel_battery, panel_volts, panel_draw_at, panel_draw_ago, panel_wakes}}, auth}` — `requested` covers every name in `Store.fetched_names()`, published or not, which is the answer to "which name is the panel on" |
 | `clear_display` | `name="default"` | `{name, cleared}` |
-| `describe` | none | the renderer's vocabulary as one JSON object: `{canvas, inks, mixes, densities, fonts, font_families, anchors, icons, icon_sizes, icon_aliases, ops, fmt_fields, limits}`, built from the renderer's own tables at call time — `anchors` is the list of values `text.a`/`fmt.a` accept (`left`, `center`, `right`); `icon_aliases` is the pixel-count spelling of each of the five slots (`icon_sizes`' own reverse), so a composer can see `z` accepts either (docs/plans/fonts-and-icons.md Decision 4) |
+| `describe` | none | the renderer's vocabulary as one JSON object: `{canvas, inks, mixes, densities, fonts, font_families, anchors, icons, icon_depicts, icon_sizes, icon_aliases, ops, fmt_fields, font_aliases, limits}`, built from the renderer's own tables at call time — `anchors` is the list of values `text.a`/`fmt.a` accept (`left`, `center`, `right`); `icon_depicts` is name → a few words on what it draws, so a wrong icon name doesn't validate clean; `icon_aliases` is the pixel-count spelling of each of the five slots (`icon_sizes`' own reverse), so a composer can see `z` accepts either (docs/plans/fonts-and-icons.md Decision 4); `font_aliases` is the five legacy bare names (`xl lg md sm xs`) to the canonical face they still mean (Decision 1) |
 | `guide` | none | the text of `prompts/compose.md` — the composing guide, as a tool call for a client that cannot read prompts |
 | `swatches` | `document?` (dict or JSON string), `include_document=False` | PNG **and** a text list: every ink and built-in mix as a labelled chip, flat (`dithered_colors=False`); `document`'s own `palette` is appended as a final group, capped to what fits the page (`+N more not shown` past that). The sheet is itself a valid document; `include_document=True` adds it as a third block (JSON), to `set_display` |
 
 Resources: `display://spec` (SPEC.md), `display://sample`
 (`samples/display.json`), `display://current/<name>`.
 
-Prompt `compose_display`: canvas size, type scale, the eleven icons and
-their size classes, the six-ink rules, the workflow `validate → preview →
+Prompt `compose_display`: canvas size, type scale, the nineteen icons at
+the five font slots, the six-ink rules, the workflow `validate → preview →
 set_display → status`. Kept in `prompts/compose.md` so it can be edited
 without touching code.
 
@@ -209,7 +221,7 @@ Access AUD tag and team domain.
 
 ## Tests
 
-- `render_hash(samples/display.json) == "1c772cd7a6ebc2c7"`.
+- `render_hash(samples/display.json) == "ab71629b1ca76ea6"`.
 - wrap/fit cases from the spec (multibyte truncation, overlong single word,
   exact fit, empty) as pytest fixtures, so a later C++ diff has something to
   run against.

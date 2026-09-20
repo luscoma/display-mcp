@@ -16,7 +16,6 @@ import re
 import subprocess
 import sys
 import zipfile
-from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -24,7 +23,16 @@ from mcp import Client
 
 from display_mcp import mcp_server
 from display_mcp.config import Settings
-from display_mcp.render import BUILTIN_MIXES, OP_FIELDS, check, render, render_hash
+from display_mcp.render import (
+    BUILTIN_MIXES,
+    OP_FIELDS,
+    check,
+    render,
+    render_hash,
+)
+from display_mcp.render import (
+    SAMPLE_PIXEL_PIN_NOW as _PIXEL_PIN_NOW,
+)
 from display_mcp.render.fonts import SIZES
 from fakes import FakeStore
 
@@ -33,7 +41,9 @@ from fakes import FakeStore
 # whatever second the test happened to run in. This repo's own convention
 # for a short pixel-identity check (docs/plans/fonts-and-icons.md B4b
 # review, item 1) -- see test_swatches.py's pre-B1 pin for the pattern.
-_PIXEL_PIN_NOW = datetime(2026, 9, 9, 13, 43)
+# Imported from display_mcp.render rather than kept as a local copy (final
+# review, B7/F, item 8) so docs/images/generate.py renders the checked-in
+# sample.png against this exact same moment, not its own drifted copy.
 
 ROOT = Path(__file__).resolve().parents[1]
 PROMPTS = ROOT / "src" / "display_mcp" / "prompts"
@@ -47,14 +57,14 @@ BUNDLED = {
 
 
 def test_sample_hash(sample_doc):
-    assert render_hash(sample_doc) == "1c772cd7a6ebc2c7"
+    assert render_hash(sample_doc) == "ab71629b1ca76ea6"
 
 
 def test_sprite_sample_hash(sprite_sample_doc):
     """samples/sprite.json (docs/plans/dragon-feedback.md B1) — the second
     sample, showing off the `sprite` op the way samples/display.json shows
     off everything else."""
-    assert render_hash(sprite_sample_doc) == "f6b199c715336753"
+    assert render_hash(sprite_sample_doc) == "16274a2fe47fbd06"
 
 
 def test_sprite_sample_checks_clean(sprite_sample_doc, font_dir):
@@ -78,16 +88,22 @@ def test_sample_renders_pixel_identical(sample_doc, font_dir):
     img, problems = render(sample_doc, font_dir, now=_PIXEL_PIN_NOW)
     assert problems == []
     digest = hashlib.sha256(img.tobytes()).hexdigest()[:16]
-    assert digest == "3b736f169ee472d0"
+    assert digest == "d0404a75ef13eebd"
 
 
 def test_sprite_sample_renders_pixel_identical(sprite_sample_doc, font_dir):
     """Same guard as `test_sample_renders_pixel_identical`, for the second
-    sample's own icon op."""
+    sample's own icon op. Unlike `samples/display.json`, `sprite.json`
+    was deliberately left in the bare legacy names when B7/E re-cut the
+    first sample into the finished vocabulary (final review, B8) -- so
+    this pin is no longer "the sample, pixel for pixel" but the
+    legacy-vocabulary pixel pin: proof that the five bare aliases
+    (`xl lg md sm xs`) still resolve to the same Instrument Sans faces,
+    at the same pixels, that they always did."""
     img, problems = render(sprite_sample_doc, font_dir, now=_PIXEL_PIN_NOW)
     assert problems == []
     digest = hashlib.sha256(img.tobytes()).hexdigest()[:16]
-    assert digest == "a2777e10b45469a2"
+    assert digest == "9e5f7b4fa62384f1"
 
 
 def test_vocabulary_sample_hash(vocabulary_sample_doc):
@@ -98,7 +114,7 @@ def test_vocabulary_sample_hash(vocabulary_sample_doc):
     filled poly in a mix and an outline poly, a thick circle outline, a
     thick line, and — added in B4b — the eight new activity icons at `md`
     and a couple at `xl`), for the flash-and-judge step in RUNBOOK.md."""
-    assert render_hash(vocabulary_sample_doc) == "101dd11be8557e3f"
+    assert render_hash(vocabulary_sample_doc) == "a61aaa35fa2a186b"
 
 
 def test_vocabulary_sample_checks_clean(vocabulary_sample_doc, font_dir):
@@ -120,30 +136,20 @@ def _fenced_op(text: str, kind: str) -> dict:
     raise AssertionError(f"no fenced json {kind} example found in {text[:40]!r}...")
 
 
-def test_spec_sprite_example_checks_clean(font_dir):
-    """docs/SPEC.md's ### sprite example has to be something an agent can
-    paste straight into a document — check() on it must come back clean,
-    the same rule compose.md's example is held to below."""
-    op = _fenced_op((ROOT / "docs" / "SPEC.md").read_text(), "sprite")
-    assert check({"v": 1, "bg": "white", "ops": [op]}, font_dir) == []
-
-
-def test_compose_sprite_example_checks_clean(font_dir):
-    """The compose_display prompt's own sprite example, same rule."""
-    op = _fenced_op((PROMPTS / "compose.md").read_text(), "sprite")
-    assert check({"v": 1, "bg": "white", "ops": [op]}, font_dir) == []
-
-
-def test_spec_poly_example_checks_clean(font_dir):
-    """docs/SPEC.md's ### poly example has to be pasteable as-is, the same
-    rule the sprite example is held to."""
-    op = _fenced_op((ROOT / "docs" / "SPEC.md").read_text(), "poly")
-    assert check({"v": 1, "bg": "white", "ops": [op]}, font_dir) == []
-
-
-def test_compose_poly_example_checks_clean(font_dir):
-    """The compose_display prompt's own poly example, same rule."""
-    op = _fenced_op((PROMPTS / "compose.md").read_text(), "poly")
+@pytest.mark.parametrize("kind", ["sprite", "poly"])
+@pytest.mark.parametrize(
+    "source",
+    [
+        pytest.param(ROOT / "docs" / "SPEC.md", id="spec"),
+        pytest.param(PROMPTS / "compose.md", id="compose"),
+    ],
+)
+def test_fenced_op_example_checks_clean(font_dir, source, kind):
+    """Every fenced `sprite`/`poly` example in docs/SPEC.md and in the
+    compose_display prompt has to be something an agent can paste straight
+    into a document (docs/plans/dragon-feedback.md D12/B4) -- `check()` on
+    it must come back clean, not merely look plausible."""
+    op = _fenced_op(source.read_text(), kind)
     assert check({"v": 1, "bg": "white", "ops": [op]}, font_dir) == []
 
 
@@ -280,44 +286,75 @@ async def test_prose_tool_ops_font_and_mix_counts_match_the_code():
     assert mixes_found == {len(BUILTIN_MIXES)}, mixes_found
 
 
-@pytest.mark.xfail(
-    strict=True, reason="README/SPEC say six font sizes until batch B6 rewrites them"
-)
 def test_prose_font_size_count_matches_the_code():
     """Split out of test_prose_tool_ops_font_and_mix_counts_match_the_code
     (docs/plans/fonts-and-icons.md B1 review): `len(FONTS)` grew from 6 to
-    33 in B1, but README.md/docs/SPEC.md are owned by other batches — B1's
-    own rules say not to touch them — and still say "six font sizes" until
-    B6's prose pass reconciles every count with what the finished
-    vocabulary compiles. Still derived from `len(FONTS)`, not a frozen
-    number, and `strict=True` so it flips red-to-green (an unexpected pass
-    fails the suite) the moment B6 lands, rather than staying silently
-    green forever. The count is `len(SIZES)` -- "font sizes" is the ladder
-    (eleven), which the prose can say in words; `len(FONTS)` is the table
-    (33 in B1, 110 now that B3b has landed Petrona and Karla), which no
-    prose will ever spell out, so asserting that would leave this xfail
-    unable to flip (B1 re-review, finding A)."""
+    33 in B1, but README.md/docs/SPEC.md were owned by other batches — B1's
+    own rules said not to touch them — and said "six font sizes" until B6's
+    prose pass reconciled every count with what the finished vocabulary
+    compiles. Still derived from `len(FONTS)`, not a frozen number. The
+    count is `len(SIZES)` -- "font sizes" is the ladder (eleven), which the
+    prose can say in words; `len(FONTS)` is the table (33 in B1, 110 now
+    that B3b has landed Petrona and Karla), which no prose will ever spell
+    out, so asserting that would leave this test unable to pass (B1
+    re-review, finding A). No longer `xfail` -- B6 rewrote the prose."""
     readme = (ROOT / "README.md").read_text()
     spec = (ROOT / "docs" / "SPEC.md").read_text()
     fonts_found = _found(rf"\b({_NUM_RE})\s+font sizes\b", readme, spec)
     assert fonts_found == {len(SIZES)}, fonts_found
 
 
-@pytest.mark.xfail(
-    strict=True, reason="README/SPEC say eleven icons until batch B6 rewrites them"
-)
+def test_compose_md_cites_every_icon_depicts_phrase():
+    """compose.md's icon list carries a parenthetical per name, cited from
+    `ICON_DEPICTS` (final review, "Composer over MCP") -- so a wrong icon
+    name can be caught by reading the guide, not just by opening a PNG."""
+    from display_mcp.render import ICON_DEPICTS
+
+    # Collapsed to single spaces: the guide is hand-wrapped prose, so a
+    # phrase this test looks for may cross a line break in the source.
+    compose = re.sub(r"\s+", " ", (PROMPTS / "compose.md").read_text())
+    for name, depicts in ICON_DEPICTS.items():
+        assert f"`{name}` ({depicts})" in compose, f"{name}: {depicts!r} not in compose.md"
+
+
 def test_prose_icon_count_matches_the_code():
     """Same shape as `test_prose_font_size_count_matches_the_code` (docs/plans/
     fonts-and-icons.md B4b review, item 4): `len(ICONS)` grew from 11 to 19
     in B4b (the eight lucide activity icons), but README.md's header count
-    sentence and docs/SPEC.md's header line are B6's to rewrite, not B4b's
+    sentence and docs/SPEC.md's header line were B6's to rewrite, not B4b's
     -- the ### icon section and the Vocabulary section's own Icons line, both
-    in scope for B4b, already say nineteen names. `strict=True` so this
-    flips red-to-green (an unexpected pass fails the suite) the moment B6
-    lands, rather than staying silently green forever."""
+    in scope for B4b, already said nineteen names. No longer `xfail` -- B6
+    rewrote the two header lines, and `_WORDNUM` gained `"nineteen"`, which
+    it did not carry before (nothing before B4b needed to spell 19)."""
     from display_mcp.render import ICONS
 
     readme = (ROOT / "README.md").read_text()
     spec = (ROOT / "docs" / "SPEC.md").read_text()
     icons_found = _found(rf"\b({_NUM_RE})\s+icons\b", readme, spec)
     assert icons_found == {len(ICONS)}, icons_found
+
+
+def test_fonts_sample_is_a_complete_type_specimen(font_dir):
+    """samples/fonts.json -- the fourth sample, a type specimen to publish
+    when judging the faces on the glass: every family-style at `md`,
+    Petrona at every compiled size below `xl` (the header is `xl`), the
+    five bare names, mono, both decorations, the five slots in Karla. It
+    must validate clean, be stamped, and keep naming the whole vocabulary
+    -- regenerate it with samples/gen_fonts_sample.py when that changes."""
+    import json
+
+    from display_mcp.render import FONTS, SIZES, check, render_hash, resolve_font
+    from display_mcp.render.fonts import FAMILIES
+    doc = json.loads((ROOT / "samples" / "fonts.json").read_text())
+    assert check(doc, font_dir) == []
+    assert doc["meta"]["hash"] == render_hash(doc)
+    used = {resolve_font(op["f"]) for op in doc["ops"] if op["op"] in ("text", "fmt")}
+    family_styles = {FONTS[name].family + ("-" + FONTS[name].style if FONTS[name].style else "")
+                     for name in used}
+    expected = {fam if not style else f"{fam}-{style}"
+                for fam, family in FAMILIES.items() for style in family.styles}
+    assert family_styles == expected, expected - family_styles
+    sizes = {FONTS[name].size for name in used}
+    assert sizes == set(SIZES), set(SIZES) - sizes
+    assert {op.get("deco") for op in doc["ops"] if op["op"] == "text"} >= {"underline", "strike"}
+    assert {op["f"] for op in doc["ops"] if op["op"] == "text"} >= {"xl", "lg", "md", "sm", "xs"}

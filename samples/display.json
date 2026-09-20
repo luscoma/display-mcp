@@ -2,9 +2,8 @@
   "v": 1,
   "meta": {
     "generated": "2026-09-08T06:31:00-07:00",
-    "ttl": 3600,
     "title": "daily schedule",
-    "hash": "1c772cd7a6ebc2c7"
+    "hash": "ab71629b1ca76ea6"
   },
   "bg": "white",
   "palette": {
@@ -28,7 +27,7 @@
       "x": 48,
       "y": 34,
       "s": "Tuesday",
-      "f": "xl",
+      "f": "petrona-bold/xl",
       "c": "white"
     },
     {
@@ -36,7 +35,7 @@
       "x": 48,
       "y": 146,
       "s": "September 8",
-      "f": "md",
+      "f": "petrona-italic/40",
       "c": "white"
     },
     {
@@ -51,7 +50,7 @@
       "op": "text",
       "x": 1152,
       "y": 52,
-      "s": "72\u00b0",
+      "s": "72°",
       "f": "lg",
       "c": "white",
       "a": "right"
@@ -60,7 +59,7 @@
       "op": "text",
       "x": 1152,
       "y": 150,
-      "s": "H 78\u00b0   L 54\u00b0",
+      "s": "H 78°   L 54°",
       "f": "sm",
       "c": "white",
       "a": "right"
@@ -70,13 +69,13 @@
       "x": 48,
       "y": 256,
       "s": "SCHEDULE",
-      "f": "xs",
+      "f": "petrona-bold/lg",
       "c": "black"
     },
     {
       "op": "rect",
       "x": 48,
-      "y": 290,
+      "y": 331,
       "w": 1104,
       "h": 3,
       "c": "black",
@@ -85,7 +84,7 @@
     {
       "op": "line",
       "x": 252,
-      "y": 326,
+      "y": 344,
       "x2": 252,
       "y2": 1030,
       "c": "black",
@@ -94,7 +93,7 @@
     {
       "op": "circle",
       "x": 252,
-      "y": 352,
+      "y": 370,
       "r": 9,
       "c": "home",
       "fill": true
@@ -102,16 +101,16 @@
     {
       "op": "text",
       "x": 230,
-      "y": 338,
+      "y": 356,
       "s": "8:30 AM",
-      "f": "sm",
+      "f": "karla/sm",
       "c": "black",
       "a": "right"
     },
     {
       "op": "rect",
       "x": 288,
-      "y": 330,
+      "y": 348,
       "w": 8,
       "h": 88,
       "c": "home",
@@ -120,24 +119,32 @@
     {
       "op": "text",
       "x": 312,
-      "y": 324,
+      "y": 346,
       "s": "School drop-off",
-      "f": "lg",
+      "f": "karla-bold/md",
       "c": "black",
-      "w": 800
+      "w": 680
+    },
+    {
+      "op": "icon",
+      "x": 720,
+      "y": 353,
+      "n": "school-day",
+      "z": "md",
+      "c": "black"
     },
     {
       "op": "text",
       "x": 312,
-      "y": 384,
+      "y": 402,
       "s": "Leave by 8:15",
-      "f": "sm",
+      "f": "karla/sm",
       "c": "black"
     },
     {
       "op": "circle",
       "x": 252,
-      "y": 484,
+      "y": 502,
       "r": 9,
       "c": "work",
       "fill": true
@@ -145,16 +152,16 @@
     {
       "op": "text",
       "x": 230,
-      "y": 470,
+      "y": 488,
       "s": "9:30 AM",
-      "f": "sm",
+      "f": "karla/sm",
       "c": "black",
       "a": "right"
     },
     {
       "op": "rect",
       "x": 288,
-      "y": 462,
+      "y": 480,
       "w": 8,
       "h": 88,
       "c": "work",
@@ -163,24 +170,24 @@
     {
       "op": "text",
       "x": 312,
-      "y": 456,
+      "y": 478,
       "s": "Team standup",
-      "f": "lg",
+      "f": "karla-bold/md",
       "c": "black",
       "w": 800
     },
     {
       "op": "text",
       "x": 312,
-      "y": 516,
-      "s": "Zoom \u00b7 15 min",
-      "f": "sm",
+      "y": 534,
+      "s": "Zoom · 15 min",
+      "f": "karla/sm",
       "c": "black"
     },
     {
       "op": "rect",
       "x": 264,
-      "y": 578,
+      "y": 596,
       "w": 888,
       "h": 116,
       "c": "highlight",
@@ -188,8 +195,8 @@
     },
     {
       "op": "circle",
-      "x": 252,
-      "y": 616,
+      "x": 248,
+      "y": 634,
       "r": 13,
       "c": "accent",
       "fill": true
@@ -197,16 +204,16 @@
     {
       "op": "text",
       "x": 230,
-      "y": 602,
+      "y": 620,
       "s": "11:00 AM",
-      "f": "sm",
+      "f": "karla/sm",
       "c": "black",
       "a": "right"
     },
     {
       "op": "rect",
       "x": 288,
-      "y": 594,
+      "y": 612,
       "w": 8,
       "h": 88,
       "c": "accent",
@@ -215,24 +222,24 @@
     {
       "op": "text",
       "x": 312,
-      "y": 588,
-      "s": "Design review \u2014 display list",
-      "f": "lg",
+      "y": 610,
+      "s": "Design review — display list",
+      "f": "karla-bold/md",
       "c": "black",
-      "w": 760
+      "w": 800
     },
     {
       "op": "text",
       "x": 312,
-      "y": 648,
-      "s": "Conf room B \u00b7 now",
-      "f": "sm",
+      "y": 666,
+      "s": "Conf room B · now",
+      "f": "karla-italic/sm",
       "c": "black"
     },
     {
       "op": "circle",
       "x": 252,
-      "y": 748,
+      "y": 766,
       "r": 9,
       "c": "work",
       "fill": true
@@ -240,16 +247,16 @@
     {
       "op": "text",
       "x": 230,
-      "y": 734,
+      "y": 752,
       "s": "1:00 PM",
-      "f": "sm",
+      "f": "karla/sm",
       "c": "black",
       "a": "right"
     },
     {
       "op": "rect",
       "x": 288,
-      "y": 726,
+      "y": 744,
       "w": 8,
       "h": 88,
       "c": "work",
@@ -258,24 +265,24 @@
     {
       "op": "text",
       "x": 312,
-      "y": 720,
+      "y": 742,
       "s": "1:1",
-      "f": "lg",
+      "f": "karla-bold/md",
       "c": "black",
       "w": 800
     },
     {
       "op": "text",
       "x": 312,
-      "y": 780,
+      "y": 798,
       "s": "Zoom",
-      "f": "sm",
+      "f": "karla/sm",
       "c": "black"
     },
     {
       "op": "circle",
       "x": 252,
-      "y": 880,
+      "y": 898,
       "r": 9,
       "c": "home",
       "fill": true
@@ -283,16 +290,16 @@
     {
       "op": "text",
       "x": 230,
-      "y": 866,
+      "y": 884,
       "s": "4:30 PM",
-      "f": "sm",
+      "f": "karla/sm",
       "c": "black",
       "a": "right"
     },
     {
       "op": "rect",
       "x": 288,
-      "y": 858,
+      "y": 876,
       "w": 8,
       "h": 88,
       "c": "home",
@@ -301,16 +308,24 @@
     {
       "op": "text",
       "x": 312,
-      "y": 852,
-      "s": "Taekwondo",
-      "f": "lg",
+      "y": 874,
+      "s": "Swim lesson",
+      "f": "karla-bold/md",
       "c": "black",
-      "w": 800
+      "w": 680
+    },
+    {
+      "op": "icon",
+      "x": 720,
+      "y": 881,
+      "n": "swim",
+      "z": "md",
+      "c": "black"
     },
     {
       "op": "icon",
       "x": 312,
-      "y": 908,
+      "y": 926,
       "n": "map-marker",
       "z": "md",
       "c": "black"
@@ -318,15 +333,15 @@
     {
       "op": "text",
       "x": 356,
-      "y": 912,
-      "s": "Dojang",
-      "f": "sm",
+      "y": 930,
+      "s": "Pool",
+      "f": "karla/sm",
       "c": "black"
     },
     {
       "op": "circle",
       "x": 252,
-      "y": 1012,
+      "y": 1030,
       "r": 9,
       "c": "home",
       "fill": true
@@ -334,16 +349,16 @@
     {
       "op": "text",
       "x": 230,
-      "y": 998,
+      "y": 1016,
       "s": "6:30 PM",
-      "f": "sm",
+      "f": "karla/sm",
       "c": "black",
       "a": "right"
     },
     {
       "op": "rect",
       "x": 288,
-      "y": 990,
+      "y": 1008,
       "w": 8,
       "h": 88,
       "c": "home",
@@ -352,9 +367,9 @@
     {
       "op": "text",
       "x": 312,
-      "y": 984,
+      "y": 1006,
       "s": "Dinner",
-      "f": "lg",
+      "f": "karla-bold/md",
       "c": "black",
       "w": 800
     },
@@ -363,13 +378,13 @@
       "x": 48,
       "y": 1188,
       "s": "TODAY",
-      "f": "xs",
+      "f": "petrona-bold/lg",
       "c": "black"
     },
     {
       "op": "rect",
       "x": 48,
-      "y": 1222,
+      "y": 1263,
       "w": 1104,
       "h": 3,
       "c": "black",
@@ -378,7 +393,7 @@
     {
       "op": "rect",
       "x": 48,
-      "y": 1262,
+      "y": 1286,
       "w": 34,
       "h": 34,
       "c": "home",
@@ -387,7 +402,7 @@
     {
       "op": "icon",
       "x": 51,
-      "y": 1265,
+      "y": 1289,
       "n": "check",
       "z": "md",
       "c": "white"
@@ -395,16 +410,17 @@
     {
       "op": "text",
       "x": 104,
-      "y": 1258,
+      "y": 1282,
       "s": "Send the Q3 summary",
-      "f": "md",
+      "f": "karla/md",
       "c": "black",
-      "w": 1040
+      "w": 1040,
+      "deco": "strike"
     },
     {
       "op": "rect",
       "x": 48,
-      "y": 1334,
+      "y": 1352,
       "w": 34,
       "h": 34,
       "c": "black",
@@ -414,16 +430,16 @@
     {
       "op": "text",
       "x": 104,
-      "y": 1330,
+      "y": 1348,
       "s": "Order printer filament and a spare 0.4 nozzle",
-      "f": "md",
+      "f": "karla/md",
       "c": "black",
       "w": 1040
     },
     {
       "op": "rect",
       "x": 48,
-      "y": 1406,
+      "y": 1418,
       "w": 34,
       "h": 34,
       "c": "black",
@@ -433,16 +449,16 @@
     {
       "op": "text",
       "x": 104,
-      "y": 1402,
+      "y": 1414,
       "s": "Book the dentist",
-      "f": "md",
+      "f": "karla/md",
       "c": "black",
       "w": 1040
     },
     {
       "op": "rect",
       "x": 48,
-      "y": 1478,
+      "y": 1484,
       "w": 34,
       "h": 34,
       "c": "black",
@@ -452,9 +468,9 @@
     {
       "op": "text",
       "x": 104,
-      "y": 1474,
+      "y": 1480,
       "s": "Measure the driver board for the frame",
-      "f": "md",
+      "f": "karla/md",
       "c": "black",
       "w": 1040
     },
@@ -489,7 +505,7 @@
       "x": 1058,
       "y": 1545,
       "n": "battery",
-      "z": "md",
+      "z": "sm",
       "c": "grey-mid"
     },
     {

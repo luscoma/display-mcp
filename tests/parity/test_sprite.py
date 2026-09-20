@@ -18,6 +18,7 @@ import time
 from display_mcp.render import (
     HEIGHT,
     MAX_COORD,
+    NAME_MAX_LEN,
     SPRITE_MAX_COLS,
     SPRITE_MAX_PALETTE,
     SPRITE_MAX_ROWS,
@@ -153,6 +154,51 @@ def test_sprite_past_cols_bound_is_malformed_on_both_sides(sprite_harness, font_
     assert any("columns wide" in p for p in problems)
 
 
+def test_sprite_row_past_the_raw_byte_bound_is_malformed_on_both_sides_and_fast(
+    sprite_harness, font_dir
+):
+    """Final review, B7/F: a row whose raw byte length alone (before ever
+    counting codepoints) already exceeds `4 * SPRITE_MAX_COLS` -- the most
+    bytes a legal row's worth of codepoints could ever take in UTF-8 -- is
+    rejected on the firmware before it builds a std::string that long; a
+    row this many *bytes* long could in principle still be `<=
+    SPRITE_MAX_COLS` codepoints (fewer, multi-byte ones), so this is
+    deliberately many bytes past the threshold, not merely past
+    `SPRITE_MAX_COLS` itself, to stay unambiguous. The two sides' messages
+    differ on purpose here (bytes vs. the exact codepoint count Python can
+    afford to compute) -- both still reject the op, fast."""
+    huge_row = "K" * (4 * SPRITE_MAX_COLS + 1000)
+    op = {"op": "sprite", "x": 0, "y": 0, "cell": 1, "palette": {"K": "black"}, "rows": [huge_row]}
+    t0 = time.monotonic()
+    drew, _px, logs = sprite_harness.run(op, 10, 10)
+    cpp_elapsed = time.monotonic() - t0
+    assert cpp_elapsed < 1.0, cpp_elapsed
+    assert not drew
+    assert any("row is" in log and "bytes" in log for log in logs)
+    problems = check({"v": 1, "bg": "white", "ops": [op]}, font_dir)
+    assert any("columns wide" in p for p in problems)
+
+
+def test_sprite_palette_key_past_name_max_len_is_malformed_on_both_sides(sprite_harness, font_dir):
+    """Final review, B7/F: a palette key longer than `NAME_MAX_LEN` bytes
+    is rejected before the firmware ever builds a std::string from it to
+    count codepoints -- the same bound `f`/`n`/`z`/colour names use,
+    reused rather than a sprite-specific one, since any key this long is
+    obviously not one codepoint. Unlike a too-wide row or too-long palette
+    (which abandon the whole op), only this one palette entry is dropped --
+    the sprite still draws, with "K" falling back to black on both sides,
+    same as any other character with no palette entry."""
+    long_key = "K" * (NAME_MAX_LEN + 1)
+    op = {"op": "sprite", "x": 0, "y": 0, "cell": 1, "palette": {long_key: "black"}, "rows": ["K"]}
+    drew, _px, logs = sprite_harness.run(op, 10, 10)
+    assert drew
+    assert any("palette key is" in log and "bytes" in log for log in logs)
+    assert not any(long_key in log for log in logs)
+    problems = check({"v": 1, "bg": "white", "ops": [op]}, font_dir)
+    assert any("palette key is" in p and "bytes" in p for p in problems)
+    assert not any(long_key in p for p in problems)
+
+
 def test_sprite_past_rows_bound_is_malformed_on_both_sides_and_fast(sprite_harness, font_dir):
     """The ragged case from the plan: one long row near the column bound
     plus thousands of empty rows past the row bound -- both sides reject
@@ -259,7 +305,12 @@ def test_sprite_repeated_character_after_the_cap_matches_the_firmware(sprite_har
     of an already-warned character must not fall into the "...and more"
     branch on either side just because the set happens to be full by
     then. Before the fix, the firmware logged "A" a second time as the
-    overflow line here; the Python mirror already got this right."""
+    overflow line here; the Python mirror already got this right.
+
+    Since the B7 slim this is also the sole guard of the *Python* side of
+    that amendment -- the renderer-side twin it subsumed verbatim (same op,
+    same `check()` call) is gone -- so on a host with no C++ compiler, where
+    this test skips, nothing checks it."""
     op = {"op": "sprite", "x": 0, "y": 0, "cell": 1, "palette": {}, "rows": ["ABCDEFGHA"]}
     drew, _px, logs = sprite_harness.run(op, 12, 2)
     assert drew

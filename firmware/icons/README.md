@@ -31,17 +31,15 @@ The five sizes are the font-slot pixel sizes (`xs sm md lg xl` = `22 28 36
 
 **lucide-static 1.47.0**, fetched 2026-09-19 from:
 
-(The pixels are fixed by the other end too: `resvg_py` 0.3.4 as shipped in
-ESPHome 2026.8.2's Python. A different resvg may rasterise a curve a pixel
-differently; the firmware compiles the committed PNG, so that only matters
-when this script is re-run.)
-
-Sources:
-
 - `https://cdn.jsdelivr.net/npm/lucide-static@1.47.0/icons/<icon>.svg` for
   each SVG
 - `https://cdn.jsdelivr.net/npm/lucide-static@1.47.0/LICENSE` for the
   licence
+
+The pixels are fixed by the other end too: `resvg_py` 0.3.4 as shipped in
+ESPHome 2026.8.2's Python. A different resvg may rasterise a curve a pixel
+differently; the firmware compiles the committed PNG, so that only matters
+when this script is re-run.
 
 The same version is recorded in a comment at the top of `rasterize.py`.
 Bumping the pin means re-fetching the eight SVGs at the new version,
@@ -80,13 +78,13 @@ bytes and reports every file `unchanged`.
 
 `src/display_mcp/render/icons/<activity>-<px>.png` — forty files, eight
 activities at the five slot sizes — are committed, not generated at build
-or test time. Both sides read the same file:
+or test time. Both sides read the same file today:
 
-- The **firmware** compiles each PNG through an `image:` entry with
-  `type: BINARY` (a later batch wires these into
-  `firmware/epaper-schedule.yaml`).
-- The **preview** (`display_mcp.render`) blits the same PNG in
-  `draw_icon()` (also a later batch).
-
-This batch (B4a) only lands the sources and the rasters; nothing reads them
-yet.
+- The **firmware** compiles each PNG through a generated `image:` entry
+  with `type: BINARY` — `display-mcp-cli firmware-vocabulary` writes these
+  into `firmware/epaper-schedule.yaml`'s fenced `image:` block, from
+  `ICONS`/`LUCIDE_ICONS`, the same table this file's own "Source →
+  artefact" section names.
+- The **preview** (`display_mcp.render.shapes.draw_icon()`) blits the same
+  PNG, gated on `LUCIDE_ICONS` rather than falling back to a procedural
+  stand-in for these eight names.

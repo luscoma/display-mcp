@@ -25,6 +25,7 @@ from display_mcp.render import (
     Ink,
     _grounds,
     check,
+    colour,
     document_colors,
     mix_on,
     render,
@@ -43,10 +44,22 @@ def test_palette_alias_chain_resolves(font_dir):
     assert problems == []
 
 
-def test_palette_cycle_falls_back_to_black_no_hang(font_dir):
+@pytest.mark.parametrize(
+    "palette",
+    [
+        # A cycle: the walk must terminate rather than hang.
+        {"a": "b", "b": "a"},
+        # a->b->...->i->red: 9 hops to reach a base colour, beyond the cap,
+        # so it must NOT resolve (mirrors resolve_color()'s hop cap).
+        {"a": "b", "b": "c", "c": "d", "d": "e", "e": "f",
+         "f": "g", "g": "h", "h": "i", "i": "red"},
+    ],
+    ids=["cycle-no-hang", "nine-hops-past-the-cap"],
+)
+def test_palette_walk_past_eight_hops_falls_back_to_black(font_dir, palette):
     doc = {
         "bg": "white",
-        "palette": {"a": "b", "b": "a"},
+        "palette": palette,
         "ops": [{"op": "rect", "x": 0, "y": 0, "w": 10, "h": 10, "c": "a"}],
     }
     img, problems = render(doc, font_dir)
@@ -55,33 +68,63 @@ def test_palette_cycle_falls_back_to_black_no_hang(font_dir):
     assert img.getpixel((5, 5)) == (32, 32, 32)  # INK["black"]
 
 
-def test_palette_deep_chain_capped_at_eight_hops(font_dir):
-    # a->b->c->d->e->f->g->h->i->red: 9 hops to reach a base colour, beyond
-    # the cap, so it must NOT resolve (mirrors resolve_color()'s hop cap).
-    doc = {
-        "bg": "white",
-        "palette": {
-            "a": "b",
-            "b": "c",
-            "c": "d",
-            "d": "e",
-            "e": "f",
-            "f": "g",
-            "g": "h",
-            "h": "i",
-            "i": "red",
-        },
-        "ops": [{"op": "rect", "x": 0, "y": 0, "w": 10, "h": 10, "c": "a"}],
-    }
-    _, problems = render(doc, font_dir)
-    assert any("unknown colour" in p for p in problems)
-
-
 def test_unknown_colour_is_one_problem_no_raise(font_dir):
     doc = {"bg": "white", "ops": [{"op": "rect", "x": 0, "y": 0, "w": 10, "h": 10, "c": "mauve"}]}
     _, problems = render(doc, font_dir)
     assert len(problems) == 1
     assert "unknown colour" in problems[0]
+
+
+def test_over_long_colour_name_warns_and_falls_back_to_black(font_dir):
+    """Final safety review, B7/A1: a several-KB `c` used to cost
+    resolve_ink()/resolve_solid() one unbounded allocation on the panel; the
+    same firmware fix mirrored here means a 65,400-byte name (the reviewer's
+    own reproduction) still renders -- warned about, never raised, and
+    drawn as black, exactly today's unknown-colour fallback -- rather than
+    check()/render() ever holding a 65 KB `!r` in `problems`."""
+    long_name = "x" * 65_400
+    doc = {
+        "bg": "white",
+        "ops": [{"op": "rect", "x": 0, "y": 0, "w": 10, "h": 10, "c": long_name}],
+    }
+    img, problems = render(doc, font_dir)
+    assert len(problems) == 1
+    assert problems[0] == (
+        f"ops[0] rect: colour name is {len(long_name)} bytes, more than 64; using black"
+    )
+    assert long_name not in problems[0]
+    assert img.getpixel((5, 5)) == (32, 32, 32)  # INK["black"]
+
+    # check() must not block a publish over this -- warnings never do
+    # (CLAUDE.md's "Rules that are settled").
+    assert check(doc, font_dir) == problems
+
+
+def test_over_long_colour_name_caught_through_a_palette_alias_hop(font_dir):
+    """The bound applies at every hop, not just the initial name -- a
+    palette alias landing on an over-long target is caught before it is
+    ever assigned into the walk's own candidate, mirroring
+    resolve_ink()'s/resolve_solid()'s per-hop check."""
+    long_name = "y" * 100
+    doc = {
+        "bg": "white",
+        "palette": {"a": long_name},
+        "ops": [{"op": "rect", "x": 0, "y": 0, "w": 10, "h": 10, "c": "a"}],
+    }
+    _, problems = render(doc, font_dir)
+    assert len(problems) == 1
+    assert "colour name is 100 bytes, more than 64; using black" in problems[0]
+
+
+def test_colour_name_at_exactly_the_bound_is_not_too_long(font_dir):
+    """64 bytes -- `shapes.NAME_MAX_LEN` itself -- is still an ordinary
+    unknown colour, not the too-long path; the boundary is `> NAME_MAX_LEN`,
+    matching the firmware's `strlen(name) > kNameMaxLen`."""
+    name_64 = "z" * 64
+    doc = {"bg": "white", "ops": [{"op": "rect", "x": 0, "y": 0, "w": 10, "h": 10, "c": name_64}]}
+    _, problems = render(doc, font_dir)
+    assert len(problems) == 1
+    assert problems[0] == f"ops[0] rect: unknown colour {name_64!r}"
 
 
 def test_colors_tuple():
@@ -516,6 +559,9 @@ def test_contrast_judges_a_tied_ground_by_its_harder_half(font_dir):
 
 
 def test_mix_as_text_warns_for_a_large_chromatic_gap(font_dir):
+    """Names the mix, its two inks and which one the glyph shifts toward --
+    and then, per the final review's "Composer over MCP" (the warning used
+    to stop at naming the problem), says what to do about it."""
     doc = {
         "v": 1, "meta": {}, "bg": "white",
         "palette": {"mustard": {"c": "black", "c2": "yellow"}},
@@ -525,6 +571,27 @@ def test_mix_as_text_warns_for_a_large_chromatic_gap(font_dir):
     assert len(msgs) == 1
     assert "'mustard'" in msgs[0] and "black+yellow" in msgs[0]
     assert "toward yellow" in msgs[0]
+    assert msgs[0].endswith(
+        "for type use an ink, or a two-dark-ink mix: "
+        + ", ".join(colour._DARK_TWO_INK_MIXES)
+    )
+
+
+def test_dark_two_ink_mixes_matches_the_tiers():
+    """`_DARK_TWO_INK_MIXES` (colour.py) is derived from `TIERS`/
+    `BUILTIN_MIXES`, not typed out a second time -- every "dark"-tier mix
+    whose two components are both non-white, since `grey-dark` (black+white)
+    is exempted from the mix-as-text warning entirely and so is not a
+    sensible "use this instead" suggestion for it."""
+    expected = [
+        name
+        for name, (c, c2, _pct) in BUILTIN_MIXES.items()
+        if TIERS[name] == "dark" and "white" not in (c, c2)
+    ]
+    assert list(colour._DARK_TWO_INK_MIXES) == expected
+    assert set(colour._DARK_TWO_INK_MIXES) == {
+        name for name in TIERS if TIERS[name] == "dark"
+    } - {"grey-dark"}
 
 
 def test_mix_as_text_exempts_black_and_white(font_dir):
@@ -561,6 +628,11 @@ def test_mix_as_text_does_not_apply_to_a_mixed_fill(font_dir):
 
 
 def test_thin_mix_warns_a_1px_line(font_dir):
+    """Names the density, the feature and what it will actually render at --
+    and then, per the final review's "Composer over MCP" (the line/outline
+    warning used to stop at naming the failure mode), says what to do. The
+    75% density's own parity outcome is pinned by the rect-outline test
+    below."""
     doc = {
         "v": 1, "meta": {}, "bg": "white",
         "palette": {"grey-25": {"c": "black", "c2": "white", "mix": 25}},
@@ -569,6 +641,7 @@ def test_thin_mix_warns_a_1px_line(font_dir):
     msgs = _thin_mix_msgs(check(doc, font_dir))
     assert len(msgs) == 1
     assert "ops[0] line: 25% mix on a 1px line renders at 0% or 50%" in msgs[0]
+    assert msgs[0].endswith("use a 50% mix, or make the feature 2 px")
 
 
 def test_thin_mix_does_not_warn_a_2px_line(font_dir):
@@ -699,24 +772,14 @@ def test_spec_table_covers_every_builtin_mix():
     assert set(_spec_palette_hexes()) == set(BUILTIN_MIXES)
 
 
-def test_tiers_cover_every_builtin_mix():
-    """Same guard as above, for TIERS: every built-in mix has a tier and
-    every tier names a real mix — a name dropped from either side would
-    otherwise vanish from the parametrised test below in silence."""
-    assert set(TIERS) == set(BUILTIN_MIXES)
-
-
 def test_tiers_match_the_spec_headings():
     """TIERS == {name: tier}, parsed from docs/SPEC.md's own headings
     grouping the named-palette table — not retyped, so the two cannot
-    drift apart."""
+    drift apart. Dict equality here plus set equality against SPEC.md
+    above is also the guard that every built-in mix has a tier and every
+    tier names a real mix, so a name dropped from either side cannot
+    vanish from the parametrised tests in silence."""
     assert TIERS == {name: tier for name, (*_, tier) in _spec_palette_rows().items()}
-
-
-def test_flat_render_lays_down_one_colour_not_a_checkerboard(font_dir):
-    """The whole point: no dither to alias. A flat fill is uniform."""
-    img, _ = render(_one_rect({}, "teal"), font_dir, dithered_colors=False)
-    assert _share(img, img.load()[0, 0], 0, 0, 40, 40) == 1.0
 
 
 def test_flat_render_leaves_solid_inks_untouched(sample_doc, font_dir):
@@ -762,12 +825,20 @@ def test_ink_order_cannot_change_a_flat_mix(font_dir):
     assert _share(dith_ba, INK["green"], 0, 0, 40, 40) == 0.5
 
 
-def test_dithering_is_still_the_default(font_dir):
-    """render() defaults to what the panel does, so check(), the CLI and the
-    firmware-parity tests get the real thing without asking."""
-    img, _ = render(_one_rect({}, "teal"), font_dir)
-    assert _share(img, INK["green"], 0, 0, 40, 40) == 0.5
-    assert _share(img, INK["blue"], 0, 0, 40, 40) == 0.5
+def test_flat_lays_down_one_colour_and_dithering_is_still_the_default(font_dir):
+    """The two sides of the flag, on one document.
+
+    Flat is the whole point of the mode: no dither to alias, so a flat fill
+    is uniform. Dithered is what render() still does by default — what the
+    panel does — so check(), the CLI and the firmware-parity tests get the
+    real thing without asking.
+    """
+    flat, _ = render(_one_rect({}, "teal"), font_dir, dithered_colors=False)
+    assert _share(flat, flat.load()[0, 0], 0, 0, 40, 40) == 1.0
+
+    dithered, _ = render(_one_rect({}, "teal"), font_dir)
+    assert _share(dithered, INK["green"], 0, 0, 40, 40) == 0.5
+    assert _share(dithered, INK["blue"], 0, 0, 40, 40) == 0.5
 
 
 def test_flat_mixed_background_is_uniform(font_dir):
@@ -859,21 +930,19 @@ def test_render_no_longer_exposes_the_ideal_table(font_dir):
     assert not hasattr(mod, "IDEAL")
 
 
-def test_ctx_with_no_font_dir_defaults_to_no_fonts_loaded():
-    """`Ctx(doc)` with no `font_dir` is a valid colour-only context, not
-    a `TypeError` out of `Path(None)`."""
-    ctx = Ctx({"bg": "white"})
-    assert ctx.fonts == {}
+def test_ctx_construction_contract(font_dir):
+    """`Ctx.__init__`'s three branches, made explicit rather than left to
+    `Path(None)` raising a bare TypeError."""
+    # No `font_dir` is a valid colour-only context, not a TypeError.
+    assert Ctx({"bg": "white"}).fonts == {}
 
-
-def test_ctx_load_fonts_true_without_font_dir_is_a_clear_valueerror():
+    # Asking to load fonts with nothing to load them from is a caller
+    # error, not a silent no-op.
     with pytest.raises(ValueError, match="load_fonts needs a font_dir"):
         Ctx({"bg": "white"}, load_fonts=True)
 
-
-def test_ctx_font_dir_alone_still_loads_fonts_by_default(font_dir):
-    ctx = Ctx({"bg": "white"}, font_dir)
-    assert set(ctx.fonts) == set(FONTS)
+    # A `font_dir` alone still loads fonts, as it always has.
+    assert set(Ctx({"bg": "white"}, font_dir).fonts) == set(FONTS)
 
 
 def test_document_colors_covers_bg_op_colours_and_palette_keys():
@@ -959,21 +1028,19 @@ def test_document_colors_skips_a_non_string_colour_value():
     assert set(colors) == {"white"}
 
 
-def test_document_colors_ignores_bgc_on_a_non_icon_op():
-    """`bgc` is only a field `icon` reads; on any other op it is an unknown
-    field (`_op_field_problems` already warns) and must not contribute a
-    colour here."""
-    doc = {"v": 1, "bg": "white", "ops": [
-        {"op": "text", "x": 0, "y": 0, "s": "hi", "c": "black", "bgc": "red"}]}
-    colors, _ = document_colors(doc)
-    assert "red" not in colors
-
-
-def test_document_colors_reads_bgc_on_an_icon_op():
-    doc = {"v": 1, "bg": "white", "ops": [
+def test_document_colors_reads_bgc_on_an_icon_op_only():
+    """`bgc` is only a field `icon` reads, so only an `icon` contributes a
+    colour through it; on any other op it is an unknown field
+    (`_op_field_problems` already warns) and must not."""
+    icon = {"v": 1, "bg": "white", "ops": [
         {"op": "icon", "x": 0, "y": 0, "n": "check", "z": "sm", "bgc": "red"}]}
-    colors, _ = document_colors(doc)
+    colors, _ = document_colors(icon)
     assert "red" in colors
+
+    text = {"v": 1, "bg": "white", "ops": [
+        {"op": "text", "x": 0, "y": 0, "s": "hi", "c": "black", "bgc": "red"}]}
+    colors, _ = document_colors(text)
+    assert "red" not in colors
 
 
 def test_document_colors_reports_a_malformed_mix_entry_nothing_draws_with():

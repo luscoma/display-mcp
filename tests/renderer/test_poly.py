@@ -158,32 +158,14 @@ def test_poly_on_canvas_pts_within_tolerance_does_not_warn(font_dir):
     assert problems == []
 
 
-def test_poly_mixed_fill_dithers_with_absolute_phase_like_a_rect(font_dir):
-    """An axis-aligned poly at an odd origin, filled with a mix, must be
-    pixel-identical to a `rect` of the same box and colour — proof the
-    fill goes through the same `paint()`/absolute-phase machinery, not a
-    PIL primitive of its own."""
-    x, y, w, h = 7, 11, 20, 14
-    poly_doc = {
-        "v": 1, "meta": {}, "bg": "white",
-        "palette": {"navymix": {"c": "black", "c2": "blue", "mix": 50}},
-        "ops": [
-            {
-                "op": "poly",
-                "pts": [[x, y], [x + w - 1, y], [x + w - 1, y + h], [x, y + h]],
-                "c": "navymix",
-            }
-        ],
-    }
-    rect_doc = {
-        "v": 1, "meta": {}, "bg": "white",
-        "palette": {"navymix": {"c": "black", "c2": "blue", "mix": 50}},
-        "ops": [{"op": "rect", "x": x, "y": y, "w": w, "h": h, "c": "navymix"}],
-    }
-    poly_img, p1 = render(poly_doc, font_dir)
-    rect_img, p2 = render(rect_doc, font_dir)
-    assert p1 == [] and p2 == []
-    assert poly_img.tobytes() == rect_img.tobytes()
+# "An axis-aligned poly at an odd origin, filled with a mix, is
+# pixel-identical to a `rect` of the same box and colour" -- the proof the
+# fill goes through the same `paint()`/absolute-phase machinery rather than a
+# PIL primitive of its own -- lives in
+# tests/parity/test_poly.py::test_poly_mixed_fill_at_odd_origin_matches_a_rect,
+# which asserts it at the same geometry (7, 11, 20, 14) and the same recipe
+# (`navy` *is* black/blue/50) against the compiled fill, not just against
+# Python's own rect.
 
 
 def test_poly_c_field_resolves_like_any_other_op(font_dir):

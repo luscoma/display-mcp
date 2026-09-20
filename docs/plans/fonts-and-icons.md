@@ -1,6 +1,6 @@
 # Fonts and icons: four families, three styles, eleven sizes; text decorations; eight activity icons
 
-Status: decided 2026-09-19, nothing built. Input is the family design
+Status: **complete on `claude/epaper-fonts-icons-9d5ee9`** (2026-09-20). Every batch reviewed and landed, every compile gate green; the branch is ready to squash to `main` and flash. What is left is Alex's: the reflash, and the write-up's own wall test. Input is the family design
 write-up of the same date ("E-paper panel — fonts and icons to add"), plus
 Alex's follow-up question: if the panel is going to carry several
 typefaces, should each come in several sizes, and should the text op grow
@@ -17,7 +17,7 @@ numbers are measured, not guessed.
   skips the op, on the wall and in the preview alike. (Decision 1)
 - Petrona, Instrument Sans and Karla, each in regular, bold and italic,
   plus mono regular, every one at 22 24 26 28 32 36 40 44 48 54 84: 110
-  faces, ~3.8 MB of flash on a ~7.9 MB app slot. 12 and 18 px dropped for
+  faces, ~3.8 MB of flash on a 7.75 MB app slot (built: 4.94 MB in all). 12 and 18 px dropped for
   now. (Decision 2)
 - The face table, the cell-height data and the YAML font block are
   generated from one source; the preview needs seven variable TTFs.
@@ -30,9 +30,10 @@ numbers are measured, not guessed.
   (Decision 4)
 - `deco: "underline" | "strike"` on the text op, zero flash, one rule per
   printed line. (Decision 5)
-- Four work packages, landed as nine reviewed batches in four waves (Sonnet
+- Four work packages, landed as eight reviewed batches in four waves (Sonnet
   implements, Opus attacks, this session judges and commits), then four
-  Opus reviewers with one lens each; no open questions.
+  Opus reviewers with one lens each whose accepted findings are B7; no open
+  questions.
 
 ## The question
 
@@ -82,7 +83,7 @@ glyph bitmaps in flash (not RAM — nothing here touches the heap the
 2026-09-19 sprite incident blew). Estimated from the glyph bounding boxes
 the same way `font/__init__.py` packs them, the panel's six faces cost about
 236 KB today; the 110-face set in Decision 2 is about 3.8 MB. ESPHome's
-partition table gives each OTA app slot on this 16 MB board about 7.9 MB,
+partition table gives each OTA app slot on this 16 MB board 7.75 MB,
 so it fits with room. The per-face costs that remain are build time and a
 row in `describe()`.
 
@@ -273,9 +274,10 @@ glyphs included, which is why it costs nearly double):
 
 Nine proportional family-styles plus mono is about **3.8 MB**, against
 ~236 KB today. The 84 px rung is a third of it on its own. ESPHome's partition table for
-this board's 16 MB flash gives each OTA app slot about 7.9 MB, and the
-firmware itself is well under 2 MB, so this fits with room. The build's own
-size line is the number to record here once it exists.
+this board's 16 MB flash gives each OTA app slot 7.75 MB (8,126,464 bytes,
+from the build), and the firmware itself was 1.24 MB, so this fits with
+room: built, the full vocabulary is 4.94 MB, 60.8% of the slot (see the
+implementation log's compile gates).
 
 Cell heights (Pillow ascent + descent, the value `describe()` reports as
 `cell_height`) run 25 at 22 px to 60–62 at 54 px and 96 at `petrona/84`;
@@ -357,16 +359,15 @@ differently, and nothing is shared between them:
 
 So: regular, bold and italic of each of the three families come from two
 files each; mono from one. Every instance name in the last column was
-confirmed present in the downloaded files (`get_variation_names()`), except
-Instrument Sans Italic's, which should be confirmed the same way when it is
-first fetched. Today's `InstrumentSans-Regular.ttf`/`-Bold.ttf` pair (the
+confirmed present in the downloaded files (`get_variation_names()`); Instrument Sans Italic's were confirmed
+by the B3a review (`Italic / Medium Italic / SemiBold Italic / Bold Italic`). Today's `InstrumentSans-Regular.ttf`/`-Bold.ttf` pair (the
 same bytes written twice) collapses to the one `InstrumentSans.ttf`.
 
 `fetch-fonts.sh` grows from two families to four, one `fetch_family` call
 per file, and its `grep -vi italic` filter becomes per-destination: for the
 three `-Italic` files it must *keep* the italic and drop the upright, the
 reverse of today. `setup.sh` and `tests/test_deploy.py` list the seven
-names. `GRID_FACE` (the preview grid overlay) becomes `instrument/22`.
+names. `GRID_FACE` (the preview grid overlay) becomes `instrument/xs`.
 
 `fonts_available()` and `_load_fonts()` stay table-driven; `mono` stays the
 one `optional` face. Loading 110 faces at startup is 110 `ImageFont.truetype`
@@ -461,7 +462,15 @@ and `describe().icon_sizes` goes away in favour of the per-icon `px`/
 `slot`/`aliases` shape fonts use.
 
 `ICONS` gains the eight names. `describe().icons` picks them up with no
-other change. The write-up's fallback — anything outside the list is a
+other change.
+
+**As built (B4b):** `describe()` keeps `icons` (name → the five slots) and
+`icon_sizes` (slot → px) and gains `icon_aliases` (px string → slot),
+published once for all icons rather than the per-icon `px`/`slot`/`aliases`
+block the paragraph above sketched — every icon accepts the same five
+spellings, so repeating them nineteen times bought nothing. On the panel
+the pixel spellings are normalised to the slot before the map lookup
+instead of being extra `a.icons` entries (see P3's note). The write-up's fallback — anything outside the list is a
 text-only row — is the composer's rule, not the renderer's, and stays
 where it is.
 
@@ -581,6 +590,12 @@ font-entry parity test, which does not exist today); each PNG is
 alpha-only and exactly its slot's size, so ESPHome's `is_alpha_only` path
 is guaranteed to take it.
 
+**As built (B4b):** `a.icons` does not carry the pixel-count aliases this
+paragraph describes. Instead, a five-entry normaliser in `display_list.h`
+maps `z`'s size half (`22/28/36/48/84`) to its slot before the lookup, so
+`a.icons` holds only the 95 canonical slot entries; see the B4b log entry
+below for the heap-cost reasoning.
+
 **P4 — `deco: "underline" | "strike"`.** Firmware branch in the text op
 (one `clipped_filled_rectangle()` per printed line, after `mix.print()`),
 the renderer's mirror, `OP_FIELDS["text"]["optional"]["deco"]` defaulting
@@ -651,7 +666,7 @@ and `docs/SPEC.md`, which B6 reconciles anyway).
 | 1 | B3a | P1/P2 (deploy half) | `fetch-fonts.sh`, `setup.sh`, `tests/test_deploy.py` for the seven files, with the per-file italic filter and the Instrument Sans pair collapsed to one file. Deploy scripts only; no renderer change. | `pytest` green; the script run for real into a scratch dir produces seven files that `is_font` accepts. |
 | 1 | B4a | P3 (asset half) | `firmware/icons/src/` (the eight lucide SVGs at a pinned version, renamed, with LICENSE) and `rasterize.py` run under ESPHome's Python; the 40 PNGs under `render/icons/`. Pure asset generation; nothing reads them yet. | Every PNG is alpha-only and exactly its slot's size; `rasterize.py` is idempotent (a second run changes no bytes). |
 | 2 | B2 | P1 (firmware half) | The YAML generator; `epaper-schedule.yaml`'s `font:` block and `a.fonts[...]` lines regenerated for Instrument Sans × 11 × 3 styles and mono × 11, with every alias; the grown parity test; the header comment. | `pytest` green; `esphome compile` green, flash line recorded in the log. |
-| 3 | B3b | P1 + P2 (the new families) | Petrona and Karla in the family table; `font_metrics.json` regenerated; YAML regenerated (all 110 faces); `GRID_FACE` → `instrument/22`; `compose.md`'s type-scale section. | `pytest` green with the fonts fetched into `./fonts`; `esphome compile` green, flash line recorded. |
+| 3 | B3b | P1 + P2 (the new families) | Petrona and Karla in the family table; `font_metrics.json` regenerated; YAML regenerated (all 110 faces); `GRID_FACE` → `instrument/xs`; `compose.md`'s type-scale section. | `pytest` green with the fonts fetched into `./fonts`; `esphome compile` green, flash line recorded. |
 | 3 | B4b | P3 (wiring half) | `ICON_SIZES` → the slot table, `ICONS` all-five for every icon, `z` through the alias path; `draw_icon()`'s PNG path; the 95 `image:` entries and `a.icons` lines, generated by the same script as the font block; `battery/sm` → `battery/md` in the sample, SPEC and guide; the icon parity and PNG-shape tests; the guide's icon offsets re-measured. Runs after B3b, not beside it: both extend the generator and regenerate the YAML. | `pytest` green; `esphome compile` green; a preview of `samples/vocabulary.json` extended with every new icon at `md` and `xl`, eyeballed. |
 | 4 | B6 | prose | `docs/SPEC.md` (header counts, Vocabulary section as the family/slot tables), `README.md`, `docs/PLAN.md`, `docs/RUNBOOK.md`, the YAML header, `compose.md` end to end; `describe()`'s docstring. Nothing behavioural. | Every count and name in the prose matches `describe()`'s output, checked by the reviewer against a live call. |
 
@@ -1069,6 +1084,171 @@ proved `esphome config` gates the PNG paths. Findings and verdicts:
   labour for every op-loop check.
 - *Compile gate (follow-up)* — `Flash: 60.8% (4,944,227)`, +288 bytes;
   RAM unchanged.
+
+**B6 — the prose pass.** Implemented by a Sonnet agent (`7eec275`),
+cherry-picked here (one conflict, the number-word table both sides had
+extended). Thirteen files: README and SPEC counts ("eleven font sizes,
+nineteen icons"), SPEC's and the guide's contrast sentence now that a 22 px
+regular compiles, PLAN's layout list, renderer description, prompt
+description and `describe()` shape, RUNBOOK's fonts step and counts,
+`setup.sh`'s F4 diagnostic text, the YAML's `image:` deprecation note,
+"size class" gone from present-tense comments, dragon-feedback D11 marked
+superseded, and this plan's own `GRID_FACE` spelling plus an "As built"
+note under P3 for the normaliser. Both strict-xfail prose tests now pass
+outright and the markers are removed. No separate adversarial review:
+the batch is prose only, and the plan's stated gate for it — every count
+and name checked against a live `describe()` — is exactly what the
+composer-view and staleness reviewers below do.
+
+**Final review — four Opus reviewers in parallel, 2026-09-20.** Verdicts:
+
+- *Firmware safety*: **safe to flash as is** — nothing on the branch can
+  reboot, hang or blank the panel on a legal document. Measured on the
+  target ABI: the two maps cost 11.5 KiB of internal SRAM per wake (was
+  968 B); the ArduinoJson tree, the HTTP buffer and the framebuffers are
+  in PSRAM; `deco` cannot overflow or allocate; the guards are
+  allocation-free against the vendored ArduinoJson 7.4.3; glyph lookup is
+  unchanged (each face's own table, 9 binary-search steps); 39% of the app
+  slot remains, both OTA slots fit 16 MB with 20 KB to spare; boot-time
+  image validation grows to ~0.4 s (≈0.1 mAh/day). Accepted for B7: the
+  one unbounded document string left, `c`/`bgc` in `resolve_ink()`
+  (a 65 KB colour name publishes with only a warning and costs a 65 KB
+  contiguous internal allocation next to the 64 KB body) gets the same
+  bound as `f`/`n`/`z`; a free-internal-heap log line at the top of the
+  display lambda; the D9 response-buffer parity test made runnable without
+  `esphome`; two host-compiled tests (the type guards and `parse_deco`
+  against the real ArduinoJson header; `draw_text_deco()` through the stub
+  `Display` at the coordinate bounds); the generator emits the
+  `platform: file` image form to retire 475 lines of deprecation noise.
+- *Composer over MCP*: a cold agent composed a demanding layout with
+  **zero warnings on the first validate**. Blocker accepted: nothing says
+  what an activity icon depicts and a wrong icon validates clean — B7
+  adds `icon_depicts` to `describe()` and a parenthetical per icon in the
+  guide. Also accepted: the solid-vs-outline icon weights noted; SPEC's
+  "these nineteen" parity sentence → eight; the sample re-cut in the new
+  vocabulary with its dead `ttl` removed (`sprite.json` stays in the bare
+  legacy names as the legacy pixel pin); an icon's bottom edge now checked
+  against the bezel and the canvas (an icon running off the bottom
+  validated clean — a pre-existing gap the new `md` footer example
+  exposed); Karla/Petrona columns in the offset table; the two
+  diagnose-only warnings get prescriptions; `font_aliases` in
+  `describe()`; the `display://current/{name}` hint; `describe`/`guide`
+  registered first and named in the server instructions; the wording
+  nits. Recorded: Decision 4's `describe()` icon shape now has an "As
+  built" note.
+- *Staleness*: every count, name and hash a test reaches is right and the
+  hero image matches; B6 stopped at the files its brief named. Accepted
+  for B7, all of it: `firmware/icons/README.md` (still says nothing reads
+  the PNGs), `docs/PLAN.md:148` (asserts the opposite of Decision 4),
+  RUNBOOK and `setup.sh` pointing at a filename list that does not exist,
+  RUNBOOK's upgrade checklist missing the two generator commands, SPEC's
+  deco thickness table (mono differs at three slots) and "1 px under"
+  (0–2 px), SPEC's device-safety list missing the name bound, CLAUDE.md's
+  layout missing `firmware_yaml.py`/`font_metrics.json`/`icons/` and the
+  pixel-pin rule, the older plans' superseded tables, and a dozen
+  one-liners. The plan's own stale lines are fixed above.
+- *Code quality*: nothing structural; accepted for B7: tie the deploy
+  scripts' filenames to `FONTS`; drop `Family.name` (the key is the name);
+  one public `BARE_ALIASES`; a `_name_bound_problem` in the pre-dispatch
+  chain and an `_optional_string` helper instead of six open-coded null
+  checks; one `SAMPLE_HASH`; rename the fence markers to
+  `firmware-vocabulary` and drop the alias; bind every captured name in
+  the `draw_fn` closures (lint to zero `B023`); the small trims (dead
+  guards, tautological assertions, duplicate helpers, a shared
+  `LUCIDE_ICONS` set, `_MDI_SLUG_OVERRIDES`, `rasterize.py` importable so
+  its tables are asserted, fence-marker parsing on the font side, "pinned
+  as data" notes). **Declined**: an sha256 icon manifest (the shape tests
+  plus the encoder diff already cover what it would); deleting
+  `_load_metrics()`'s missing-file branch (it is the bootstrap path).
+  **Deferred, recorded**: making `cell_height`/`ink_height` lazy
+  properties so the bootstrap flag and the CLI's lazy imports can go (the
+  largest simplification available, and the wrong moment); collapsing
+  `ICONS`' per-icon slot sets and the `ICON_SIZES`/`SLOTS` alias (fixed
+  wire shapes for little gain); `describe().ops.text.optional.f` staying
+  the bare `md` (Decision 1 keeps the bare names; `font_aliases` makes
+  them discoverable).
+
+**B7 — the final reviewers' accepted findings.** Implemented by a Sonnet
+agent in six staged commits (`e449bff` A firmware safety, `f9d5331` B
+composer's view, `230918f` C code quality, `e93fec0` D staleness,
+`f2e48ed` E the sample re-cut and leftovers, `f9df4fc` F review fixes),
+squashed here. The first pass skipped the sample re-cut as "out of scope";
+it was in scope and was done in E. The reviewer (Opus) verified the
+palette-hop path measures every name raw before any `std::string`, diffed
+ESPHome's resolved `image:` block between the deprecated and `platform:
+file` forms (identical), checked all nineteen `icon_depicts` against a
+contact sheet, re-measured all fifteen offset cells, and proved the
+sample's pixel pin discriminates. Findings and verdicts:
+
+- *Should-fix* — the comment claiming no compiled face lands a rounding
+  quantity on `.5` was false: seven faces do where half-away-from-zero and
+  Python's `round()` disagree (`karla*/54` and `mono/lg` at `t = 4.5`,
+  `petrona*/xl` at a strike offset of 28.5), so `mono/lg`'s thickness of 5
+  exists only because of the tie-break. **Fixed**: comment corrected, a
+  test pins the seven ties.
+- *Should-fix* — the accepted `draw_text_deco()` parity test had been
+  skipped as infeasible. **Fixed**: the parity stub gained `TextAlign`,
+  `BaseFont` and `get_text_bounds()` transcribed from ESPHome, and three
+  tests drive the shipped function at the coordinate bounds. Doing so
+  found and fixed a dangling-pointer bug in the parity stub's own
+  `JsonPair::key()` (an owning temporary; real ArduinoJson returns a view).
+- *Should-fix* — two more unbounded document strings of the class just
+  bounded: a sprite palette key and a sprite row were copied into
+  `std::string` before their bounds were checked (a 65 KB key publishes
+  with a warning and the warning printed it whole). **Fixed** on both
+  sides; the comment calling `c`/`bgc` "the one unbounded string" too.
+- *Should-fix* — two sentences claimed the colour bound covers `bgc` on
+  both sides; the renderer ignores `bgc` by design. **Fixed.**
+- *Should-fix* — hoisting the name-length check ahead of colour
+  resolution changed warning order in two cases in a commit labelled
+  behaviour-neutral. **Pinned** by a test; the new order stands.
+- *Prose* — a YAML comment still advertising the removed `firmware-fonts`
+  alias; README's "four families at eleven sizes" (ten family-styles);
+  the hero-image generator rendered without a fixed clock, so
+  "re-render to match" was unfalsifiable — it now shares the pixel-pin
+  clock with the tests. **Fixed.**
+- *Nits taken* — an op/field prefix on the colour-name warning; the
+  name-bound check reports every over-long field; a stale comment in the
+  deco parity test; CLAUDE.md's parity list; a 2 px overlap in the sample
+  (re-stamped `ab71629b1ca76ea6`, re-pinned, re-rendered).
+- *Recorded* — the sample footer's `p` descender inks 9 px inside the
+  bezel; `bezel_problems()` bounds text by `size`, a documented tradeoff.
+  Eight deploy tests need the network and skip without it (pre-existing).
+  The one skipped test needs `esphome` importable and never runs under
+  the documented venv. The two `firmware-safety` review items landed:
+  the colour bound and the heap log line.
+- *Compile gate* — `esphome compile` after the merge: `Flash: 60.8%
+  (4,944,727 of 8,126,464)`, +500 bytes for the new bounds and the heap
+  line; RAM unchanged; the twelve baseline `-Wformat` warnings and **no**
+  `image:` deprecation warning.
+- *Re-review of the sixth commit* — verdict **merge as is**. The reviewer
+  sabotaged the seven-tie test two ways (both fail), transcribed
+  `get_text_bounds()` against ESPHome's `display.cpp` line by line, drove
+  3,600 on-canvas cases × 64 lines through the compiled `draw_text_deco()`
+  harness (zero mismatches), ran the sprite bounds at the full 65 KB scale
+  (peak contiguous internal allocation from document content falls from
+  ~65.5 KB to 4,800 bytes), confirmed real ArduinoJson's `JsonPair::key()`
+  is a view into the document (so the firmware's raw-pointer read is safe
+  and the stub's owning temporary was the bug), and re-rendered the hero
+  image at the pinned clock (0 differing pixels). One nit taken here: the
+  renderer measured the sprite palette key in characters where the panel
+  measures bytes; it now measures bytes, with a 30-emoji test. Recorded,
+  not changed: `icon`'s `c` and `bgc` share one warning prefix; the
+  firmware still logs an unknown colour alongside an over-long `f` where
+  the renderer logs only the bound; the extremes sweep's `x` at ±kMaxCoord
+  makes every assertion `is None` (the on-canvas sweep is the real
+  coverage); the sample footer's descender in the bezel.
+
+**Done.** Nine batches (B1, B2, B3a, B3b, B4a, B4b and its follow-up, B5,
+B6, B7), every one implemented by a Sonnet agent, attacked by an Opus
+reviewer, judged here, and landed as one commit with its verdicts in this
+log; four final reviewers; every `esphome compile` gate green, the last at
+4,944,727 bytes of 8,126,464 (60.8%) with no new warnings. What the branch
+did not do, by design: flash the panel, or squash to `main` — both are
+Alex's calls. Follow-ups recorded above and not started: lazy
+`cell_height`/`ink_height` so the metrics bootstrap flag can go;
+collapsing `ICONS`' per-icon slot sets; the eight deploy tests that need
+the network; the one parity test that needs `esphome` importable.
 
 ## Verification
 

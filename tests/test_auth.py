@@ -7,10 +7,11 @@ import json
 import time
 
 import jwt
+import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 from starlette.testclient import TestClient
 
-from display_mcp.auth import wrap_with_access_auth
+from display_mcp.auth import _PROXY_HEADERS, wrap_with_access_auth
 from display_mcp.config import Settings
 
 TEAM = "https://example.cloudflareaccess.com"
@@ -143,64 +144,65 @@ def test_issuer_trailing_slash_is_accepted():
     assert resp.status_code == 200
 
 
-def test_wrong_signing_key_401():
-    # Signed with a key never registered under this kid in the JWKS.
-    token = _sign(_claims(), key=OTHER_PRIVATE_KEY)
+@pytest.mark.parametrize(
+    "token_kwargs",
+    [
+        # Signed with a key never registered under this kid in the JWKS
+        # (jwt.InvalidSignatureError) ...
+        pytest.param({"key": OTHER_PRIVATE_KEY}, id="wrong-signing-key"),
+        # ... and a kid the JWKS has never heard of (jwt.PyJWKClientError).
+        pytest.param({"kid": "not-in-the-jwks"}, id="unknown-kid"),
+    ],
+)
+def test_unverifiable_signature_401(token_kwargs):
+    """Both arrive as "bad signature": two different PyJWT exceptions caught
+    by the one `except` tuple in `_verify`, deliberately not distinguished in
+    the reply -- a caller has no business learning which."""
+    token = _sign(_claims(), **token_kwargs)
     resp = _client().post("/mcp", headers={"Cf-Access-Jwt-Assertion": token})
     assert resp.status_code == 401
     assert resp.json()["reason"] == "bad signature"
 
 
-def test_unknown_kid_401():
-    token = _sign(_claims(), kid="not-in-the-jwks")
-    resp = _client().post("/mcp", headers={"Cf-Access-Jwt-Assertion": token})
-    assert resp.status_code == 401
-    assert resp.json()["reason"] == "bad signature"
-
-
-def test_disabled_settings_is_passthrough_without_header():
+def test_disabled_settings_returns_app_unchanged():
+    """No team domain / AUD configured (the local-dev shape) returns the very
+    same app object -- so there is no middleware at all to wrap a request,
+    stash an identity, or demand a header."""
     app = wrap_with_access_auth(_downstream, Settings())
+    assert app is _downstream
     resp = TestClient(app).post("/mcp")
     assert resp.status_code == 200
     assert resp.json()["identity"] is None
 
 
-def test_disabled_settings_returns_app_unchanged():
-    app = wrap_with_access_auth(_downstream, Settings())
-    assert app is _downstream
+def _auth_client(peer: tuple[str, int]) -> TestClient:
+    jwk_client = FakeJWKClient({KID: PUBLIC_KEY})
+    app = wrap_with_access_auth(_downstream, _settings(), jwk_client_factory=lambda url: jwk_client)
+    return TestClient(app, client=peer)
 
 
 def test_loopback_without_proxy_headers_is_a_local_operator():
-    jwk_client = FakeJWKClient({KID: PUBLIC_KEY})
-    app = wrap_with_access_auth(_downstream, _settings(), jwk_client_factory=lambda url: jwk_client)
-    local = TestClient(app, client=("127.0.0.1", 40000))
-    r = local.get("/")
+    r = _auth_client(("127.0.0.1", 40000)).get("/")
     assert r.status_code == 200
     assert r.json()["identity"] == {"email": None, "sub": "local"}
-    # Through a proxy (cloudflared sets X-Forwarded-For) a token is still required.
-    r = local.get("/", headers={"X-Forwarded-For": "203.0.113.9"})
-    assert r.status_code == 401
     # And a non-loopback peer without a token is rejected as before.
-    remote = TestClient(app, client=("192.168.0.180", 40000))
-    assert remote.get("/").status_code == 401
+    assert _auth_client(("192.168.0.180", 40000)).get("/").status_code == 401
 
 
-def test_tunnel_traffic_on_loopback_still_needs_a_token():
-    # cloudflared connects from 127.0.0.1 but forwards Cloudflare's headers,
-    # so the local-operator exemption must not fire for it.
-    jwk_client = FakeJWKClient({KID: PUBLIC_KEY})
-    app = wrap_with_access_auth(_downstream, _settings(), jwk_client_factory=lambda url: jwk_client)
-    local = TestClient(app, client=("127.0.0.1", 40000))
-    assert local.get("/", headers={"CF-Connecting-IP": "203.0.113.9"}).status_code == 401
-    assert local.get("/", headers={"X-Forwarded-Proto": "https"}).status_code == 401
+@pytest.mark.parametrize("header", _PROXY_HEADERS)
+def test_a_proxy_header_on_loopback_still_needs_a_token(header):
+    """cloudflared connects from 127.0.0.1 but forwards Cloudflare's own
+    headers, so the local-operator exemption must not fire for tunnel
+    traffic. Parametrized over `auth._PROXY_HEADERS` itself rather than a
+    hand-picked few, so a header added to that tuple is covered here too."""
+    local = _auth_client(("127.0.0.1", 40000))
+    assert local.get("/", headers={header: "203.0.113.9"}).status_code == 401
 
 
 def test_every_request_gets_one_log_line(caplog):
     import logging
 
-    jwk_client = FakeJWKClient({KID: PUBLIC_KEY})
-    app = wrap_with_access_auth(_downstream, _settings(), jwk_client_factory=lambda url: jwk_client)
-    client = TestClient(app, client=("192.168.0.180", 40000))
+    client = _auth_client(("192.168.0.180", 40000))
     with caplog.at_level(logging.INFO, logger="display_mcp.auth"):
         client.get("/mcp", headers={"CF-Connecting-IP": "203.0.113.9"})
     lines = [r.getMessage() for r in caplog.records]

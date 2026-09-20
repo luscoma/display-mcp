@@ -1,7 +1,7 @@
 {
   "v": 1,
   "meta": {
-    "hash": "101dd11be8557e3f"
+    "hash": "a61aaa35fa2a186b"
   },
   "bg": "white",
   "palette": {
@@ -387,7 +387,7 @@
       "x": 1058,
       "y": 1545,
       "n": "battery",
-      "z": "md",
+      "z": "sm",
       "c": "grey-mid"
     },
     {

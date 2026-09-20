@@ -4,9 +4,10 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SAMPLE = ROOT / "samples" / "display.json"
-SAMPLE_HASH = "1c772cd7a6ebc2c7"
+SAMPLE_HASH = "ab71629b1ca76ea6"
 SPRITE_SAMPLE = ROOT / "samples" / "sprite.json"
 VOCABULARY_SAMPLE = ROOT / "samples" / "vocabulary.json"
+FONTS_SAMPLE = ROOT / "samples" / "fonts.json"
 
 
 @pytest.fixture

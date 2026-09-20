@@ -113,6 +113,10 @@ async def _preview_bytes(mcp, document, **kwargs):
 
 
 async def test_preview_grid_draws_the_overlay_colour_and_note(mcp):
+    """`grid=True` is accepted, the PNG genuinely carries the overlay, and
+    the note says so. Under test_mcp.py's fakes the parameter could be
+    dropped entirely and only the note would notice, so both halves are
+    pinned here instead."""
     png, note = await _preview_bytes(mcp, _doc(), grid=True)
     img = Image.open(io.BytesIO(png)).convert("RGB")
     colors = {c for c in img.get_flattened_data()}
@@ -133,6 +137,10 @@ async def test_preview_without_grid_is_byte_identical_and_has_no_overlay_colour(
 
 
 def test_grid_overlay_does_not_mutate_its_input(font_dir, sample_doc):
+    """Also the bare `font=None` case: a missing font directory (the common
+    case for a direct `grid_overlay` call, and `preview`'s fallback when
+    Instrument Sans isn't installed) must still produce a grid rather than
+    failing the overlay -- it falls back to PIL's bitmap default."""
     img, _ = render.render(sample_doc, font_dir)
     before = img.copy()
     overlaid = render.grid_overlay(img)
@@ -170,15 +178,6 @@ def test_grid_overlay_runs_with_a_real_font_and_draws_the_grid_colour(font_dir, 
 
     assert overlaid.tobytes() != bitmap.tobytes()
     assert overlay_pixels(overlaid) > overlay_pixels(bitmap)
-
-
-def test_grid_overlay_with_no_font_dir_still_produces_a_grid():
-    """A missing font directory (the common case for a bare `grid_overlay`
-    call, and `preview`'s fallback when Instrument Sans isn't installed)
-    must never fail the overlay — it falls back to PIL's bitmap default."""
-    img = Image.new("RGB", (render.WIDTH, render.HEIGHT), "white")
-    overlaid = render.grid_overlay(img, font=None)
-    assert GRID_COLOR in {c for c in overlaid.get_flattened_data()}
 
 
 async def test_preview_grid_survives_a_missing_grid_font(

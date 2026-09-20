@@ -110,17 +110,23 @@ static const int DOCUMENT_VERSION = 1;
 // kPolyMaxPts bounds how many points a poly's `pts` can push into its own
 // vector -- enforced while parsing, so the vector itself never grows past
 // it.
-// kNameMaxLen (docs/plans/fonts-and-icons.md Decision 4, B4b review item 2)
-// bounds `text`/`fmt`'s `f` and `icon`'s `n`/`z` -- checked on the raw C
-// string, before any std::string is built from it, the same "measure the
-// bound first" discipline kTextMaxLen already gets for `s`. Without it, a
-// legal document under MAX_DOC_BYTES with a several-KB `f` made
-// normalize_font_key() -- `std::string(name, ...) + normalize_size_alias(...)`,
-// two allocations -- peak at roughly three times that string's length of
-// transient heap on a panel with none to spare (the very `operator new`
-// failure firmware-bounds.md D1 exists to close). Every real compiled
-// spelling is at most 21 characters (`weather-partly-cloudy`; the longest
-// font spelling, `instrument-italic/48`, is 20);
+// kNameMaxLen (docs/plans/fonts-and-icons.md Decision 4, B4b review item 2;
+// widened to colour names by the final safety review, B7/A1, and to a
+// sprite palette key by B7/F) bounds `text`/`fmt`'s `f`, `icon`'s `n`/`z`,
+// any `c`/`bgc` (and a palette alias hop that lands on one), and a
+// `sprite` palette key -- checked on the raw C string, before any
+// std::string is built from it, the same "measure the bound first"
+// discipline kTextMaxLen already gets for `s`. Without it, a legal document
+// under MAX_DOC_BYTES with a several-KB `f` made normalize_font_key() --
+// `std::string(name, ...) + normalize_size_alias(...)`, two allocations --
+// peak at roughly three times that string's length of transient heap on a
+// panel with none to spare (the very `operator new` failure
+// firmware-bounds.md D1 exists to close); a several-KB `c` cost resolve_ink()/
+// resolve_solid() one allocation of its own length, unbounded, right next to
+// the 64 KB document body. Every real compiled font/icon spelling is at most
+// 21 characters (`weather-partly-cloudy`; the longest font spelling,
+// `instrument-italic/48`, is 20) and every colour name this table ever names
+// (the six inks, the twenty-one built-in mixes) is shorter still;
 // 64 is generous headroom, not a tight fit.
 static const int kThickMax = 64;
 static const int kSpriteMaxCell = 1600;
@@ -267,12 +273,44 @@ inline Ink resolve_builtin(const BuiltinMix &m) {
   return Ink{a, b, m.mix};
 }
 
+// kNameMaxLen bounds a colour name (`c`/`bgc`, and a palette alias hop that
+// lands on one) the same way it already bounds a font/icon spelling
+// (see its own comment): checked on the raw `const char *` before any
+// `std::string` is built from it, so an over-long name costs a `strlen()`,
+// never an allocation of its length. Treated exactly like any other name
+// these two functions don't recognise: warn, fall back to black, the same
+// "unknown colour" outcome, just without ever holding the offending name in
+// a `std::string` (or printing all of it) to say so. Two more of this same
+// class -- a sprite palette key and a sprite row -- were still unbounded
+// when this comment was written; draw_sprite() bounds both the same way
+// now (final review, B7/F), so this is one instance of the discipline, not
+// the last unbounded document string.
+inline bool color_name_too_long(const char *s) {
+  return s != nullptr && strlen(s) > static_cast<size_t>(kNameMaxLen);
+}
+
+// `ctx` names the op/field this name came from ("rect"/"text"/"bg"/"sprite
+// palette", ...) -- the caller's own `kind` where one is already in scope,
+// same convention as every other bounded-value warning in this file
+// ("%s: x=%g out of range", "%s: f is %d bytes", ...). Without it this was
+// the one bounded-value message in the file that didn't say where it came
+// from (final review, B7/F, item 9).
+inline void warn_color_name_too_long(const char *ctx, const char *s) {
+  ESP_LOGW(TAG, "%s: colour name is %d bytes, more than %d; using black", ctx,
+           static_cast<int>(strlen(s)), kNameMaxLen);
+}
+
 /// Resolve a colour name to a single Color, refusing to land on a palette
 /// mix -- used for a mix's own `c`/`c2`, which may not nest ("a mix of
 /// mixes is not representable in a 2x2 mask", decision 1). Same alias chain
 /// and 8-hop cap as resolve_ink, but a mix found along the way degrades to
 /// that entry's own `c` and the walk continues, rather than blending it.
-inline esphome::Color resolve_solid(const char *name, JsonObject palette) {
+/// `ctx` is passed straight through to warn_color_name_too_long().
+inline esphome::Color resolve_solid(const char *name, JsonObject palette, const char *ctx) {
+  if (color_name_too_long(name)) {
+    warn_color_name_too_long(ctx, name);
+    return esphome::Color(0, 0, 0);
+  }
   std::string n = name ? name : "black";
   esphome::Color c;
   for (int hop = 0; hop < 8; hop++) {
@@ -282,11 +320,20 @@ inline esphome::Color resolve_solid(const char *name, JsonObject palette) {
       auto v = palette[n.c_str()];
       if (v.template is<JsonObject>()) {
         ESP_LOGW(TAG, "'%s' is a mix, not a plain colour here; using its base ink", n.c_str());
-        n = v.template as<JsonObject>()["c"] | "black";
+        const char *next_c = v.template as<JsonObject>()["c"] | "black";
+        if (color_name_too_long(next_c)) {
+          warn_color_name_too_long(ctx, next_c);
+          return esphome::Color(0, 0, 0);
+        }
+        n = next_c;
         continue;
       }
       const char *next = v;
       if (next != nullptr) {
+        if (color_name_too_long(next)) {
+          warn_color_name_too_long(ctx, next);
+          return esphome::Color(0, 0, 0);
+        }
         n = next;
         continue;
       }
@@ -312,10 +359,12 @@ inline esphome::Color resolve_solid(const char *name, JsonObject palette) {
 /// palette key it was found under, for warnings. Every case here is pinned
 /// down in docs/plans/ink-mixing.md decision 1's schema table -- the Python
 /// renderer implements the same contract independently, so nothing here is
-/// left to whichever side was written first.
-inline Ink resolve_mix_entry(const char *name, JsonObject entry, JsonObject palette) {
+/// left to whichever side was written first. `ctx` is passed straight
+/// through to resolve_solid()/warn_color_name_too_long().
+inline Ink resolve_mix_entry(const char *name, JsonObject entry, JsonObject palette,
+                              const char *ctx) {
   const char *c_name = entry["c"] | "black";
-  const esphome::Color a = resolve_solid(c_name, palette);
+  const esphome::Color a = resolve_solid(c_name, palette, ctx);
 
   const char *c2_name = entry["c2"];
   if (c2_name == nullptr || !strcmp(c2_name, c_name)) {
@@ -323,7 +372,7 @@ inline Ink resolve_mix_entry(const char *name, JsonObject entry, JsonObject pale
     ESP_LOGW(TAG, "palette '%s' has no distinct c2, drawing solid", name);
     return Ink{a, a, 100};
   }
-  const esphome::Color b = resolve_solid(c2_name, palette);
+  const esphome::Color b = resolve_solid(c2_name, palette, ctx);
 
   auto mv = entry["mix"];
   int pct = 50;
@@ -351,8 +400,13 @@ inline Ink resolve_mix_entry(const char *name, JsonObject entry, JsonObject pale
 // self-referential palette can't hang the render. A palette entry is either
 // a plain alias string (as before) or a mix object, in which case the whole
 // thing resolves through resolve_mix_entry instead of chasing further
-// aliases -- a mix is always a leaf.
-inline Ink resolve_ink(const char *name, JsonObject palette) {
+// aliases -- a mix is always a leaf. `ctx` names the op/field this name
+// came from, for warn_color_name_too_long() -- see its own comment.
+inline Ink resolve_ink(const char *name, JsonObject palette, const char *ctx) {
+  if (color_name_too_long(name)) {
+    warn_color_name_too_long(ctx, name);
+    return Ink{esphome::Color(0, 0, 0), esphome::Color(0, 0, 0), 100};
+  }
   std::string n = name ? name : "black";
   esphome::Color c;
   for (int hop = 0; hop < 8; hop++) {
@@ -361,9 +415,13 @@ inline Ink resolve_ink(const char *name, JsonObject palette) {
     if (!palette.isNull()) {
       auto v = palette[n.c_str()];
       if (v.template is<JsonObject>())
-        return resolve_mix_entry(n.c_str(), v.template as<JsonObject>(), palette);
+        return resolve_mix_entry(n.c_str(), v.template as<JsonObject>(), palette, ctx);
       const char *next = v;
       if (next != nullptr) {
+        if (color_name_too_long(next)) {
+          warn_color_name_too_long(ctx, next);
+          return Ink{esphome::Color(0, 0, 0), esphome::Color(0, 0, 0), 100};
+        }
         n = next;
         continue;
       }
@@ -834,8 +892,11 @@ inline void deco_rule_geometry(int h, int baseline, int ly, bool underline, int 
 /// like the text and costs no more than the canvas regardless of how far
 /// off it a pathological `x`/`y`/`lh` would otherwise put it -- the same
 /// bound every other fill in this file already has. `get_text_bounds()`
-/// gives the inked left edge and width under `align`, the exact
-/// measurement the op already leans on to place the text itself; a line
+/// gives the inked left edge and width under `align` for RIGHT/CENTER,
+/// which subtract the glyph's own left bearing (`x_offset`) from `x`; for
+/// LEFT it returns `x` itself, unadjusted -- the bearing is excluded either
+/// way, just not always by subtracting it, which is the exact measurement
+/// the op already leans on to place the text itself; a line
 /// with no ink (an empty wrapped line) measures a zero-or-negative width
 /// and draws nothing here either. `h`/`baseline` are font_height()'s and
 /// font_baseline()'s one-per-face numbers (the caller's job to pass, so
@@ -1057,6 +1118,23 @@ inline bool draw_sprite(esphome::display::Display &it, JsonObject o, JsonObject 
   size_t cols = 0;
   for (JsonVariant rv : sprite_rows) {
     const char *s = rv;
+    // Measured on the raw C string before any std::string is built from
+    // it (final review, B7/F -- the same "measure first" discipline
+    // kNameMaxLen already applies to f/n/z/colour names): a legal row has
+    // at most kSpriteMaxCols codepoints, and UTF-8 never spends more than
+    // 4 bytes on one, so a row whose raw byte length already exceeds
+    // 4 * kSpriteMaxCols is unambiguously too wide. Rejected here, before
+    // ever copying it into a std::string, rather than after building one
+    // of whatever length the document supplied (up to the ~64 KB body
+    // itself) just to count codepoints in it -- a row this bound doesn't
+    // catch is short enough that the std::string below costs at most
+    // 4 * kSpriteMaxCols bytes, not an unbounded one.
+    const size_t s_len = s != nullptr ? strlen(s) : 0;
+    if (s_len > 4 * static_cast<size_t>(kSpriteMaxCols)) {
+      ESP_LOGW(TAG, "sprite row is %d bytes, more than %d; skipped", static_cast<int>(s_len),
+               4 * kSpriteMaxCols);
+      return false;
+    }
     const std::string row = s != nullptr ? s : "";
     size_t n_cp = 0;
     for (size_t i = 0; i < row.size(); i = utf8_next(row, i))
@@ -1096,7 +1174,25 @@ inline bool draw_sprite(esphome::display::Display &it, JsonObject o, JsonObject 
   // degrades one anywhere else in this file.
   std::map<std::string, Ink> char_ink;
   for (JsonPair kv : sprite_palette) {
-    const std::string key = kv.key().c_str();
+    // Measured on the raw C string before any std::string is built from
+    // it (final review, B7/F): a palette key that resolves to a cell has
+    // to be exactly one codepoint, and this reuses kNameMaxLen -- the
+    // same general "document-supplied name-like field" bound `f`/`n`/`z`/
+    // colour names already use -- rather than a sprite-specific one,
+    // since any key this long is obviously not one codepoint (UTF-8's
+    // longest is 4 bytes) without needing the exact count. Past it, warn
+    // with the length, not the content: the reviewer's reproduction was a
+    // single palette key that turned this warning into 65,486 characters
+    // of log line, `%s`-ing the whole thing after the same over-long
+    // std::string had already been built to measure it.
+    const char *key_raw = kv.key().c_str();
+    const size_t key_len = strlen(key_raw);
+    if (key_len > static_cast<size_t>(kNameMaxLen)) {
+      ESP_LOGW(TAG, "sprite palette key is %d bytes, more than %d; ignored",
+               static_cast<int>(key_len), kNameMaxLen);
+      continue;
+    }
+    const std::string key = key_raw;
     size_t n_cp = 0;
     for (size_t i = 0; i < key.size(); i = utf8_next(key, i))
       n_cp++;
@@ -1107,7 +1203,7 @@ inline bool draw_sprite(esphome::display::Display &it, JsonObject o, JsonObject 
     if (key == "." || key == " ")
       continue;  // always transparent; cannot be redefined
     const char *cname = kv.value() | "black";
-    char_ink[key] = resolve_ink(cname, palette);
+    char_ink[key] = resolve_ink(cname, palette, "sprite palette");
   }
 
   const Ink black_ink{esphome::Color(0, 0, 0), esphome::Color(0, 0, 0), 100};
@@ -1487,7 +1583,7 @@ inline bool draw_display_list(esphome::display::Display &it, const std::string &
 
     JsonObject palette = root["palette"];
     const char *bg_name = root["bg"] | "white";
-    const Ink bg_ink = resolve_ink(bg_name, palette);
+    const Ink bg_ink = resolve_ink(bg_name, palette, "bg");
     it.fill(bg_ink.a);
     if (bg_ink.mix != 100) {
       // fill() can't be dithered through the proxy (see MixDisplay), so a
@@ -1551,7 +1647,7 @@ inline bool draw_display_list(esphome::display::Display &it, const std::string &
         continue;
       }
       const int ox = static_cast<int>(ox_d), oy = static_cast<int>(oy_d);
-      const Ink c = resolve_ink(o["c"] | "black", palette);
+      const Ink c = resolve_ink(o["c"] | "black", palette, kind);
       // Every shape and glyph op below draws through this proxy instead of
       // `it` directly, which is what makes a mixed `c` dither (decision 6);
       // solid ink (mix == 100) draws pixel-identical either way.
@@ -1793,9 +1889,9 @@ inline bool draw_display_list(esphome::display::Display &it, const std::string &
           continue;
         }
         // z's default became "md" with Decision 4 (B4b) -- 36px, what the
-        // old default "sm" already meant before that batch re-keyed the
-        // size classes onto the font ladder, so an op that omits z still
-        // draws the same 36px icon it always did.
+        // old default "sm" already meant before that batch re-keyed icon
+        // sizing onto the font ladder, so an op that omits z still draws
+        // the same 36px icon it always did.
         const char *name_raw = o["n"] | "";
         const char *z_raw = o["z"] | "md";
         // Same "measure the raw C string first" discipline as `text`/`fmt`'s
@@ -1823,7 +1919,7 @@ inline bool draw_display_list(esphome::display::Display &it, const std::string &
         }
         // color_off only matters for opaque binary images; with
         // transparency: chroma_key the off pixels are skipped entirely.
-        const Ink off = resolve_ink(o["bgc"] | bg_name, palette);
+        const Ink off = resolve_ink(o["bgc"] | bg_name, palette, kind);
         mix.add_ink(off.a, off);
         const int ix = ox, iy = oy;
         iit->second->draw(ix, iy, &mix, c.a, off.a);

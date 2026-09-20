@@ -208,11 +208,73 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
             "Publish display-list JSON documents for an e-paper panel that wakes about "
             "once an hour; an unchanged fetch (304) costs it roughly 0.15 mAh versus "
             "roughly 1.5 mAh for a full redraw, so draft with validate/preview before "
-            "set_display and confirm the pickup with status."
+            "set_display and confirm the pickup with status. Call describe() and "
+            "guide() before composing."
         ),
     )
 
     # ---- tools ---------------------------------------------------------
+    #
+    # describe()/guide() are registered first (final review, "Composer over
+    # MCP") so a client whose tool listing leads with them meets the
+    # vocabulary and the prose guide before the tools that act on a
+    # document -- the same order the instructions string above now asks
+    # a composing session to call them in.
+
+    @mcp.tool(
+        annotations=ToolAnnotations(
+            title="Describe vocabulary",
+            read_only_hint=True,
+            idempotent_hint=True,
+            open_world_hint=False,
+        )
+    )
+    def describe() -> dict[str, Any]:
+        """The renderer's whole vocabulary as one JSON object: canvas size,
+        the inks and built-in mixes with their hexes and tiers, the fonts
+        (plus `font_aliases`, every accepted alternate spelling), the anchor
+        values `text.a`/`fmt.a` accept, the icons (plus `icon_depicts`, what
+        each one draws) and the five font slots each is compiled at, the
+        per-op field table, the `fmt` template fields, and the document byte
+        ceiling.
+
+        Built from the same tables `render()` draws with, so it cannot say
+        something `render()` doesn't accept. A session calls this once
+        before composing rather than guessing field names by trial and
+        error; `guide()` is its prose companion.
+
+        In `ops`, an optional field whose default is `null` has no fixed
+        default and may simply be omitted — `lh` is computed from the font
+        size, `w` means no width limit, `sprite`'s `mirror` means no
+        mirroring (its only other legal value is `"x"`), and `icon`'s `bgc`
+        is accepted and ignored outright (every compiled icon is
+        chroma-keyed, so its off pixels are skipped no matter what `bgc`
+        says). `fmt`'s `s` is `null` too, but not for the same reason as
+        the rest: it is required *in practice* — an empty or missing
+        template has nothing to draw and is a `validate`/`preview` warning,
+        not a silent no-op.
+        """
+        return render.vocabulary(MAX_DOC_BYTES)
+
+    @mcp.tool(
+        annotations=ToolAnnotations(
+            title="Composing guide",
+            read_only_hint=True,
+            idempotent_hint=True,
+            open_world_hint=False,
+        )
+    )
+    def guide() -> str:
+        """The prose guide to composing a display: canvas and bezel margin,
+        the op vocabulary, the type scale, colour and contrast rules, and
+        the validate -> preview -> set_display -> status workflow.
+
+        This is the same text the `compose_display` prompt carries, as a
+        plain tool call — for a client that surfaces tools but not prompts
+        or resources. `describe()` is its machine-readable companion: call
+        that for the exact names and fields, this for the why.
+        """
+        return COMPOSE_PROMPT
 
     @mcp.tool(
         annotations=ToolAnnotations(
@@ -401,14 +463,16 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
         equal to `c`, a `mix` that isn't 25/50/75, rounded to the nearest
         of those); an op placed off-canvas — `x`/`y` for every op,
         `x+w`/`y+h` for a rect, `x2`/`y2` for a line, `x±r`/`y±r` for a
-        circle — each allowed 64 px of slack beyond the edge (a full-bleed
-        bar may overhang); a `text`, `fmt` or `icon` op within the 24 px
-        bezel margin — left and top judged at the op's own anchor (`x`/`y`;
-        left is not checked for a right-aligned `text`/`fmt`, whose anchor
-        is its own right edge), bottom at anchor `y` plus the font's size
-        (`text`/`fmt` only — an icon's box has no separate bottom check),
-        right edge only for a right-aligned `text`/`fmt` or for any `icon`
-        (both have a known width the anchor alone doesn't say); `text`/`fmt`/`icon`
+        circle, `x+size`/`y+size` for an icon — each allowed 64 px of slack
+        beyond the edge (a full-bleed bar may overhang); a `text`, `fmt` or
+        `icon` op within the 24 px bezel margin — left and top judged at
+        the op's own anchor (`x`/`y`; left is not checked for a
+        right-aligned `text`/`fmt`, whose anchor is its own right edge),
+        bottom at anchor `y` plus the font's size for `text`/`fmt`, or at
+        `y + size` for an `icon` — both a known extent, unlike a bare glyph
+        box's ink; right edge only for a right-aligned `text`/`fmt` or for
+        any `icon` (both have a known width the anchor alone doesn't say);
+        `text`/`fmt`/`icon`
         contrast below 3:1 against what is actually behind it; a chromatic
         (non-black/white) mix used as text, which shifts toward its
         lighter ink; a 25%/75% mix on a feature thinner than 2 px, which
@@ -602,59 +666,6 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
 
     @mcp.tool(
         annotations=ToolAnnotations(
-            title="Describe vocabulary",
-            read_only_hint=True,
-            idempotent_hint=True,
-            open_world_hint=False,
-        )
-    )
-    def describe() -> dict[str, Any]:
-        """The renderer's whole vocabulary as one JSON object: canvas size,
-        the inks and built-in mixes with their hexes and tiers, the fonts,
-        the anchor values `text.a`/`fmt.a` accept, the icons and their size
-        classes, the per-op field table, the `fmt` template fields, and the
-        document byte ceiling.
-
-        Built from the same tables `render()` draws with, so it cannot say
-        something `render()` doesn't accept. A session calls this once
-        before composing rather than guessing field names by trial and
-        error; `guide()` is its prose companion.
-
-        In `ops`, an optional field whose default is `null` has no fixed
-        default and may simply be omitted — `lh` is computed from the font
-        size, `w` means no width limit, `sprite`'s `mirror` means no
-        mirroring (its only other legal value is `"x"`), and `icon`'s `bgc`
-        is accepted and ignored outright (every compiled icon is
-        chroma-keyed, so its off pixels are skipped no matter what `bgc`
-        says). `fmt`'s `s` is `null` too, but not for the same reason as
-        the rest: it is required *in practice* — an empty or missing
-        template has nothing to draw and is a `validate`/`preview` warning,
-        not a silent no-op.
-        """
-        return render.vocabulary(MAX_DOC_BYTES)
-
-    @mcp.tool(
-        annotations=ToolAnnotations(
-            title="Composing guide",
-            read_only_hint=True,
-            idempotent_hint=True,
-            open_world_hint=False,
-        )
-    )
-    def guide() -> str:
-        """The prose guide to composing a display: canvas and bezel margin,
-        the op vocabulary, the type scale, colour and contrast rules, and
-        the validate -> preview -> set_display -> status workflow.
-
-        This is the same text the `compose_display` prompt carries, as a
-        plain tool call — for a client that surfaces tools but not prompts
-        or resources. `describe()` is its machine-readable companion: call
-        that for the exact names and fields, this for the why.
-        """
-        return COMPOSE_PROMPT
-
-    @mcp.tool(
-        annotations=ToolAnnotations(
             title="Colour swatches",
             read_only_hint=True,
             idempotent_hint=True,
@@ -741,7 +752,8 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
         "display://sample",
         name="sample",
         title="Sample display document",
-        description="A known-good display-list document (hash 1c772cd7a6ebc2c7) to start from.",
+        description="A known-good display-list document to start from -- its own meta.hash "
+        "carries the current hash, which changes whenever the sample does.",
         mime_type="application/json",
     )
     def sample_resource() -> str:
@@ -761,6 +773,29 @@ def build_mcp(store: Store, settings: Settings) -> MCPServer:
         except DisplayError as exc:
             raise ResourceNotFoundError(str(exc)) from exc
         return json.dumps(doc)
+
+    @mcp.resource(
+        "display://current",
+        name="current-bare",
+        title="Currently published display (needs a name)",
+        description=(
+            "Not a resource on its own -- read display://current/<name>, e.g. "
+            "display://current/default."
+        ),
+        mime_type="application/json",
+    )
+    def current_bare_resource() -> str:
+        """Final review, "Composer over MCP": `display://current` alone used
+        to fall straight to the SDK's own generic "no resource or template
+        matches this URI" error, which says nothing about the templated
+        form that actually exists. Registered as its own resource purely so
+        that miss has somewhere to land with a message that names the fix
+        (`display://current/<name>`) instead of the SDK's default text --
+        it never has a document to return."""
+        raise ResourceNotFoundError(
+            "display://current needs a name -- read display://current/<name>, "
+            "e.g. display://current/default"
+        )
 
     # ---- prompt ------------------------------------------------------
 

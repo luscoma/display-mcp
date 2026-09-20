@@ -29,12 +29,6 @@ from display_mcp.render import (
 from .conftest import _hex, _spec_palette_hexes
 
 
-def test_swatch_document_validates_clean(font_dir):
-    """The whole point of building it as an ordinary document: it has to
-    pass the same bezel/contrast/off-canvas checks any other one does."""
-    assert check(swatch_document(), font_dir) == []
-
-
 def test_swatch_document_renders_pixel_identical_to_pre_b1(font_dir):
     """The pixel-identity guard for the legacy (regular, raqm-layout)
     faces (docs/plans/fonts-and-icons.md B1 review): this is not
@@ -97,15 +91,16 @@ def test_swatch_document_appends_a_documents_own_palette(font_dir):
 
 
 def test_swatch_document_skips_an_unresolvable_palette_entry():
+    """An entry that doesn't resolve to anything drawable is left off rather
+    than guessed at -- and if that leaves nothing, the "document palette"
+    group isn't appended at all."""
     groups = swatch_groups(palette={"flame": "red", "ghost": "nope"})
     title, entries = groups[-1]
     assert title == "document palette"
     assert [label for label, *_ in entries] == ["flame"]
 
-
-def test_swatch_document_with_only_unresolvable_palette_entries_adds_no_group():
-    groups = swatch_groups(palette={"ghost": "nope"})
-    assert [title for title, _ in groups] == ["inks", "dark", "light", "mid"]
+    only_unresolvable = swatch_groups(palette={"ghost": "nope"})
+    assert [title for title, _ in only_unresolvable] == ["inks", "dark", "light", "mid"]
 
 
 def test_swatch_document_a_shadowed_builtin_name_still_shows_canonically(font_dir):

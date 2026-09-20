@@ -158,7 +158,7 @@ within the hour, `recent_fetch_status` 304, `panel_draw_at` much older, and
 | Reading | Means |
 |---|---|
 | `recent_fetch_at` hours old | The panel is not waking. Battery, Wi-Fi, or a hang. |
-| `recent_fetch_status: 200` repeatedly, content unchanged | The ETag is moving when the content is not — see "Server-side ETag" in SPEC.md. |
+| `recent_fetch_status: 200` repeatedly, content unchanged | The ETag is moving when the content is not — see "Change detection" in SPEC.md. |
 | a 200 served, `panel_draw_at` unmoved next wake | Fetched fine, failed to draw. |
 | `panel_wakes` jumping by more than one per hour | Something is rebooting it — the boot button, a brownout. |
 | `panel_battery` falling faster than the budget predicts | Usually "Stay awake" left on, or a lot of boot-button presses, each buying a `${flash_window}` hold. |

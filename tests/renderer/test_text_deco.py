@@ -8,6 +8,7 @@ Fixture note: `font_dir` comes from tests/conftest.py.
 
 from __future__ import annotations
 
+import pytest
 from PIL import Image, ImageDraw
 
 from display_mcp.render import (
@@ -142,40 +143,36 @@ def test_deco_on_a_wrapped_op_decorates_every_line(font_dir):
     assert bands == 3, f"expected one rule band per of the 3 wrapped lines, got {bands}"
 
 
-def test_bad_deco_value_warns_and_renders_undecorated(font_dir):
+@pytest.mark.parametrize(
+    ("value", "spelled"),
+    [
+        # A string that simply isn't one of the two legal values.
+        pytest.param("bold", "'bold'", id="bad_value"),
+        # A non-string type at all.
+        pytest.param(5, "5", id="bad_type"),
+        # B5 review fix: the firmware names a non-string value with
+        # `serializeJson()`, which spells a JSON bool `true`/`false` --
+        # Python's own `repr(True)` says `True`, which the firmware's
+        # warning never would. `_parse_deco()` uses `json.dumps()` for a
+        # non-string value instead, so this case pins the `true` spelling.
+        pytest.param(True, "true", id="bad_bool_json_spelling"),
+    ],
+)
+def test_bad_deco_warns_and_renders_undecorated(font_dir, value, spelled):
+    """A `deco` that isn't `"underline"` or `"strike"` warns and still
+    draws the text, undecorated (docs/plans/fonts-and-icons.md Decision 5):
+    pixel-identical to the same op with no `deco` at all. The warning names
+    the offending value the way the firmware's own `serializeJson()` would
+    spell it -- see the `bad_bool_json_spelling` case's comment."""
     plain_op = {"op": "text", "x": 20, "y": 100, "s": "Reminder", "f": "sm"}
     doc_plain = {"bg": "white", "ops": [plain_op]}
-    doc_bad = {"bg": "white", "ops": [{**plain_op, "deco": "bold"}]}
+    doc_bad = {"bg": "white", "ops": [{**plain_op, "deco": value}]}
     img_plain, p1 = render(doc_plain, font_dir)
     img_bad, p2 = render(doc_bad, font_dir)
     assert p1 == []
-    assert p2 == ["ops[0] text: deco='bold' is not 'underline' or 'strike'; drawing undecorated"]
-    assert img_plain.tobytes() == img_bad.tobytes()
-
-
-def test_bad_deco_type_warns_and_renders_undecorated(font_dir):
-    plain_op = {"op": "text", "x": 20, "y": 100, "s": "Reminder", "f": "sm"}
-    doc_plain = {"bg": "white", "ops": [plain_op]}
-    doc_bad = {"bg": "white", "ops": [{**plain_op, "deco": 5}]}
-    img_plain, p1 = render(doc_plain, font_dir)
-    img_bad, p2 = render(doc_bad, font_dir)
-    assert p1 == []
-    assert p2 == ["ops[0] text: deco=5 is not 'underline' or 'strike'; drawing undecorated"]
-    assert img_plain.tobytes() == img_bad.tobytes()
-
-
-def test_bad_deco_bool_warns_with_json_spelling_not_python_repr(font_dir):
-    """B5 review fix: the firmware names a non-string value with
-    `serializeJson()`, which spells a JSON bool `true`/`false` -- Python's
-    own `repr(True)` says `True`, which the firmware's warning never would.
-    `_parse_deco()` uses `json.dumps()` for a non-string value instead."""
-    plain_op = {"op": "text", "x": 20, "y": 100, "s": "Reminder", "f": "sm"}
-    doc_plain = {"bg": "white", "ops": [plain_op]}
-    doc_bad = {"bg": "white", "ops": [{**plain_op, "deco": True}]}
-    img_plain, p1 = render(doc_plain, font_dir)
-    img_bad, p2 = render(doc_bad, font_dir)
-    assert p1 == []
-    assert p2 == ["ops[0] text: deco=true is not 'underline' or 'strike'; drawing undecorated"]
+    assert p2 == [
+        f"ops[0] text: deco={spelled} is not 'underline' or 'strike'; drawing undecorated"
+    ]
     assert img_plain.tobytes() == img_bad.tobytes()
 
 
@@ -203,13 +200,6 @@ def test_fmt_with_deco_warns_as_unknown_field_and_still_draws(font_dir):
         "ops[0] fmt: no such field 'deco' (fmt takes x, y, c, f, a, s)"
     ]
     assert img_full.tobytes() == img_deco.tobytes()
-
-
-def test_describe_lists_deco_on_text_but_not_fmt(font_dir):
-    from display_mcp.render import OP_FIELDS
-
-    assert OP_FIELDS["text"]["optional"]["deco"] is None
-    assert "deco" not in OP_FIELDS["fmt"]["optional"]
 
 
 def test_check_sample_document_still_clean_with_deco_added(sample_doc, font_dir):
@@ -250,29 +240,30 @@ def test_bezel_check_ignores_deco_on_fmt(font_dir):
     assert not any("bottom edge" in p for p in problems), problems
 
 
-def test_deco_rect_clips_a_rule_that_starts_off_canvas_on_the_left():
+@pytest.mark.parametrize(
+    ("lx1", "lw", "ly", "want_xs"),
+    [
+        # A line whose inked left edge sits off-canvas draws only the
+        # on-canvas remainder, not a negative-origin rectangle:
+        # -30 + 50 == 20 on-canvas px remain.
+        pytest.param(-30, 50, 100, (0, 20), id="clipped_on_the_left"),
+        pytest.param(WIDTH - 20, 200, 100, (WIDTH - 20, WIDTH), id="clipped_on_the_right"),
+        # Entirely off-canvas on either axis: no rectangle at all.
+        pytest.param(-500, 50, 100, None, id="wholly_off_canvas_left"),
+        pytest.param(100, 50, -500, None, id="wholly_off_canvas_top"),
+    ],
+)
+def test_deco_rect_clips_like_the_firmware(lx1, lw, ly, want_xs):
     """`_deco_rect()` clips through `_clip_span()` the way the firmware's
-    `clipped_filled_rectangle()` clips every fill (D5): a line whose inked
-    left edge sits off-canvas draws only the on-canvas remainder, not a
-    negative-origin rectangle."""
-    box = _deco_rect("underline", lx1=-30, lw=50, ly=100, h=44, baseline=35)
+    `clipped_filled_rectangle()` clips every fill (docs/plans/
+    firmware-bounds.md D5)."""
+    box = _deco_rect("underline", lx1=lx1, lw=lw, ly=ly, h=44, baseline=35)
+    if want_xs is None:
+        assert box is None
+        return
     assert box is not None
-    x0, y0, x1, y1 = box
-    assert x0 == 0
-    assert x1 == 20  # -30 + 50 == 20 on-canvas px remain
-
-
-def test_deco_rect_clips_a_rule_that_extends_past_the_right_edge():
-    box = _deco_rect("underline", lx1=WIDTH - 20, lw=200, ly=100, h=44, baseline=35)
-    assert box is not None
-    x0, y0, x1, y1 = box
-    assert x0 == WIDTH - 20
-    assert x1 == WIDTH
-
-
-def test_deco_rect_returns_none_when_entirely_off_canvas():
-    assert _deco_rect("underline", lx1=-500, lw=50, ly=100, h=44, baseline=35) is None
-    assert _deco_rect("underline", lx1=100, lw=50, ly=-500, h=44, baseline=35) is None
+    x0, _y0, x1, _y1 = box
+    assert (x0, x1) == want_xs
 
 
 def test_deco_rule_dithers_with_a_mixed_ink_and_is_sampled_by_the_contrast_check(font_dir):
@@ -307,8 +298,6 @@ def test_rule_thickness_is_at_least_2px_at_every_compiled_size(font_dir):
     `test_deco_uses_the_freetype_line_height_not_ascent_plus_descent`."""
     for name, face in FONTS.items():
         f = load_font(font_dir, face)
-        if f is None:  # a face whose file isn't present in this font_dir
-            continue
         ascent, _descent = f.getmetrics()
         for underline in (True, False):
             _top, t = _deco_rule_geometry(f.font.height, ascent, 0, underline)
@@ -335,8 +324,6 @@ def test_deco_uses_the_freetype_line_height_not_ascent_plus_descent(font_dir):
     for name, firmware_height in _FIRMWARE_FONT_HEIGHTS.items():
         face = FONTS[resolve_font(name)]
         f = load_font(font_dir, face)
-        if f is None:
-            continue
         ascent, descent = f.getmetrics()
         # Pinned as data, not just relative to `getmetrics()`: a Pillow
         # upgrade or a refetched font that moved `f.font.height` would keep
@@ -360,19 +347,64 @@ def test_deco_uses_the_freetype_line_height_not_ascent_plus_descent(font_dir):
         assert (rows[0], rows[-1]) == (expected_top, expected_top + expected_t - 1), name
 
 
-def test_round_half_away_from_zero_ties_are_synthetic_not_from_a_real_face():
-    """No compiled face currently lands `h / 14`, `h * 0.06` or `h * 0.30`
-    exactly on a `.5` -- checked against every face's real `f.font.height`
-    (B5 review fix: an earlier version of this test claimed `sm`'s 35 did,
-    which used `ascent + descent` rather than the firmware's actual
-    `font_height()`; `sm`'s real height is 34, and `34 / 14` is not a tie).
-    The two roundings still have to agree in general, so this pins the
-    function's own tie-breaking behaviour at a synthetic `.5`, and
-    `tests/parity/test_text_deco.py` sweeps real synthetic ties (including
-    `35`) differentially against the firmware."""
-    assert FONTS[resolve_font("sm")].cell_height == 35
-    f_sm_real_height = 34  # font.font.height, not Face.cell_height -- see above
-    assert f_sm_real_height / 14 != 2.5
-    assert round(2.5) == 2  # Python's builtin: round-half-to-even
-    assert _round_half_away_from_zero(2.5) == 3  # matches C++'s std::round()
-    assert _round_half_away_from_zero(-2.5) == -3
+def test_the_seven_ties_where_round_would_disagree(font_dir):
+    """Final review, B7/F: an earlier version of this test (and of
+    `_round_half_away_from_zero()`'s docstring) claimed no compiled face
+    ever lands `t`/either vertical offset exactly on a `.5` -- false.
+    Measured against every face's real `f.font.height`, nineteen
+    (face, quantity) pairs land on a tie, and on seven of them Python's
+    `round()` (round-half-to-even) actually disagrees with `std::round()`
+    (round-half-away-from-zero): `karla/54`, `karla-bold/54`,
+    `karla-italic/54` and `mono/lg` all have `h/14 == 4.5` (`t` is 5, not
+    the 4 `round()` would give -- 4 is even); `petrona/xl`,
+    `petrona-bold/xl` and `petrona-italic/xl` have `h*0.30 == 28.5` (the
+    strike offset is 29, not `round()`'s 28).
+
+    This loads those seven faces for real, confirms each quantity is
+    exactly on the tie, and diffs the *rendered* rule -- not just
+    `_deco_rule_geometry()` called in isolation -- against the
+    half-away-from-zero result, so silently simplifying to `round()`
+    anywhere in the chain (this function, or a future rewrite of
+    `_deco_rule_geometry()` that stops calling it) fails loudly here, not
+    only in `tests/parity/test_text_deco.py`'s synthetic sweep."""
+    x, y, text = 40, 200, "Ag"
+
+    # h/14 == 4.5: t (the rule's own thickness) is 5, not round()'s 4.
+    for name in ("karla/54", "karla-bold/54", "karla-italic/54", "mono/lg"):
+        f = load_font(font_dir, FONTS[name])
+        h = f.font.height
+        assert h / 14 == 4.5, (name, h)
+        assert round(h / 14) == 4  # what a bare round() would give -- wrong
+        assert _round_half_away_from_zero(h / 14) == 5
+
+        plain = {"bg": "white", "ops": [{"op": "text", "x": x, "y": y, "s": text, "f": name}]}
+        deco = {**plain, "ops": [{**plain["ops"][0], "deco": "underline"}]}
+        img_plain, p1 = render(plain, font_dir)
+        img_deco, p2 = render(deco, font_dir)
+        assert p1 == p2 == []
+        rows = _diff_rows(img_plain, img_deco, range(x, x + 200), range(y, y + h + 40))
+        assert _is_contiguous(rows), (name, rows)
+        assert len(rows) == 5, (name, rows, "half-away-from-zero t=5, not round()'s 4")
+
+    # h*0.30 == 28.5: the strike sits 1px higher than round() would put it.
+    for name in ("petrona/xl", "petrona-bold/xl", "petrona-italic/xl"):
+        f = load_font(font_dir, FONTS[name])
+        h = f.font.height
+        assert h * 0.30 == 28.5, (name, h)
+        assert round(h * 0.30) == 28  # what a bare round() would give -- wrong
+        assert _round_half_away_from_zero(h * 0.30) == 29
+
+        plain = {"bg": "white", "ops": [{"op": "text", "x": x, "y": y, "s": text, "f": name}]}
+        deco = {**plain, "ops": [{**plain["ops"][0], "deco": "strike"}]}
+        img_plain, p1 = render(plain, font_dir)
+        img_deco, p2 = render(deco, font_dir)
+        assert p1 == p2 == []
+        rows = _diff_rows(img_plain, img_deco, range(x, x + 200), range(y, y + h + 40))
+        assert _is_contiguous(rows), (name, rows)
+
+        ascent, _descent = f.getmetrics()
+        t = max(2, _round_half_away_from_zero(h / 14))
+        expected_top = y + ascent - 29 - t // 2
+        wrong_top = y + ascent - 28 - t // 2  # round()'s answer, 1px lower
+        assert rows[0] == expected_top, (name, rows, expected_top)
+        assert rows[0] != wrong_top

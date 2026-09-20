@@ -24,13 +24,18 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from display_mcp.render import render  # noqa: E402
+from display_mcp.render import SAMPLE_PIXEL_PIN_NOW, render  # noqa: E402
 
 FONT_DIR = Path(os.environ.get("DISPLAY_MCP_FONT_DIR", ROOT / "fonts"))
 
 
-def emit(name: str, doc: dict) -> None:
-    img, problems = render(doc, FONT_DIR)
+def emit(name: str, doc: dict, *, now=None) -> None:
+    # `now=` pinned to SAMPLE_PIXEL_PIN_NOW for the sample: its footer prints
+    # {time}/{time24}, so a bare render() would bake in whatever second this
+    # happened to run at, and the next run -- or tests/test_scaffold.py's own
+    # pixel-identity check against samples/display.json, rendered against the
+    # same pin -- could never reproduce it (final review, B7/F, item 8).
+    img, problems = render(doc, FONT_DIR, now=now)
     for p in problems:
         print(f"  {name}: {p}")
     img = img.resize((img.width // 2, img.height // 2), Image.LANCZOS)
@@ -43,7 +48,11 @@ def main() -> int:
     if not FONT_DIR.is_dir():
         print(f"no font directory at {FONT_DIR}; run deploy/fetch-fonts.sh ./fonts")
         return 1
-    emit("sample", json.loads((ROOT / "samples" / "display.json").read_text()))
+    emit(
+        "sample",
+        json.loads((ROOT / "samples" / "display.json").read_text()),
+        now=SAMPLE_PIXEL_PIN_NOW,
+    )
     return 0
 
 

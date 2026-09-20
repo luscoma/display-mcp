@@ -36,33 +36,33 @@ from pathlib import Path
 
 from PIL import Image
 
-try:
-    import resvg_py
-except ImportError as exc:  # pragma: no cover - guidance for the wrong interpreter
-    raise SystemExit(
-        "resvg_py is not importable under this interpreter. Run this script "
-        "with ESPHome's own Python, e.g.\n"
-        "  /opt/homebrew/Cellar/esphome/2026.8.2/libexec/bin/python "
-        "firmware/icons/rasterize.py"
-    ) from exc
-
 SCRIPT_DIR = Path(__file__).resolve().parent
 SRC_DIR = SCRIPT_DIR / "src"
 REPO_ROOT = SCRIPT_DIR.parent.parent
 OUT_DIR = REPO_ROOT / "src" / "display_mcp" / "render" / "icons"
 
-# Activity name -> lucide icon name (docs/plans/fonts-and-icons.md, "The
-# question", item 2, and Decision 4's `swim` note).
-ACTIVITIES = {
-    "school-day": "book-open",
-    "daycare": "baby",
-    "taekwondo": "star",
-    "swim": "waves-ladder",
-    "helper": "user-round",
-    "appointment": "stethoscope",
-    "family-meeting": "users",
-    "closed": "calendar-off",
-}
+# The eight activity names this repo uses (docs/plans/fonts-and-icons.md,
+# "The question", item 2) -- a plain tuple, not the name -> lucide-icon-name
+# mapping an earlier draft of this script kept here (C9, final review): the
+# *value* half of that mapping was never read by anything below, only used
+# as a comment on where each SVG under src/ originally came from, which
+# belongs beside the file it names instead. That provenance, for the
+# record: school-day <- book-open, daycare <- baby, taekwondo <- star,
+# swim <- waves-ladder (not "waves" -- Decision 4's own note on why),
+# helper <- user-round, appointment <- stethoscope, family-meeting <- users,
+# closed <- calendar-off. `LUCIDE_ICONS` (display_mcp.render.shapes) is the
+# renderer's own copy of this same set, independent on purpose --
+# tests/renderer/test_icon_assets.py cross-checks this one against it.
+ACTIVITIES = (
+    "school-day",
+    "daycare",
+    "taekwondo",
+    "swim",
+    "helper",
+    "appointment",
+    "family-meeting",
+    "closed",
+)
 
 # The five font slots' pixel sizes (Decision 4: icons share the font ladder).
 SIZES = (22, 28, 36, 48, 84)
@@ -70,7 +70,23 @@ SIZES = (22, 28, 36, 48, 84)
 
 def rasterize_one(svg_path: Path, px: int) -> Image.Image:
     """Render `svg_path` at `px` x `px` exactly as ESPHome's `file:` image
-    loader would, then apply the BINARY encoder's alpha threshold."""
+    loader would, then apply the BINARY encoder's alpha threshold.
+
+    `resvg_py` is imported here, not at module scope (C9, final review):
+    it only exists under ESPHome's own Python, not this project's venv,
+    and importing it at module scope made the whole module -- including
+    `ACTIVITIES`/`SIZES`, which a plain test can use freely -- unimportable
+    from the venv `tests/renderer/test_icon_assets.py` runs in."""
+    try:
+        import resvg_py
+    except ImportError as exc:  # pragma: no cover - guidance for the wrong interpreter
+        raise SystemExit(
+            "resvg_py is not importable under this interpreter. Run this script "
+            "with ESPHome's own Python, e.g.\n"
+            "  /opt/homebrew/Cellar/esphome/2026.8.2/libexec/bin/python "
+            "firmware/icons/rasterize.py"
+        ) from exc
+
     raw = resvg_py.svg_to_bytes(svg_path=str(svg_path), width=px, height=px, dpi=100)
     rendered = Image.open(io.BytesIO(bytes(raw))).convert("RGBA")
 

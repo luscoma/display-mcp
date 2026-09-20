@@ -93,14 +93,9 @@ def test_uninstall_dry_run_parses_and_exits_zero():
     assert "uninstalled" in result.stdout
 
 
-def test_help_exits_zero():
-    result = run([str(SETUP), "--help"])
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "Commands:" in result.stdout
-
-
 def test_help_and_dispatch_agree():
-    """Every command --help documents dispatches, and vice versa.
+    """`--help` exits zero, and every command it documents dispatches and
+    vice versa.
 
     setup.sh is the whole deploy story now, so its --help is the only place
     anyone finds out what it can do. `sync` was missing from the synopsis for
@@ -110,7 +105,10 @@ def test_help_and_dispatch_agree():
     dispatched = set(re.findall(r"^  (\w+}?\)|\w+\))\s+(?:need_root; )?do_", text, re.M))
     dispatched = {d.rstrip(")") for d in dispatched}
 
-    out = run([str(SETUP), "--help"]).stdout
+    result = run([str(SETUP), "--help"])
+    assert result.returncode == 0, result.stdout + result.stderr
+    out = result.stdout
+    assert "Commands:" in out
     commands_block = out.split("Commands:")[1].split("Flags:")[0]
     documented = set(re.findall(r"^  (\w+)\s{2,}", commands_block, re.M))
 
@@ -165,7 +163,6 @@ FETCHED_FONT_NAMES = (
     "Karla-Italic.ttf",
     "JetBrainsMono-Regular.ttf",
 )
-ALL_FONT_NAMES = FETCHED_FONT_NAMES
 
 # Each two-file family's (upright, italic) destination pair -- used to check
 # the per-destination italic filter actually kept the two apart.
@@ -179,6 +176,44 @@ ITALIC_PAIRS = (
 # OpenType/CFF, a TrueType collection, and the same TrueType tag again (its
 # case list has it twice under two names).
 _FONT_MAGIC = (b"\x00\x01\x00\x00", b"OTTO", b"ttcf", b"true")
+
+
+def _fetch_fonts_sh_font_names() -> set[str]:
+    """`FONT_<NAME>="<file>.ttf"` declarations near the top of
+    fetch-fonts.sh -- the script's own list of what it fetches, extracted
+    by regex rather than retyped."""
+    text = FETCH_FONTS.read_text()
+    return set(re.findall(r'^FONT_\w+="([^"]+\.ttf)"$', text, re.MULTILINE))
+
+
+def _setup_sh_plan_font_names() -> set[str]:
+    """The filename half of each `"<file>.ttf:$dest"` entry in
+    `install_fonts()`'s `plan` array."""
+    text = SETUP.read_text()
+    plan_block = re.search(r"local plan=\((.*?)\n  \)", text, re.DOTALL)
+    assert plan_block, "could not find setup.sh's plan=(...) array"
+    return set(re.findall(r'"([^":]+\.ttf):', plan_block.group(1)))
+
+
+@pytest.mark.parametrize(
+    "font_names",
+    [
+        pytest.param(lambda: set(FETCHED_FONT_NAMES), id="this-files-constant"),
+        pytest.param(_fetch_fonts_sh_font_names, id="fetch-fonts.sh"),
+        pytest.param(_setup_sh_plan_font_names, id="setup.sh-plan"),
+    ],
+)
+def test_font_lists_match_the_renderers_own_face_files(font_names):
+    """C1, final review: every list of font filenames in play -- the
+    hand-typed `FETCHED_FONT_NAMES` above, fetch-fonts.sh's own `FONT_*`
+    declarations, and setup.sh's `install_fonts()` plan -- must be exactly
+    `{face.file for face in FONTS.values()}`, the renderer's per-family file
+    table (fonts.py's `FAMILIES`). A font swap or a new family then cannot
+    drift silently in any one of the three."""
+    from display_mcp.render import FONTS
+
+    assert font_names() == {face.file for face in FONTS.values()}
+    assert len(FETCHED_FONT_NAMES) == len(set(FETCHED_FONT_NAMES)) == 7
 
 
 def test_fetch_fonts_usage_without_args():
@@ -209,11 +244,13 @@ def _subfamily(path: Path) -> str:
 
 
 def test_fetch_fonts_skips_the_network_when_all_seven_are_present(tmp_path):
-    """The early return (main()'s `all_present` check) needs all seven
-    files, not just a subset -- run for real, with fake-but-valid fonts
-    already in place, so this never touches the network and can't be flaky
-    in a sandboxed CI run."""
-    for name in ALL_FONT_NAMES:
+    """`family_listing()`'s own per-slug `is_font()` check (C9, final
+    review: folded from a separate `all_present()` pre-check) needs every
+    one of a slug's destinations present to skip that slug's API call --
+    run for real, with fake-but-valid fonts already in place for all
+    seven, so this never touches the network and can't be flaky in a
+    sandboxed CI run."""
+    for name in FETCHED_FONT_NAMES:
         _fake_font(tmp_path / name)
     result = run(["bash", str(FETCH_FONTS), str(tmp_path)])
     assert result.returncode == 0, result.stdout + result.stderr
@@ -232,16 +269,16 @@ def test_fetch_fonts_downloads_all_seven_files_for_real(tmp_path):
     test_fetch_fonts_select_urls_picks_the_right_file below. So a first
     pass that leaves anything missing gets one retry into the *same*
     directory -- fetch-fonts.sh only re-fetches what's still missing (see
-    all_present/fetch_if_missing) -- and only skips, rather than fails, if
+    fetch_if_missing) -- and only skips, rather than fails, if
     files are still missing after that: from here that's indistinguishable
     from a slow or rate-limited network.
     """
     result = run(["bash", str(FETCH_FONTS), str(tmp_path)], timeout=120)
-    missing = [name for name in ALL_FONT_NAMES if not _looks_like_font(tmp_path / name)]
+    missing = [name for name in FETCHED_FONT_NAMES if not _looks_like_font(tmp_path / name)]
 
     if missing:
         result = run(["bash", str(FETCH_FONTS), str(tmp_path)], timeout=120)
-        missing = [name for name in ALL_FONT_NAMES if not _looks_like_font(tmp_path / name)]
+        missing = [name for name in FETCHED_FONT_NAMES if not _looks_like_font(tmp_path / name)]
 
     if missing:
         pytest.skip(
@@ -250,7 +287,7 @@ def test_fetch_fonts_downloads_all_seven_files_for_real(tmp_path):
             + result.stderr
         )
 
-    for name in ALL_FONT_NAMES:
+    for name in FETCHED_FONT_NAMES:
         f = tmp_path / name
         assert f.is_file(), f"{name} was not installed"
         assert f.stat().st_size > 20000, f"{name} is too small to be a real font"

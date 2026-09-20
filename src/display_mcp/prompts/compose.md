@@ -8,9 +8,10 @@ verified until one of them says so, so run one before every `set_display`.
 `describe()` returns the whole vocabulary (inks, mixes, fonts, icons, ops)
 as one JSON object built from the renderer's own tables; `guide()` returns
 this very text. If your client can also read resources, `display://spec`
-carries the full document language and `display://sample` a worked
-example — but a tools-only client needs nothing more than this guide and
-`describe()`.
+carries the full document language, `display://sample` a worked example,
+and `display://current/{name}` whatever is currently published under that
+name (`display://current/default`, say) — but a tools-only client needs
+nothing more than this guide and `describe()`.
 
 ## Canvas
 
@@ -41,7 +42,7 @@ than building from a blank `ops` list:
     {"op": "text", "x": 48,  "y": 1552, "s": "Updated: 6:31 AM", "f": "xs"},
     {"op": "fmt",  "x": 1045, "y": 1552, "s": "{hash}@{time24}", "f": "xs",
      "a": "right", "c": "grey-mid"},
-    {"op": "icon", "x": 1058, "y": 1545, "n": "battery", "z": "md", "c": "grey-mid"},
+    {"op": "icon", "x": 1058, "y": 1545, "n": "battery", "z": "sm", "c": "grey-mid"},
     {"op": "fmt",  "x": 1100, "y": 1552, "s": "{battery}", "f": "xs", "c": "grey-mid"}
   ]
 }
@@ -118,17 +119,30 @@ warning saying where they belong. Check `warnings` either way.
   bitmap and there is no icon ladder beyond those five: an off-ladder size
   (`check/40`) is "not compiled in", same as an unknown name.
   `describe().icons` lists each name's slots (all five, today) and
-  `describe().icon_aliases` lists the five px spellings. Eleven names are
-  Material Design icons, drawn as a procedural stand-in here (real MDI
-  bitmaps on the panel): `weather-sunny`, `weather-partly-cloudy`,
-  `weather-cloudy`, `weather-rainy`, `weather-snowy`, `weather-night`,
-  `check`, `map-marker`, `clock`, `alert`, `battery`. Eight name a family
-  activity and blit the identical committed PNG the firmware compiles, so
-  these draw real artwork here too: `school-day`, `daycare`, `taekwondo`,
-  `swim`, `helper`, `appointment`, `family-meeting`, `closed`. `xs` is
+  `describe().icon_aliases` lists the five px spellings;
+  `describe().icon_depicts` says what each one draws, so a wrong name
+  doesn't have to be guessed from the wall. Eleven names are Material
+  Design icons, drawn as a procedural stand-in here (real MDI bitmaps on
+  the panel): `weather-sunny` (a sun), `weather-partly-cloudy` (a sun
+  behind a cloud), `weather-cloudy` (a cloud), `weather-rainy` (a cloud
+  with rain streaks), `weather-snowy` (a cloud with snowflakes),
+  `weather-night` (a crescent moon), `check` (a tick), `map-marker` (a map
+  pin), `clock` (a clock face), `alert` (a triangle with a bang),
+  `battery` (a battery). Eight name a family activity and blit the
+  identical committed PNG the firmware compiles, so these draw real
+  artwork here too: `school-day` (an open book), `daycare` (a baby),
+  `taekwondo` (a star), `swim` (a pool ladder over waves), `helper` (a
+  person), `appointment` (a stethoscope), `family-meeting` (a group of
+  people), `closed` (a calendar with a slash through it). `xs` is
   marginal for a detailed glyph (a stethoscope, two people) — reach for it
   only beside `xs` text or a chip glyph; `sm` and up read cleanly. `bgc` is
   accepted and ignored (every compiled icon is transparent).
+
+  The eleven MDI icons are solid, filled glyphs; the eight activity icons
+  are thin lucide outlines (a 3 px stroke at `md`) — don't mix one of each
+  in the same row at the same size, they read at visibly different
+  weights, and give an outlined activity icon `md` or larger (its stroke
+  thins out and starts to disappear at `xs`/`sm`).
 - **`sprite`** — `x y cell rows palette`, `mirror` (only `"x"`, reverses
   every row before drawing; anything else warns and is not mirrored).
   Pixel art: one `cell`×`cell` square per character in `rows`, coloured by
@@ -164,7 +178,10 @@ warning saying where they belong. Check `warnings` either way.
 - **`fmt`** — `x y s`, `f` (default `xs`), `a`, `c`. Like `text` but `s` is
   a template of system fields: `{hash}` (last 5 of the document's hash),
   `{hash16}`, `{time}` (`1:43 PM`, when the panel drew it), `{time24}`,
-  `{battery}` (`82%`), `{battv}`. Never type the hash, the time or the
+  `{battery}` (`82%`), `{battv}`. `{hash}`/`{hash16}` change whenever
+  anything in `bg`, `palette` or `ops` changes — including the footer
+  itself, since it's part of `ops` too — so they read as a build/version
+  stamp, not a fixed label. Never type the hash, the time or the
   battery yourself — see the footer above. An empty or missing `s` warns
   and draws nothing; an unknown `{field}` is left literal and also warns.
 
@@ -243,19 +260,28 @@ common case, not a mismatch of two things that happen to share a name.
 The icon's own box still doesn't share the text's metrics — it's centred
 on the glyph box, the text's `y` is the top of the ascender line — so
 centre it by eye against the text's x-height with this offset from the
-text op's `y`: `xs` → `y+5`, `sm` → `y+6`, `md` → `y+8`, `lg` → `y+10`,
-`xl` → `y+18`. Measured against `instrument` (regular) text at each slot's
-own size; `instrument-bold` matches it exactly at every slot (weight
-doesn't move the x-height here), but Petrona and Karla, with their own
-smaller x-heights, sit a few px off — Petrona's `xl` is the widest gap,
-`y+12` rather than `y+18`.
+text op's `y`, per family (each measured against that family's own
+regular face, icon centred on the x-height of an `"x"` at the same slot's
+size; `-bold` matches its family's own column exactly at every slot —
+weight doesn't move the x-height):
+
+| family | `xs` | `sm` | `md` | `lg` | `xl` |
+|---|---|---|---|---|---|
+| `instrument` | `y+5` | `y+6` | `y+8` | `y+10` | `y+18` |
+| `karla` | `y+4` | `y+5` | `y+7` | `y+10` | `y+16` |
+| `petrona` | `y+3` | `y+5` | `y+5` | `y+8` | `y+12` |
+
+Karla and Petrona's smaller x-heights pull every offset at or below
+Instrument's; Petrona's `xl` is the widest gap of the three, `y+12` rather
+than `y+18`.
 
 ## Colours
 
 **The one hard rule: 3:1 contrast is the floor.** Every compiled font size
-is WCAG large text (even `xs`, 22 px bold), so anything under 3:1 against
-what's actually behind it is a `validate`/`preview` warning, not a matter
-of taste.
+is WCAG large text — `xs` (22 px) outright in its bold face, a hair under
+the strict 24 px line in regular and italic but still well clear of any
+screen-contrast rule's intent — so anything under 3:1 against what's
+actually behind it is a `validate`/`preview` warning, not a matter of taste.
 
 Six inks — `black white yellow red blue green` — plus any two-ink mix.
 Write `"c": "navy"` with no palette entry needed: twenty-one tested

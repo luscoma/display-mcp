@@ -15,15 +15,36 @@ sizes it comes in.
 
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
 
 from PIL import Image
 
-from display_mcp.render import ICON_SIZES, ICONS
-from display_mcp.render.firmware_yaml import _MDI_SLUGS
+from display_mcp.render import ICON_SIZES, ICONS, LUCIDE_ICONS
+from display_mcp.render.firmware_yaml import _MDI_NAMES, _MDI_SLUG_OVERRIDES
+from display_mcp.render.fonts import SLOTS
 
 ROOT = Path(__file__).resolve().parents[2]
 ICONS_DIR = ROOT / "src" / "display_mcp" / "render" / "icons"
+
+
+def _load_rasterize():
+    """`firmware/icons/rasterize.py` as a module, without going through
+    `firmware/icons/` as a package (it isn't one) -- importable from this
+    venv now that its `resvg_py` import moved inside `rasterize_one()`
+    (C9, final review), so `ACTIVITIES`/`SIZES` can be cross-checked here
+    without ESPHome's own Python."""
+    path = ROOT / "firmware" / "icons" / "rasterize.py"
+    spec = importlib.util.spec_from_file_location("rasterize", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_rasterize_activities_and_sizes_match_the_renderer():
+    rasterize = _load_rasterize()
+    assert set(rasterize.ACTIVITIES) == LUCIDE_ICONS
+    assert rasterize.SIZES == tuple(SLOTS.values())
 
 # The eight activities named in the plan, independent of `ICONS`/`ICON_SIZES`
 # so a change to either table's *shape* can't quietly make this module stop
@@ -50,14 +71,15 @@ def _expected_names() -> set[str]:
     return {f"{activity}-{px}.png" for activity in ACTIVITIES for px in SIZES}
 
 
-def test_every_activity_and_size_has_a_png():
-    missing = [name for name in sorted(_expected_names()) if not (ICONS_DIR / name).is_file()]
-    assert missing == []
+def test_icons_dir_is_exactly_the_expected_pngs():
+    """Set equality both ways: every activity/size pair has a committed
+    PNG, and nothing else is in the directory. (A separate
+    `test_every_activity_and_size_has_a_png` asserting only the "nothing
+    missing" half was removed as strictly subsumed by this one.)
 
-
-def test_no_other_files_in_icons_dir():
-    # Dotfiles (.DS_Store) are ignored: macOS drops them and .gitignore hides
-    # them, so they are not a stray asset.
+    Dotfiles (.DS_Store) are ignored: macOS drops them and .gitignore hides
+    them, so they are not a stray asset.
+    """
     actual = {p.name for p in ICONS_DIR.iterdir() if p.is_file() and not p.name.startswith(".")}
     assert actual == _expected_names()
 
@@ -124,10 +146,15 @@ def test_alpha_extrema_are_exactly_0_and_255():
 
 def test_activities_are_exactly_the_lucide_icons():
     """Every `ICONS` name that isn't one of the eleven MDI icons is one of
-    this file's eight activities, and vice versa -- `_MDI_SLUGS`
-    (firmware_yaml.py) is the one place that table of eleven lives."""
-    lucide_names = set(ICONS) - set(_MDI_SLUGS)
-    assert lucide_names == set(ACTIVITIES)
+    this file's eight activities, and vice versa -- `_MDI_NAMES`
+    (firmware_yaml.py) is the one place that table of eleven lives, and
+    `LUCIDE_ICONS` (shapes.py) is the shared source `firmware_yaml.py`'s
+    MDI-vs-PNG decision and `shapes.py`'s own PNG-vs-stand-in decision
+    both read (C9, final review) -- this file's own `ACTIVITIES` stays an
+    independent literal (see its own comment) so this test is a real
+    cross-check, not two names for the same list."""
+    lucide_names = set(ICONS) - _MDI_NAMES
+    assert lucide_names == set(ACTIVITIES) == LUCIDE_ICONS
 
 
 def test_sizes_are_exactly_the_icon_slot_pixel_counts():
@@ -147,34 +174,22 @@ def test_every_activity_size_pair_is_an_icons_entry():
             )
 
 
-def test_every_lucide_icons_slot_has_a_png_and_vice_versa():
-    """The reverse direction: every slot `ICONS` lists for a lucide
-    activity icon has a committed PNG, and no lucide icon claims a slot
-    this file doesn't expect a PNG for."""
-    for activity in ACTIVITIES:
-        expected = {f"{activity}-{ICON_SIZES[slot]}.png" for slot in ICONS[activity]}
-        assert expected == {f"{activity}-{px}.png" for px in SIZES}
+# `test_every_lucide_icons_slot_has_a_png_and_vice_versa`, a per-activity
+# restatement of `test_every_activity_and_size_has_a_png` +
+# `test_no_other_files_in_icons_dir` above (same two sets, sliced by
+# activity instead of compared whole), was removed here as a duplicate
+# (C8, final review) rather than made to open the files -- it never did,
+# and the two tests above already prove the full set on both sides.
+
+# `clock` -> `mdi:clock-outline`, read off the hand-written YAML before
+# B4b's generator replaced it (docs/plans/fonts-and-icons.md B4b review
+# item 8) -- a literal, independent of `firmware_yaml._MDI_SLUG_OVERRIDES`
+# (C9 shrank the eleven-entry self-mapping table this used to check in
+# full to just its one real override), so an accidental edit there (a
+# typo, a rename) fails loudly instead of both copies silently agreeing on
+# the wrong thing.
+_PRE_B4B_CLOCK_SLUG = {"clock": "clock-outline"}
 
 
-# The eleven MDI icons' name -> mdi: slug, read off the hand-written YAML
-# before B4b's generator replaced it (docs/plans/fonts-and-icons.md B4b
-# review item 8) -- a literal, independent of `firmware_yaml._MDI_SLUGS`,
-# so an accidental slug edit there (a typo, a rename) fails loudly instead
-# of both copies silently agreeing on the wrong thing.
-_PRE_B4B_MDI_SLUGS = {
-    "weather-sunny": "weather-sunny",
-    "weather-partly-cloudy": "weather-partly-cloudy",
-    "weather-cloudy": "weather-cloudy",
-    "weather-rainy": "weather-rainy",
-    "weather-snowy": "weather-snowy",
-    "weather-night": "weather-night",
-    "check": "check",
-    "map-marker": "map-marker",
-    "clock": "clock-outline",
-    "alert": "alert",
-    "battery": "battery",
-}
-
-
-def test_mdi_slugs_match_the_pre_b4b_yaml():
-    assert _MDI_SLUGS == _PRE_B4B_MDI_SLUGS
+def test_mdi_slug_override_matches_the_pre_b4b_yaml():
+    assert _MDI_SLUG_OVERRIDES == _PRE_B4B_CLOCK_SLUG

@@ -80,6 +80,12 @@ def test_poly_mixed_fill_at_odd_origin_matches_a_rect(poly_harness, font_dir):
     dithers with the same absolute phase a `rect` fill does, the way
     test_sprite_3x3_mixed_block_matches_a_rect proves it for sprite.
 
+    Since the B7 slim this is the sole guard of poly's absolute dithering
+    phase: the renderer-side twin it subsumed
+    (tests/renderer/test_poly.py's own Python-poly-vs-Python-rect test, at
+    this same 7/11/20/14 box and this same black/blue/50 recipe) is gone, so
+    on a host with no C++ compiler, where this test skips, nothing checks it.
+
     This is also the asymmetry docs/SPEC.md "poly" states: x is inclusive of both
     ends (the right edge sits at `x + w - 1`, same as a rect's own
     `[x, x+w-1]`), but the scanline that fills a row is half-open

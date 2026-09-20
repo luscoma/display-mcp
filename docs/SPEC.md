@@ -2,8 +2,8 @@
 
 A few KB of JSON describing what to draw. The firmware is a renderer, not a
 design: layout lives entirely in the document, so changing the dashboard is a
-file edit. Only the **vocabulary** — six font sizes, eleven icons, eight ops —
-is compiled in, and changing that is a rebuild.
+file edit. Only the **vocabulary** — eleven font sizes, nineteen icons, eight
+ops — is compiled in, and changing that is a rebuild.
 
 Two implementations must agree:
 
@@ -21,7 +21,7 @@ is eyeball parity.
 ```json
 {
   "v": 1,
-  "meta": { "generated": "...", "hash": "1c772cd7a6ebc2c7" },
+  "meta": { "generated": "...", "hash": "ab71629b1ca76ea6" },
   "bg": "white",
   "palette": { "accent": "red", "work": "blue" },
   "ops": [ ... ]
@@ -78,9 +78,9 @@ not `c`.
 | `rect` | `x y w h` · `fill` (default true) · `t` · `r` | `fill: false` draws an outline `t` px thick; see below |
 | `line` | `x y x2 y2` · `t` | thickness works on H/V lines; diagonals thicken vertically only |
 | `circle` | `x y r` · `fill` (default true) · `t` | `x,y` is the centre |
-| `text` | `x y s f` · `a` · `w` · `wrap` · `lines` · `lh` · `deco` | see below |
-| `icon` | `x y n z` · `bgc` | `n` = icon name, `z` = slot or its px count (default `md`), `x,y` = top-left |
-| `fmt` | `x y s` · `f` · `a` | `text` without wrap whose `s` is a template of system fields: `{hash}` `{hash16}` `{time}` `{time24}` `{battery}` `{battv}`; `f` defaults to `xs` |
+| `text` | `x y s` · `f` (default `md`) · `a` · `w` · `wrap` · `lines` · `lh` · `deco` | see below |
+| `icon` | `x y n` · `z` (default `md`) · `bgc` | `n` = icon name, `z` = slot or its px count, `x,y` = top-left |
+| `fmt` | `x y s` · `f` (default `xs`) · `a` | `text` without wrap whose `s` is a template of system fields: `{hash}` `{hash16}` `{time}` `{time24}` `{battery}` `{battv}` |
 | `sprite` | `x y cell rows palette` · `mirror` | pixel art — a grid of characters, one `palette` entry per colour; no `c` (see below) |
 | `poly` | `pts` · `c` · `fill` (default true) · `t` | a point list; `fill: false` draws an outline `t` px thick |
 
@@ -116,13 +116,19 @@ measurement can differ from the preview's by a few px at the right edge,
 the same eyeball parity the text's own position already has.
 
 Thickness is never 1 px (a hairline rule can't hold a mixed ink) and is
-fixed per font slot, from the compiled face's own line height — FreeType's,
-which is 1 px under `describe().fonts[*].cell_height` on some faces, so it
-is not simply `size / 14`:
+fixed per compiled face, from that face's own line height — FreeType's,
+which is 0–2 px under `describe().fonts[*].cell_height`, depending on the
+face, so it is not simply `size / 14`. The proportional families
+(`petrona`/`instrument`/`karla`) agree at every slot; `mono` differs at
+three of the five:
 
-| face | `xs` | `sm` | `md` | `lg` | `xl` | `mono/24` |
-|---|---|---|---|---|---|---|
-| thickness (px) | 2 | 2 | 3 | 4 | 7 | 2 |
+| family | `xs` | `sm` | `md` | `lg` | `xl` |
+|---|---|---|---|---|---|
+| petrona / instrument / karla | 2 | 2 | 3 | 4 | 7 |
+| mono | 2 | 3 | 3 | 5 | 8 |
+
+A pixel-only size off the slot ladder is its own row's own thickness, not
+one of the table above's — `mono/24` (between `xs` 22 and `sm` 28) is 2.
 
 An underline sits just below the baseline — like a browser's own
 underline, it crosses descenders (`p`, `y`, `g`) rather than clearing them.
@@ -150,8 +156,10 @@ there are no codepoints to get wrong: `weather-sunny`,
 `battery`. Eight more are lucide icons named for a family activity —
 `school-day`, `daycare`, `taekwondo`, `swim`, `helper`, `appointment`,
 `family-meeting`, `closed` — rasterised once to committed 1-bit PNGs that
-the firmware compiles and the preview blits, so these nineteen are the
-first icons with real preview parity rather than a procedural stand-in.
+the firmware compiles and the preview blits, so these eight are the
+first icons with real preview parity rather than a procedural stand-in
+(the eleven Material Design icons above are still a procedural stand-in
+here, good for judging layout and weight, not artwork).
 
 `bgc` is accepted but ignored: every compiled icon is transparent
 (`transparency: chroma_key`), so the pixels its glyph doesn't set are left
@@ -182,7 +190,7 @@ beside it:
 ```json
 {"op": "text", "x": 48,   "y": 1552, "s": "Updated: 6:31 AM", "f": "xs"}
 {"op": "fmt",  "x": 1045, "y": 1552, "s": "{hash}@{time24}", "f": "xs", "a": "right", "c": "grey-mid"}
-{"op": "icon", "x": 1058, "y": 1545, "n": "battery", "z": "md", "c": "grey-mid"}
+{"op": "icon", "x": 1058, "y": 1545, "n": "battery", "z": "sm", "c": "grey-mid"}
 {"op": "fmt",  "x": 1100, "y": 1552, "s": "{battery}", "f": "xs", "c": "grey-mid"}
 ```
 
@@ -315,6 +323,17 @@ and never drawn wrong — the panel only ever skips, it never reboots.
   tracks which characters have already been warned about.
 - **Poly points.** At most 1024 points in `pts`; past it, the whole op is
   skipped (a distinct message from "fewer than three points").
+- **Name length.** `text`/`fmt`'s `f`, `icon`'s `n`/`z`, and any colour
+  name (`c`, and a palette alias hop that lands on one) — each measured
+  on the raw string before anything is built from it — past 64 bytes
+  skips the op (`f`/`n`/`z`) or falls back to black (a colour name), the
+  same warn-and-degrade shape as an ordinary unknown font, icon or
+  colour. `icon`'s `bgc` is bounded the same way on the firmware, which
+  resolves it (for the chroma-keyed off colour `icon` never actually
+  draws with); the renderer never resolves `bgc` at all -- it is accepted
+  and otherwise ignored (see "icon" above) -- so the bound only matters
+  for `c` on that side. Every real compiled font/icon spelling is at most
+  21 bytes, so 64 is headroom, not a tight fit.
 - **Rect clipping.** A filled rect's fill, and each of a rounded rect's
   straight bands, are clipped to the canvas before drawing — the output is
   unchanged (a fill is purely position-based) but a rect that reaches well
@@ -360,9 +379,10 @@ and never drawn wrong — the panel only ever skips, it never reboots.
 
 **Fonts** — four families, `petrona`, `instrument` (Instrument Sans),
 `karla`, each in regular/`-bold`/`-italic`, plus `mono` (JetBrains Mono,
-regular only) — 110 faces, eleven sizes apiece: the five slots `xs` 22,
-`sm` 28, `md` 36, `lg` 48, `xl` 84, plus 24 26 32 40 44 54 as pixel-only
-sizes with no slot name. Adding a size or a family is a rebuild, so the
+regular only) — ten family-styles at eleven sizes apiece, 110 faces: the
+five slots `xs` 22, `sm` 28, `md` 36, `lg` 48, `xl` 84, plus 24 26 32 40 44
+54 as pixel-only sizes with no slot name. Adding a size or a family is a
+rebuild, so the
 scale is a commitment. Every face compiles GF_Latin_Core; `mono` also
 compiles box drawing and block elements (U+2500–U+259F) — a character
 outside that set previews fine and silently has no glyph on the wall,
@@ -487,8 +507,10 @@ refresh history and unit variance. Where your wall disagrees, trust the wall.
 ## Designing for six inks
 
 **Contrast is the whole rule.** Every font size here qualifies as WCAG large
-text (the smallest, `xs`, is 22 px bold), so **3:1** is the floor and
-`check()` warns below it. Ratios on the ink table:
+text — the smallest, `xs` (22 px), is large text outright in its bold face,
+and a hair under the strict 24 px line in its regular and italic faces, but
+still well clear of anything a screen-contrast rule was written for — so
+**3:1** is the floor and `check()` warns below it. Ratios on the ink table:
 
 |  | black | white | yellow | red | blue | green |
 |---|---|---|---|---|---|---|
@@ -562,7 +584,7 @@ canon = json.dumps(core, sort_keys=True, separators=(",", ":"))
 h     = hashlib.sha256(canon.encode()).hexdigest()[:16]
 ```
 
-Serve that same value as the ETag (`ETag: "1c772cd7a6ebc2c7"`) and put it in
+Serve that same value as the ETag (`ETag: "ab71629b1ca76ea6"`) and put it in
 `meta.hash`. Then:
 
 - The device sends `If-None-Match` with the id it is currently showing. A
@@ -593,8 +615,8 @@ framebuffer still needs PSRAM.
 
 ## Server
 
-`server/` is the Pi side: one process with two listeners on deliberately
-different interfaces.
+`src/display_mcp/` is the Pi side: one process with two listeners on
+deliberately different interfaces.
 
 | | |
 |---|---|
@@ -637,7 +659,11 @@ step, which is where to look when one of them fails.
 
 - `firmware/epaper-schedule.yaml` validates under `esphome config` and builds
   under ESPHome 2026.8.2 with `philippwaller/esphome-epaper-spectra6-133`
-  v0.5.0; the Google Fonts and MDI entries resolve and download.
+  v0.5.0; the Google Fonts and MDI entries resolve and download. The eight
+  lucide activity icons come from 40 committed 1-bit PNGs under
+  `src/display_mcp/render/icons/` (one per activity per font slot), not
+  fetched at build time, so the YAML only builds from a full checkout of
+  the repo, never `firmware/` copied out on its own.
 - `fit_line`, `wrap` and `utf8_prev` are extracted from the shipped header,
   compiled, and diffed against the Python across 12 cases including multibyte
   truncation and overlong single words. Identical.

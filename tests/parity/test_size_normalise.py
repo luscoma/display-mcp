@@ -21,25 +21,25 @@ import subprocess
 
 import pytest
 
-from display_mcp.render import FONT_ALIASES, FONTS, ICON_SIZES, ICONS, SLOTS, resolve_font
+from display_mcp.render import (
+    BARE_ALIASES,
+    FONT_ALIASES,
+    FONTS,
+    ICON_SIZES,
+    ICONS,
+    SLOTS,
+    resolve_font,
+)
 
 from .conftest import _compile, _extract_block
 
-
-def _bare_font_aliases() -> dict[str, str]:
-    """The five legacy bare names -- the only `FONT_ALIASES` entries the
-    YAML still carries as their own `a.fonts[...]` line (B4b); the other
-    fifty (a face's own pixel-count spelling) are resolved by
-    `normalize_font_key()` instead. Mirrors `firmware_yaml._bare_font_aliases()`
-    exactly (that one isn't imported here to keep this file's only
-    dependency on the generator the fence text itself, not its internals)."""
-    return {alias: target for alias, target in FONT_ALIASES.items() if "/" not in alias}
-
-
 # The firmware's own font key set after B4b: 110 canonical names plus the
 # five bare aliases -- exactly what `render_fonts_lines()` emits and what
-# `assets.fonts` is populated with on the real panel.
-_FIRMWARE_FONT_KEYS: set[str] = set(FONTS) | set(_bare_font_aliases())
+# `assets.fonts` is populated with on the real panel. `BARE_ALIASES`
+# (fonts.py, C3, final review) is the one place "the five legacy bare
+# names" is computed; this file imports it rather than keeping its own
+# copy of `FONT_ALIASES`' no-slash filter.
+_FIRMWARE_FONT_KEYS: set[str] = set(FONTS) | set(BARE_ALIASES)
 
 # The firmware's own icon key set: canonical `name/slot` only -- no bare or
 # pixel-count alias (Decision 4).
@@ -107,12 +107,25 @@ def test_normalize_size_alias_matches_the_slot_table(normalise_harness):
     names themselves (already canonical, not a pixel count), an off-ladder
     pixel count that is a real compiled size for one family
     (`petrona-italic/40`'s `40`), a decimal spelling of a real size
-    (`"36.0"`), a negative or zero-padded one, and the empty string."""
+    (`"36.0"`, `"48.0"`), a negative or zero-padded one, a slot name with
+    trailing punctuation (`"sm."`), and the empty string.
+
+    `"sm."` and `"48.0"` came from the removed
+    `test_rejected_icon_sizes_are_left_unchanged`, which asserted this same
+    "left exactly as given" property for the *icon* `z` spellings -- the
+    icon branch feeds `normalize_size_alias()` the very same bare size token
+    this test drives it with (Decision 4), so one sweep covers both. Its
+    other half -- that composing `name + "/" + result` for a rejected `z`
+    can never collide with a real `_FIRMWARE_ICON_KEYS` entry -- was a
+    pure-Python tautology: every one of those keys ends in a slot name, and
+    none of these strings is one."""
     cases = [(str(px), slot) for slot, px in SLOTS.items()] + [
         (slot, slot) for slot in SLOTS  # a slot name is left alone, not "normalised" again
     ] + [
         (bad, bad)
-        for bad in ("40", "18", "12", "36.0", "-36", "036", "", "XL", "Md", "check")
+        for bad in (
+            "40", "18", "12", "36.0", "-36", "036", "", "XL", "Md", "check", "sm.", "48.0",
+        )
     ]
     lines = [f"Z {z}" for z, _want in cases]
     got = _run(normalise_harness, lines)
@@ -225,18 +238,9 @@ def test_every_icon_slot_and_px_spelling_normalises_onto_a_firmware_key(normalis
         assert key in _FIRMWARE_ICON_KEYS
 
 
-_REJECTED_ICON_SIZES = ("40", "18", "", "XL", "sm.", "48.0")
-
-
-def test_rejected_icon_sizes_are_left_unchanged(normalise_harness):
-    """Every size string above isn't one of the five compiled pixel counts,
-    so `normalize_size_alias()` must leave it exactly as given -- composing
-    `name + "/" + result` for any real icon `name` then can never collide
-    with a real `_FIRMWARE_ICON_KEYS` entry, since every one of those ends
-    in a slot name, not one of these."""
-    lines = [f"Z {z}" for z in _REJECTED_ICON_SIZES]
-    got = _run(normalise_harness, lines)
-    assert got == list(_REJECTED_ICON_SIZES)
-    for name in ICONS:
-        for z in _REJECTED_ICON_SIZES:
-            assert f"{name}/{z}" not in _FIRMWARE_ICON_KEYS
+# A rejected icon `z` ("40", "18", "", "XL", "sm.", "48.0") has no test of
+# its own: the icon branch feeds `normalize_size_alias()` the same bare size
+# token the font branch does, and
+# `test_normalize_size_alias_matches_the_slot_table` above now sweeps every
+# one of those strings (its `bad` list absorbed "sm." and "48.0") for the
+# same "left exactly as given" property.
