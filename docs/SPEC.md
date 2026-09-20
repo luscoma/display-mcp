@@ -78,7 +78,7 @@ not `c`.
 | `rect` | `x y w h` · `fill` (default true) · `t` · `r` | `fill: false` draws an outline `t` px thick; see below |
 | `line` | `x y x2 y2` · `t` | thickness works on H/V lines; diagonals thicken vertically only |
 | `circle` | `x y r` · `fill` (default true) · `t` | `x,y` is the centre |
-| `text` | `x y s f` · `a` · `w` · `wrap` · `lines` · `lh` | see below |
+| `text` | `x y s f` · `a` · `w` · `wrap` · `lines` · `lh` · `deco` | see below |
 | `icon` | `x y n z` · `bgc` | `n` = MDI name, `z` = size class, `x,y` = top-left |
 | `fmt` | `x y s` · `f` · `a` | `text` without wrap whose `s` is a template of system fields: `{hash}` `{hash16}` `{time}` `{time24}` `{battery}` `{battv}`; `f` defaults to `xs` |
 | `sprite` | `x y cell rows palette` · `mirror` | pixel art — a grid of characters, one `palette` entry per colour; no `c` (see below) |
@@ -107,6 +107,30 @@ calendar or a todo list:
   ellipsized if it overruns, and every line clipped to `w` so a single long
   word can't escape the box
 - `lh` overrides line height (default ≈ 1.24 × font height)
+
+`deco` (`text` only, not `fmt`) draws one filled rule under (`"underline"`)
+or through (`"strike"`) every line the op prints, in the op's own colour.
+The rule spans the line's layout width as the renderer measures it, under
+whatever `a` says — a trailing space lengthens it, and the panel's own
+measurement can differ from the preview's by a few px at the right edge,
+the same eyeball parity the text's own position already has.
+
+Thickness is never 1 px (a hairline rule can't hold a mixed ink) and is
+fixed per font slot, from the compiled face's own line height — FreeType's,
+which is 1 px under `describe().fonts[*].cell_height` on some faces, so it
+is not simply `size / 14`:
+
+| face | `xs` | `sm` | `md` | `lg` | `xl` | `mono/24` |
+|---|---|---|---|---|---|---|
+| thickness (px) | 2 | 2 | 3 | 4 | 7 | 2 |
+
+An underline sits just below the baseline — like a browser's own
+underline, it crosses descenders (`p`, `y`, `g`) rather than clearing them.
+A strike sits through the x-height, in the upper third of the lowercase.
+Absent or `null` means no decoration; any other value — the wrong type, or
+a string that isn't one of the two — logs a warning naming the value and
+draws the line plain, the same warn-and-degrade shape as everything else in
+this file.
 
 ### icon
 

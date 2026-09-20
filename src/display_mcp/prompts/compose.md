@@ -89,13 +89,27 @@ warning saying where they belong. Check `warnings` either way.
 - **`text`** — `x y s f` (`f` defaults to `md`; `f: "mono/24"` for the
   monospace face — block art, aligned columns, code), `a` (`left`/`center`/`right`,
   default `left`, changes what `x` means, not `y`), `w` (max width), `wrap`
-  (bool), `lines` (default 2 when wrapping), `lh` (line height override).
+  (bool), `lines` (default 2 when wrapping), `lh` (line height override),
+  `deco` (`"underline"`/`"strike"`, `text` only — see below).
   `x,y` is the top of the glyph box, not its baseline.
   - `w` alone → ellipsis-truncates, never splitting a codepoint.
   - `w` + `wrap: true` → greedy word wrap to `lines`, last line ellipsized
     if it overruns, every line clipped to `w`.
   - Always set `w` on anything sourced from a calendar or a list — you
     don't control how long those strings get.
+  - `deco` draws one rule per printed line — under it for `"underline"`,
+    through it for `"strike"` — in the op's own colour; absent/`null` draws
+    nothing extra, and any other value warns and draws the text plain.
+    Reach for `strike` on a completed to-do that stays on the list, and for
+    `underline` on a word or phrase that has to stand out inside a line
+    where a whole face change (bold, a different size) would be too loud —
+    a time, a name. Never use `underline` on a heading; a `line` op of a
+    known width reads cleaner there. Two things to watch: the underline
+    crosses descenders (`p`, `y`, `g`) the way a browser's own underline
+    does, rather than clearing them — and it never sits lower than the
+    line's own descenders, so a tight `lh` collides with the glyphs before
+    it ever collides with the rule; and on a mixed ink the rule reads lighter than the glyphs it
+    decorates, like any thin feature.
 - **`icon`** — `x y n z`. `x,y` is the top-left of the icon's box. `n` is the
   MDI name; only these eleven exist, anything else is skipped. `z` is the
   size class — `lg` (88 px): `weather-sunny`, `weather-partly-cloudy`,

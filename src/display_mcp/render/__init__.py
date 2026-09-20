@@ -77,6 +77,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from datetime import datetime
 from pathlib import Path
@@ -176,6 +177,11 @@ __all__ = [
     "_paint_glyph_op",
     "_optional_number",
     "_anchor_of",
+    "_round_half_away_from_zero",
+    "_deco_rule_geometry",
+    "_clip_span",
+    "_deco_rect",
+    "_parse_deco",
     "render",
     "bezel_problems",
     "check",
@@ -295,6 +301,16 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
             "wrap": False,
             "lines": 2,
             "lh": None,
+            # docs/plans/fonts-and-icons.md Decision 5, landed as B5: `text`
+            # only, never `fmt` -- `fmt` doesn't wrap and has no per-line
+            # geometry to hang a rule off of, so a `deco` on it stays an
+            # ordinary "no such field" warning from `_op_field_problems()`
+            # (fmt's own OP_FIELDS entry doesn't list it either). Deliberately
+            # absent from `_OPTIONAL_STRING_FIELDS` below: a bad `deco` warns
+            # and draws the text undecorated, it never abandons the op the
+            # way a bad `f`/`a` does, so it gets its own check inside the
+            # `text` branch instead.
+            "deco": None,
         },
     },
     "fmt": {
@@ -349,7 +365,7 @@ def _op_field_problems(op: dict[str, Any], kind: str | None, where: str) -> list
 
     Each warning names the op's actual fields — required first, then
     optional, in the table's own order — e.g. "ops[0] text: no such field
-    'colour' (text takes x, y, s, c, f, a, w, wrap, lines, lh)", so the
+    'colour' (text takes x, y, s, c, f, a, w, wrap, lines, lh, deco)", so the
     fix is in the warning itself rather than a second trip to `describe()`.
 
     `c2`/`mix` are special-cased to one palette hint instead of two
@@ -560,6 +576,113 @@ def _g(value: int | float) -> str:
     warning text. `float()` first: `'g'` is a floating-point presentation
     type and raises on a plain `int`."""
     return format(float(value), "g")
+
+
+# The two legal `text.deco` values (docs/plans/fonts-and-icons.md Decision 5,
+# landed as B5). `fmt` doesn't take the field at all -- see OP_FIELDS.
+_DECO_VALUES = ("underline", "strike")
+
+
+def _round_half_away_from_zero(x: float) -> int:
+    """`round()` half away from zero, matching C++'s `std::round()` --
+    Python's builtin `round()` is banker's rounding (round-half-to-even) and
+    disagrees with `std::round()` at an exact `.5` (docs/plans/
+    fonts-and-icons.md Decision 5, sharpened by B5). No compiled face
+    currently lands `t`/either vertical offset exactly on a `.5` -- checked
+    against every face's real `f.font.height` (B5's review fix corrected an
+    earlier claim here that `sm` did, which used `ascent + descent` instead
+    of `f.font.height` and was therefore counting a size the firmware never
+    computes) -- but the two roundings still have to agree in general, not
+    only for today's ladder, so `deco`'s three geometry numbers (`t` and the
+    two vertical offsets) all use this on both sides. It's
+    `tests/parity/test_text_deco.py`'s brute-force sweep, which does include
+    synthetic heights sitting exactly on the tie, that actually proves the
+    two sides agree -- not any real compiled face. Every value these
+    formulas produce today is non-negative, but this mirrors
+    `std::round()`'s sign handling anyway rather than assume that forever."""
+    return math.floor(x + 0.5) if x >= 0 else -math.floor(-x + 0.5)
+
+
+def _deco_rule_geometry(h: int, baseline: int, ly: int, underline: bool) -> tuple[int, int]:
+    """`(top, t)` for one `deco` rule -- the Python mirror of the firmware's
+    `deco_rule_geometry()` (docs/plans/fonts-and-icons.md Decision 5, B5):
+    `t` is never 1px (a 1px rule can't hold a mixed ink), underline sits
+    just below the baseline, strike just above it, both scaled off the
+    font's own height, never the particular line's ink extent -- see
+    `_round_half_away_from_zero()` for why both sides round the same way."""
+    t = max(2, _round_half_away_from_zero(h / 14))
+    if underline:
+        top = ly + baseline + max(2, _round_half_away_from_zero(h * 0.06))
+    else:
+        top = ly + baseline - _round_half_away_from_zero(h * 0.30) - t // 2
+    return top, t
+
+
+def _clip_span(pos: int, size: int, bound: int) -> tuple[int, int]:
+    """Mirror of the firmware's `clip_span()` (docs/plans/firmware-bounds.md
+    D5): clip `[pos, pos + size)` to `[0, bound)`. `size` comes back `<= 0`
+    when the span misses `[0, bound)` entirely, which the caller treats as
+    "draw nothing on this axis" -- same contract as the C++."""
+    if pos < 0:
+        size += pos
+        pos = 0
+    if pos + size > bound:
+        size = bound - pos
+    return pos, size
+
+
+def _deco_rect(
+    deco: str, lx1: int, lw: int, ly: int, h: int, baseline: int
+) -> tuple[int, int, int, int] | None:
+    """The clipped `[x0, y0, x1, y1)` box (PIL's own half-open convention,
+    matching `ImageDraw.textbbox()`) for one line's `deco` rule, or `None`
+    when there's no ink to underline/strike or the clipped box is empty.
+    `lx1`/`lw` are that line's already-measured inked left edge and width
+    (the same `textbbox()` the op already computed for alignment) --
+    `get_text_bounds()`'s role in the firmware mirror. Clipped to the
+    canvas the way `clipped_filled_rectangle()` clips every fill (D5): the
+    rule is derived geometry, not something a document directly aims off
+    the edge the way a rect's `w`/`h` can be, so this silently bounds it
+    rather than adding a second off-canvas warning next to the op's own."""
+    if lw <= 0:
+        return None
+    top, t = _deco_rule_geometry(h, baseline, ly, deco == "underline")
+    x0, w = _clip_span(lx1, lw, WIDTH)
+    y0, hh = _clip_span(top, t, HEIGHT)
+    if w <= 0 or hh <= 0:
+        return None
+    return (x0, y0, x0 + w, y0 + hh)
+
+
+def _parse_deco(value: Any, where: str, ctx: Ctx) -> str | None:
+    """Resolve `text`'s `deco` field: `"underline"`/`"strike"`, or `None`
+    for absent/`null`. Any other value -- wrong type or an unrecognised
+    string -- warns naming the value and the two legal ones and returns
+    `None` so the text still draws, undecorated (docs/plans/
+    fonts-and-icons.md Decision 5, landed as B5): unlike `f`/`a`, a bad
+    `deco` is never reason to abandon the whole op, which is why this lives
+    here rather than in `_op_optional_field_type_problem()` (that one does
+    abandon the op for a bad `f`/`a`).
+
+    A bad *string* is named with `!r` (`deco='bold'`), matching the
+    firmware's `'%s'` exactly. A non-string value is named with
+    `json.dumps()`, not `!r` (B5 review fix): the firmware names it with
+    `serializeJson()`, which spells a JSON bool `true`/`false`, not
+    Python's `True`/`False` -- the same "match the other side's spelling,
+    not repr()" discipline `_g()` already applies to a bounded numeric
+    field's `%g`. `None` never reaches here (handled above, silently)."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        if value in _DECO_VALUES:
+            return value
+        shown = repr(value)
+    else:
+        shown = json.dumps(value)
+    ctx.problems.append(
+        f"{where}: deco={shown} is not 'underline' or 'strike'; drawing undecorated"
+    )
+    return None
 
 
 def vocabulary(max_bytes: int) -> dict[str, Any]:
@@ -1038,6 +1161,30 @@ def render(
                     continue
                 x, y = _int_coord(op["x"]), _int_coord(op["y"])
                 anchor = _anchor_of(op, ctx, where)
+                # docs/plans/fonts-and-icons.md Decision 5, landed as B5:
+                # parsed once per op, not per line, so every wrapped line of
+                # the same op gets an identical rule. `h`/`baseline` are the
+                # FACE's own metrics (one number per font, like Face.line_height
+                # already is), not this particular string's ink extent -- the
+                # firmware mirror is font_height()/font_baseline()'s "Ag"
+                # measurement. Only measured when a rule will actually be
+                # drawn.
+                #
+                # `h` is `f.font.height` (Pillow's own FreeType line height),
+                # NOT `ascent + descent` (B5 review fix): the firmware's
+                # font_height() returns ESPHome's compiled `height_`, which
+                # `font/__init__.py` sets from FreeType's line-height metric --
+                # 1px under `ascent + descent` on some faces (xs, sm, xl,
+                # mono) and equal to it on others (md, lg), so there is no
+                # single "+1"/"-1" correction that works for every face; only
+                # `f.font.height` itself agrees with the panel on all of them.
+                # `baseline` stays `getmetrics()[0]` (the ascent) -- that one
+                # already agreed with the firmware's `font_baseline()` on
+                # every compiled face.
+                deco = _parse_deco(op.get("deco"), where, ctx)
+                if deco is not None:
+                    deco_baseline = f.getmetrics()[0]
+                    deco_h = f.font.height
                 # `w`/`lh`/`lines` mirror the firmware's `o["field"] | default`:
                 # `describe()` advertises `null` as each one's default, so a
                 # `None`, wrong-typed or (for `w`) non-positive value here means
@@ -1095,29 +1242,59 @@ def render(
                         d.textbbox((px, py), line, font=f, anchor=anchor)
                         for px, py, line in positions
                     ]
+                    # `deco` decorates every wrapped line (docs/plans/
+                    # fonts-and-icons.md Decision 5): one rule per line, from
+                    # that line's own already-measured box above -- `box[0]`
+                    # is the inked left edge under `anchor`, `box[2]-box[0]`
+                    # its width, exactly what get_text_bounds() gives the
+                    # firmware. An empty wrapped line measures a
+                    # zero-or-negative width and contributes no rule.
+                    deco_boxes = []
+                    if deco is not None:
+                        for (_px, ly, _line), box in zip(positions, boxes, strict=True):
+                            db = _deco_rect(
+                                deco, box[0], box[2] - box[0], ly, deco_h, deco_baseline
+                            )
+                            if db is not None:
+                                deco_boxes.append(db)
 
-                    def draw_fn(dr, col, positions=positions):
+                    def draw_fn(dr, col, positions=positions, deco_boxes=deco_boxes):
                         for px, ly, line in positions:
                             dr.text((px, ly), line, font=f, fill=col, anchor=anchor)
+                        for x0, y0, x1, y1 in deco_boxes:
+                            dr.rectangle([x0, y0, x1 - 1, y1 - 1], fill=col)
 
                     def check_glyphs(font_name=font_name, lines=lines, where=where):
                         _check_uncompiled_glyphs(ctx, font_name, "".join(lines), where)
 
                     _paint_glyph_op(
-                        img, ctx, ink, c_name, where, boxes, draw_fn, dithered_colors,
-                        after_mix_check=check_glyphs,
+                        img, ctx, ink, c_name, where, boxes + deco_boxes, draw_fn,
+                        dithered_colors, after_mix_check=check_glyphs,
                     )
                 else:
                     text = fit_line(f, op["s"], max_w)
                     box = d.textbbox((x, y), text, font=f, anchor=anchor)
-                    draw_fn = lambda dr, col: dr.text(  # noqa: E731
-                        (x, y), text, font=f, fill=col, anchor=anchor)
+                    # `deco` on the single fitted line (docs/plans/
+                    # fonts-and-icons.md Decision 5): `None` when there's no
+                    # ink to decorate or the rule clips away entirely.
+                    deco_box = (
+                        _deco_rect(deco, box[0], box[2] - box[0], y, deco_h, deco_baseline)
+                        if deco is not None
+                        else None
+                    )
+
+                    def draw_fn(dr, col):
+                        dr.text((x, y), text, font=f, fill=col, anchor=anchor)
+                        if deco_box is not None:
+                            x0, y0, x1, y1 = deco_box
+                            dr.rectangle([x0, y0, x1 - 1, y1 - 1], fill=col)
 
                     def check_glyphs(font_name=font_name, text=text, where=where):
                         _check_uncompiled_glyphs(ctx, font_name, text, where)
 
+                    boxes = [box] if deco_box is None else [box, deco_box]
                     _paint_glyph_op(
-                        img, ctx, ink, c_name, where, [box], draw_fn, dithered_colors,
+                        img, ctx, ink, c_name, where, boxes, draw_fn, dithered_colors,
                         after_mix_check=check_glyphs,
                     )
 
@@ -1545,8 +1722,25 @@ def bezel_problems(doc: dict[str, Any]) -> list[str]:
             # with a bad key: render()'s own checks are what report a bad
             # `f`, this one only needs a plausible size for the margin test.
             canonical = resolve_font(font_name) or resolve_font("md")
-            size = FONTS[canonical].size
-            if y + size > HEIGHT - BEZEL_MARGIN:
+            face = FONTS[canonical]
+            bottom_extent = face.size
+            # A `deco` rule (docs/plans/fonts-and-icons.md Decision 5) can
+            # reach past `size` -- `size` alone stands in for roughly the
+            # cap height, but an underline's own bottom is
+            # `baseline + gap + t - 1` below `y`, which for every compiled
+            # face (checked against the real font_height()/font_baseline()
+            # value for each, B5's review fix) stays at or under
+            # `cell_height` (ascent + descent) -- confirmed for strike too,
+            # whose rule sits entirely above the baseline and so is smaller
+            # still. `cell_height` is already in this table with no font
+            # file to load, unlike the exact `h`/`baseline` the drawing
+            # code itself uses -- this function deliberately never opens a
+            # font file (see its docstring), so this is the safe upper
+            # bound available without one. `fmt` never draws a rule (`deco`
+            # is `text`-only), so this only applies to `kind == "text"`.
+            if kind == "text" and op.get("deco") in ("underline", "strike"):
+                bottom_extent = face.cell_height
+            if y + bottom_extent > HEIGHT - BEZEL_MARGIN:
                 edges.append("bottom")
         if edges:
             out.append(

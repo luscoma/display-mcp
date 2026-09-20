@@ -19,6 +19,7 @@
 //     draw_display_list(it, id(dl_body), a);
 //
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -375,6 +376,18 @@ inline int font_height(esphome::display::BaseFont *f) {
   return h;
 }
 
+// The font's own baseline offset -- the `bl` out-param of the same "Ag"
+// measurement font_height() takes above, not a per-line value
+// (docs/plans/fonts-and-icons.md Decision 5, landed as B5). `deco`'s rule
+// sits at a fixed offset from a face's baseline regardless of which
+// characters a particular printed line happens to contain, the same way
+// font_height() is one number per face rather than per string.
+inline int font_baseline(esphome::display::BaseFont *f) {
+  int w = 0, xo = 0, bl = 0, h = 0;
+  f->measure("Ag", &w, &xo, &bl, &h);
+  return bl;
+}
+
 // Step back to the previous UTF-8 boundary so truncation never splits a
 // codepoint — otherwise a clipped "—" or "°" renders as garbage.
 inline size_t utf8_prev(const std::string &s, size_t i) {
@@ -474,6 +487,46 @@ inline esphome::display::TextAlign align_of(const char *a) {
   if (s == "right")
     return esphome::display::TextAlign::TOP_RIGHT;
   return esphome::display::TextAlign::TOP_LEFT;
+}
+
+// `deco` on the text op only (docs/plans/fonts-and-icons.md Decision 5,
+// landed as B5): two kinds of rule, one shared draw path. `kNone` covers
+// both "absent" and "present but not one of the two legal values" -- a bad
+// value warns (below) but still draws the text, undecorated, never
+// abandons the op the way an unknown font or icon does.
+enum class Deco { kNone, kUnderline, kStrike };
+
+// Parse `o["deco"]`: `"underline"`/`"strike"` map to their enum value;
+// absent or JSON null is silently Deco::kNone; anything else -- the wrong
+// JSON type, or a string that isn't one of the two -- warns naming the
+// value and the two legal ones and returns Deco::kNone, so the caller
+// always has something safe to draw with. `serializeJson()` into a small
+// stack buffer names the value for a non-string type (a number, bool,
+// array, object, ...) the same way `%s` would for a string -- there's no
+// single printf conversion that covers every JSON type, and this is the
+// one already linked in via json_util.h's <ArduinoJson.h>. A `deco` this
+// large only ever comes from a wrong-type value (a real string is
+// bytewise-compared against "underline"/"strike" first, below, which
+// never scans past either literal's length); the document itself is
+// capped at 64 KB (docs/plans/firmware-bounds.md D9), so this is one
+// bounded, one-time-per-op serialize, not a loop over document content.
+inline Deco parse_deco(JsonVariant v) {
+  if (v.isNull())
+    return Deco::kNone;
+  if (v.is<const char *>()) {
+    const char *s = v.as<const char *>();
+    if (!strcmp(s, "underline"))
+      return Deco::kUnderline;
+    if (!strcmp(s, "strike"))
+      return Deco::kStrike;
+    ESP_LOGW(TAG, "text: deco='%s' is not 'underline' or 'strike'; drawing undecorated", s);
+    return Deco::kNone;
+  }
+  char buf[32];
+  size_t n = serializeJson(v, buf, sizeof(buf) - 1);
+  buf[n] = '\0';
+  ESP_LOGW(TAG, "text: deco=%s is not 'underline' or 'strike'; drawing undecorated", buf);
+  return Deco::kNone;
 }
 
 // Sign-correct floor division: C++'s `/` truncates toward zero, but both
@@ -727,6 +780,59 @@ inline void clipped_filled_rectangle(esphome::display::Display &it, int x, int y
   clip_span(y, h, it.get_height());
   if (w > 0 && h > 0)
     it.filled_rectangle(x, y, w, h, c);
+}
+
+/// The vertical geometry of one `deco` rule -- `t` (never 1px: a 1px rule
+/// can't hold a mixed ink, the write-up's floor) and the rectangle's `top`
+/// -- from the font's own height/baseline and the line's own `ly` alone, no
+/// JSON or Display dependency (docs/plans/fonts-and-icons.md Decision 5,
+/// sharpened by B5). Kept free-standing, not folded into draw_text_deco()
+/// below, so a host-compiled parity test can diff just this arithmetic
+/// against the Python mirror without also having to stand up
+/// BaseFont/get_text_bounds.
+///
+/// Both offsets and `t` round half away from zero: `std::round()` already
+/// does that for any sign, so the firmware just calls it. The Python
+/// mirror can't use its own `round()` there -- that's banker's rounding,
+/// which disagrees with `std::round()` at an exact `.5`. No compiled face
+/// currently lands one of these three formulas exactly on a `.5` (checked
+/// against every face's real `font_height()`/`font_baseline()`, B5's
+/// review fix) -- but the two roundings still have to agree in general,
+/// not just for today's ladder, so the Python mirror uses `floor(x + 0.5)`
+/// instead of its own `round()`; `tests/parity/test_text_deco.py` proves
+/// the two agree with a brute-force sweep that *does* include synthetic
+/// heights sitting exactly on the tie, since a real face reaching one
+/// later shouldn't be the first time this gets checked.
+inline void deco_rule_geometry(int h, int baseline, int ly, bool underline, int *top, int *t) {
+  *t = std::max(2, static_cast<int>(std::round(h / 14.0)));
+  *top = underline ? ly + baseline + std::max(2, static_cast<int>(std::round(h * 0.06)))
+                    : ly + baseline - static_cast<int>(std::round(h * 0.30)) - *t / 2;
+}
+
+/// Draw `deco`'s rule for one printed line, after `mix.print()` has already
+/// drawn the glyphs (docs/plans/fonts-and-icons.md Decision 5, B5): one
+/// `clipped_filled_rectangle()` (D5), in the op's own ink, so it dithers
+/// like the text and costs no more than the canvas regardless of how far
+/// off it a pathological `x`/`y`/`lh` would otherwise put it -- the same
+/// bound every other fill in this file already has. `get_text_bounds()`
+/// gives the inked left edge and width under `align`, the exact
+/// measurement the op already leans on to place the text itself; a line
+/// with no ink (an empty wrapped line) measures a zero-or-negative width
+/// and draws nothing here either. `h`/`baseline` are font_height()'s and
+/// font_baseline()'s one-per-face numbers (the caller's job to pass, so
+/// they're computed once per op, not once per line).
+inline void draw_text_deco(esphome::display::Display &it, int x, int ly, const char *line,
+                            esphome::display::BaseFont *font, esphome::display::TextAlign align,
+                            Deco deco, int h, int baseline, esphome::Color c) {
+  if (deco == Deco::kNone)
+    return;
+  int lx1 = 0, ly1 = 0, lw = 0, lh_box = 0;
+  it.get_text_bounds(x, ly, line, font, align, &lx1, &ly1, &lw, &lh_box);
+  if (lw <= 0)
+    return;
+  int top = 0, t = 0;
+  deco_rule_geometry(h, baseline, ly, deco == Deco::kUnderline, &top, &t);
+  clipped_filled_rectangle(it, lx1, top, lw, t, c);
 }
 
 /// A filled rect, rounded at the corners when `r > 0`
@@ -1476,6 +1582,10 @@ inline bool draw_display_list(esphome::display::Display &it, const std::string &
         const int x = ox, y = oy;
         const int max_w = o["w"] | 0;
         const auto align = align_of(o["a"] | "left");
+        // docs/plans/fonts-and-icons.md Decision 5, landed as B5: parsed
+        // once per op, not per line, so every wrapped line of the same op
+        // gets an identical rule.
+        const Deco deco = parse_deco(o["deco"]);
 
         if ((o["wrap"] | false) && max_w > 0) {
           int lines = o["lines"] | 2;
@@ -1490,7 +1600,8 @@ inline bool draw_display_list(esphome::display::Display &it, const std::string &
           // every other coordinate field; the default is itself a double
           // so a document that omits `lh` never has to pass through this
           // check at all in spirit, only in code shape.
-          const double lh_default = font_height(font) * 1.24;
+          const int fh = font_height(font);
+          const double lh_default = fh * 1.24;
           const double lh_d = o["lh"] | lh_default;
           if (!coord_ok(lh_d)) {
             ESP_LOGW(TAG, "text: lh=%g out of range (|v| <= %d); skipped", lh_d, kMaxCoord);
@@ -1498,14 +1609,22 @@ inline bool draw_display_list(esphome::display::Display &it, const std::string &
             continue;
           }
           const int lh = static_cast<int>(lh_d);
+          // Only worth a second measure() call (font_baseline()) when a
+          // rule is actually going to be drawn; fh is already paid for by
+          // lh_default above regardless.
+          const int baseline = deco != Deco::kNone ? font_baseline(font) : 0;
           auto out = wrap(font, s, max_w, lines);
           for (size_t i = 0; i < out.size(); i++) {
             const int ly = y + static_cast<int>(i) * lh;
             mix.print(x, ly, font, c.a, align, out[i].c_str());
+            draw_text_deco(mix, x, ly, out[i].c_str(), font, align, deco, fh, baseline, c.a);
           }
         } else {
           const std::string line = fit_line(font, s, max_w);
           mix.print(x, y, font, c.a, align, line.c_str());
+          if (deco != Deco::kNone)
+            draw_text_deco(mix, x, y, line.c_str(), font, align, deco, font_height(font),
+                            font_baseline(font), c.a);
         }
 
       } else if (!strcmp(kind, "fmt")) {

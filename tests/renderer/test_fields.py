@@ -85,7 +85,7 @@ def test_stale_tone_key_warns_and_draws_full_ink(font_dir):
     img_stale, p2 = render(with_stale_tone, font_dir)
     assert p1 == []
     assert p2 == [
-        "ops[0] text: no such field 'tone' (text takes x, y, s, c, f, a, w, wrap, lines, lh)"
+        "ops[0] text: no such field 'tone' (text takes x, y, s, c, f, a, w, wrap, lines, lh, deco)"
     ]
     assert img_full.tobytes() == img_stale.tobytes()
 
@@ -114,7 +114,8 @@ def test_typo_field_colour_warns(font_dir):
     }
     _, problems = render(doc, font_dir)
     assert problems == [
-        "ops[0] text: no such field 'colour' (text takes x, y, s, c, f, a, w, wrap, lines, lh)"
+        "ops[0] text: no such field 'colour' "
+        "(text takes x, y, s, c, f, a, w, wrap, lines, lh, deco)"
     ]
 
 
