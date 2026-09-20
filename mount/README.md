@@ -78,8 +78,8 @@ print it on a smooth sheet.
 ## Coupons: dial the thickness in first
 
 Already done for this frame (answer: 4.85 mm), but for another frame:
-`part = "coupons"` (`stl/bezel_coupons.stl`; `bezel_coupons_tall.stl` is the
-second ladder) prints:
+`part = "coupons"` prints (the test plates are not committed; render them,
+they land in `stl/` where the ignore rules keep them out of git):
 
 - **Corner coupons** at `coupon_thicks`, each a 40 mm top-left corner of the
   real part with the thickness embossed on the back, `coupon_cols` per row. Drop one in the frame's top-left rabbet corner, fit the
@@ -87,10 +87,9 @@ second ladder) prints:
   still lets the button close and doesn't rock. Below 3.15 the face plate
   gets thinner to keep the 0.3 mm glass float; above it the extra goes on the
   back. Set `face_t` / `back_t` to match and print the real thing.
-- **A joint pair** (`part = "joint"`, `stl/bezel_joint_test.stl`): the two
+- **A joint pair** (`part = "joint"`): the two
   halves of the top dovetail at the current `tab_fit`.
-- **A fit ladder** (`part = "joints"`, `stl/bezel_joint_ladder.stl`, 76 × 120
-  mm): one tab half and a socket half at each value in `joint_fits`
+- **A fit ladder** (`part = "joints"`, 76 × 120 mm): one tab half and a socket half at each value in `joint_fits`
   (0.10, 0.05, 0, −0.05), labelled on the back. Try the one tab in every
   socket; the right one seats with light friction and doesn't rattle. Set
   `tab_fit` to it. On this printer, in PETG, that was −0.05. **Every fit
@@ -127,78 +126,111 @@ openscad -o front.png --camera=0,0,1000,0,0,0 --projection=o --imgsize=1400,1600
 A web of ribs that lies on the back of the backing board in the
 bottom-right corner (seen from behind, where the ribbon tail is), is
 screwed to the frame, and carries the ESP32-S3 driver board on its
-standoffs and the battery. `carrier_plan.png` (true-scale plan over the
-measured no-go zones), `carrier_assembly.png`, `carrier_print.png` and
-`carrier_coupons.png` are the mock-ups, `carrier_boss.png` the section
-through a boss; `stl/carrier.stl` is the part, `stl/carrier_coupons.stl`
-the test plate.
+standoffs, the battery and the speaker. `carrier_plan.png` is a labelled
+true-scale plan over the measured no-go zones (`part = "plan"`),
+`carrier_assembly.png` and `carrier_print.png` the mock-ups, `carrier_boss.png`
+the section through a boss (`part = "section"`); `stl/carrier.stl` is the
+part. This is the second draft (2026-09-19); the first one taught most of
+what follows.
 
 ## How it holds on
 
 Rails along the right and bottom edges stand from the backing board up to
-the frame's second step (the ledge, 9.0 mm behind the backing; the rail
-ladder picked 8.9 × 5.5) and turn outward into a 5.5 mm flange that lies
-on it, with four plain holes for
-#2 pan-head wood screws (a countersink would cut through the edges of a
-flange that narrow) — the same step the frame's own turn buttons are
-screwed into. The part drops straight in from behind and is screwed down;
-nothing slides or hooks.
+the frame's second step (the ledge) and turn outward into a 5.5 mm flange
+that lies on it, with four plain holes for #2 pan-head wood screws (a
+countersink would cut through the edges of a flange that narrow) — the
+same step the frame's own turn buttons are screwed into. The part drops
+straight in from behind and is screwed down; nothing slides or hooks.
+
+The rail height, `ledge_z` = 10.0, is the distance from the ledge to the
+backing board **with the backing pushed forward against the panel
+stack**. The backing has 2–3 mm of play between the stack and the turn
+buttons; the first print was built to the other end of that play (9.0),
+floated off the backing, and the heavy board end sagged. Built to the
+forward position with a little preload, the rail's foot holds the backing
+against the stack and the web has something to bear on. Four thin tape
+tabs (1.2 mm tongues off the board ring's far end and the FFC bridge's
+far foot) get taped to the backing and hold the far end of the web down.
 
 The bottom edge, measured from the ribbon corner: a turn button at 1.5",
 the backing's ribbon cut-out from 2" to 8" (no groove or ledge usable
 there), another button at 8.5", and nothing can lie on the backing within
 1" of that edge. So the bottom rail is the corner run, 0 to 1", with one
 screw; the right rail carries three; and every rib stays above the 1"
-strip. Everything hangs close to the right rail, so that is enough: the
-earlier arm out to an 8" screw is still in the file (`far_rail`) but off.
-Nothing screws into the backing board itself.
+strip. Nothing screws into the backing board itself.
 
 ## Coupons first
 
-`stl/carrier_coupons.stl` (~118 × 78 mm, a few grams) prints the four
-things that have to be right before the whole part is worth its plastic;
-`stl/carrier_coupons_ledge.stl` is the same plate without the board ring,
-for re-testing the rails alone; `stl/carrier_rail_ladder.stl` (`part =
-"rail_ladder"`) is nine 20 mm rail stubs at every combination of
-`ladder_heights` (8.9 / 9.9 / 10.9 to the flange) and `ladder_widths`
-(5.5 / 6.5 / 7.5 flange), each labelled "height width" on top, to pick
-`ledge_z` and `ledge_w` directly:
+None of the test plates are committed; render them from the SCAD and print
+in this order. Each is a few grams.
 
-- **Rail coupon**: 30 mm of the right rail with its flange and a screw
-  hole. Does it stand in the opening with the flange flat on the ledge, is
-  the flange the right width, does the overhang print.
-- **Corner coupon**: the corner run and the bottom of the right rail.
-  Does it seat in the corner, does it clear the 1.5" button.
-- **Far-window coupon**: the 8" segment with its screw, post and 20 mm of
-  arm. Does the segment fit between the cut-out and the 8.5" button.
-- **Board ring**: the four bosses alone. Do the standoffs land, do the
-  M2.5 heads sit in the counterbores.
+1. **Rail ladder** (`part = "rail_ladder"`): 20 mm rail stubs at every
+   `ladder_heights` × `ladder_widths`, labelled "height width" on top.
+   Push the backing board forward against the panel stack and hold it,
+   stand each stub in the right-hand opening with its flange on the
+   ledge, and take the tallest whose flange still seats under firm hand
+   pressure. Set `ledge_z` to it. (Here: 9.0 floated, 11.0 and up were all
+   too tall, a 9.4–10.6 ladder settled 10.0.)
+2. **Feature coupons** (`part = "coupons_v2"`), labelled BATT / SPK / FFC:
+   - *Battery clip*: 30 mm of the pocket around one snap finger on a
+     floor that stands in for the backing, ends open so the battery
+     slides in sideways. Does it tilt in under the fixed lip, does the
+     finger click over it and hold it flat, can a thumb release it.
+   - *Speaker pocket*: does the speaker slide in and stop.
+   - *FFC bridge*: does the ribbon pass under the bar, did the bar print.
+3. **Clip ladder** (`part = "clip_ladder"`), only if the snap is wrong: one
+   battery clip per `clip_lips` × `clip_thicks`, labelled "lip/thickness".
+   Set `finger_lip` and `finger_t` to the winner. (Here: 1.5/1.2.)
 
 ## What sits on it
 
-- The **ribbon tail**, the **adapter board** and the **FFC** (the flat
-  flexible cable to the driver board) stay on the backing board under tape
-  exactly as now; the web leaves that area open.
-- The **driver board** sits above the battery, next to the rail, so the
-  FFC runs straight up from the adapter with no fold. It is placed by its
-  bottom-right hole, measured on the frame: 1.5" in from the right wall,
-  4.75" up from the bottom (`board_br_x_in`, `board_br_y_in`). It takes M2, not
-  M2.5. It stands on its 6 mm standoffs over a ring of ribs with a 9 mm
-  boss at each of the four holes (72 × 21.75 mm pattern; the first coupon
-  at 71 × 20.75 was 1 mm short each way). Each boss is recessed on both
-  faces: a 1.5 mm collar on top with a 3.8 mm socket the standoff's foot
-  drops into, so it can't walk sideways, and a 4.2 × 1.5 mm counterbore
-  underneath so the M2 pan head sits flush. Ribs are 3.5 mm; the web
-  between socket floor and head is 2.0 mm. The standoffs are 3 mm
+- The **battery** (JLJLUP 3000 mAh, measured 65 × 35.5 × 10; the listing's
+  36 was the bulge rounded up) lies directly on the backing inside an open
+  ring and is held like a phone battery. A fixed 2.0 mm lip runs along the
+  rail-side wall; two snap fingers with a 1.5 mm lip stand on the far side,
+  each with a thumb tab above the lip. Press the battery against the fixed
+  wall, tilt that edge under its lip, lower the other edge: the fingers
+  click over. To remove, push both tabs outward and lift. The cell bulges
+  at mid-height, so `batt_w` (35.5) sizes the walls and `batt_w_top` (34.5)
+  is what the lips engage. The lead leaves the cell at a corner; the notch
+  is at the pocket's top-left (seen from behind).
+- The **ribbon tail** and the **adapter board** stay on the backing under
+  tape. The **FFC** (31 mm wide) runs straight up from the adapter to the
+  board and passes under one bridge, level with the battery's centre, 2 mm
+  clear, so it lies flat and can't lever a connector. A second bridge near
+  the board was tried and dropped: the ribbon had no run left to climb to
+  the connector.
+- The **driver board** sits above the battery, next to the rail. It is
+  placed by its bottom-right hole, measured on the frame: 1.5" in from the
+  right wall, 4.75" up from the bottom (`board_br_x_in`, `board_br_y_in`). It
+  takes M2, not M2.5. It stands on its 6 mm standoffs over a ring of ribs
+  with a 9 mm boss at each of the four holes (72 × 21.75 mm pattern; the
+  first coupon at 71 × 20.75 was 1 mm short each way). Each boss is
+  recessed on both faces: a 1.5 mm collar on top with a 3.8 mm socket the
+  standoff's foot drops into, so it can't walk sideways, and a 4.2 × 1.5 mm
+  counterbore underneath so the M2 pan head sits flush. Ribs are 3.5 mm;
+  the web between socket floor and head is 2.0 mm. The standoffs are 3 mm
   across-flats hex (3.46 across corners), hence the 3.8 socket.
+- The board's little **speaker** (10.5 × 14.5 × 4.8) slides into a pocket
+  just above the middle of the board's top edge, open upward so gravity
+  keeps it seated when the frame hangs; the roof covers the lower half and
+  the lead leaves through a notch in the closed end. It sits there because
+  its lead is short.
 
 Board top face ends up 11.1 mm behind the backing plus components, the
-rails 11.0; the moulding must be deeper than that beyond the ledge.
+rails 12.0, the snap-finger tabs 14.5; the moulding must be deeper than
+that beyond the ledge.
 
 ## Printing
 
-120 × 166 mm, 11.0 mm tall at the rails. Print bottom-down as exported. The
-flange undersides are bare 5.5 mm overhangs (in use the frame's wall is
-under them, so nothing can be added there): enable slicer supports for
-overhangs only, they land under the flanges and snap off. PETG like the
-bezel.
+144 × 176 mm, 14.5 mm tall at the finger tabs, 12.0 at the rails. Print
+bottom-down as exported, PETG like the bezel. The flange undersides are
+bare 5.5 mm overhangs (in use the frame's wall is under them, so nothing
+can be added there): enable slicer supports for overhangs only, they land
+under the flanges and snap off. The FFC bar is a ~39 mm bridge 2 mm off
+the bed and the snap fingers are 1.2 mm free-standing walls; both print
+without support.
+
+```bash
+openscad --export-format binstl -o stl/carrier.stl -D 'part="carrier"' epaper_frame_carrier.scad
+```

@@ -16,3 +16,10 @@ firmware/.esphome/
 
 # editor scratch
 *.swp
+
+# mount/stl/: only the pieces you print to build the thing are committed.
+# Coupons, ladders and joint tests are print-to-decide plates; re-render them
+# from the SCAD with your own numbers (see mount/README.md).
+mount/stl/*coupon*
+mount/stl/*ladder*
+mount/stl/*joint*

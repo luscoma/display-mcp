@@ -151,12 +151,37 @@ battery only; the frame comes down to charge.
 Flange undersides are unsupported overhangs in the print and take slicer
 supports; nothing can be put under them because the frame's wall is there.
 
+**Second draft (2026-09-18/19), from living with the first print.** The
+first print floated: there was visible space under the rail's foot, the
+web never bore on the backing, and the heavy board end sagged. The cause
+was the backing board itself, which has 2–3 mm of play between the panel
+stack and the turn buttons; the rail ladder had measured the ledge with
+the backing resting one way and the print met it the other. So the rail
+is now built to the backing's *forward* position, `ledge_z` 9.0 → 10.0 (a
+ladder at 11.0–12.5 was all too tall, one at 9.4–10.6 settled it), and
+its foot preloads the backing against the stack. Tape tabs off the board
+ring and the bridge hold the far end of the web down. The battery strap
+and cross rib are gone: the cell (measured 65 × 35.5 × 10, bulging at
+mid-height) lies on the backing inside its ring and is held like a phone
+battery, a fixed 2.0 mm lip on the rail-side wall it tilts in under and
+two snap fingers opposite it presses down past, thumb tabs to release;
+the walls clear the 35.5 bulge and the lips work the 34.5 faces; a
+dedicated clip ladder picked the finger at 1.5 lip × 1.2 thick. The FFC
+(31 wide) slides under one bridge level with the battery's centre; a
+second bridge near the board was dropped because it left the ribbon no
+run to climb to the connector. The board's speaker (10.5 × 14.5 × 4.8)
+gets a slide pocket over the middle of the board's top edge, open upward,
+because its lead is short. Lead notch at the battery pocket's top-left
+corner. Installed 2026-09-19: sits flat. Test plates (coupons, ladders)
+are rendered on demand and no longer committed; only the printable pieces
+are.
+
 ## Still open
 
 
 - The full print: does the ring drop into the rabbet, does the panel float
   without ticking, does the flex fold clear in the notch. Adjust
   `rabbet_fit`, `panel_fit` or `fpc_notch_out` from what the print says.
-- The carrier coupons, then the full print: do the rails seat and the
-  flanges suit the ledge, does the far segment fit its window, does the
-  board and battery stack clear the moulding.
+- Carrier: nothing. The second draft is installed and flat. If the battery
+  is ever swapped, the pocket is sized to this cell's bulge (`batt_w`) and
+  faces (`batt_w_top`), and the clip ladder re-picks the finger.
