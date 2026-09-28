@@ -31,7 +31,9 @@ semantics.
   `test_size_normalise.py`'s font/icon key normaliser,
   `test_arduinojson_type_guards.py`'s type-guard idiom against the real
   vendored ArduinoJson).
-- `deploy/` systemd unit, setup.sh, fonts fetch
+- `deploy/` systemd unit, setup.sh, fonts fetch; `compose.yaml` and
+  `CONTAINER.md` for the container route (root `Dockerfile`,
+  `.github/workflows/container.yml` publishes to GHCR)
 - `samples/display.json` known-good document, hash `ab71629b1ca76ea6`
 - `firmware/` ESPHome project, the source of truth for the panel:
   `epaper-schedule.yaml`, `display_list.h`, `fetch_and_watch.py`,

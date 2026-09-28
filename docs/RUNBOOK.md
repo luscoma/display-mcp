@@ -2,9 +2,11 @@
 
 Standing up the display-list server: a Python service on a host on your
 network that Claude writes to over MCP and the panel reads from over the LAN.
-No Docker, no browser. The host is a plain Debian box; nothing below is
-Pi-specific. It is easiest if the host and the panel share a network segment,
-but they don't have to — see step 5.
+No browser. This runbook is the systemd install; the container route is
+`deploy/CONTAINER.md`, and every gate below applies to it unchanged. The host
+is a plain Debian box; nothing below is Pi-specific. It is easiest if the
+host and the panel share a network segment, but they don't have to — see
+step 5.
 
 ## What you're building
 

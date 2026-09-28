@@ -1,5 +1,9 @@
 # Deploying
 
+To run it as a container instead (on Proxmox, say), see
+[`CONTAINER.md`](CONTAINER.md): the image is built and published to GHCR by CI,
+and `compose.yaml` replaces `setup.sh`. Everything below is the systemd path.
+
 There is no deploy script. The host has a checkout with an `origin` pointing
 at GitHub, and `setup.sh` runs there — so a deploy is a pull and one command,
 and the thing that runs as root is a script you have already read.

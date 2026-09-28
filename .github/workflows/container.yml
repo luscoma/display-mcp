@@ -1,0 +1,116 @@
+# Test, build and publish the display-mcp image to GitHub Container Registry.
+#
+#   pull request       test, build, smoke-test; nothing is pushed
+#   push to main       ... and push :main, :latest and :sha-<short>
+#   tag v1.2.3         ... and push :1.2.3, :1.2 and :sha-<short>
+#   manual dispatch    same as a push of the chosen ref
+#
+# deploy/CONTAINER.md says how the Proxmox host picks the image up.
+
+name: container
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: container-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: python -m pip install -e '.[dev]'
+      - run: deploy/fetch-fonts.sh ./fonts
+      - run: python -m pytest -q
+        env:
+          DISPLAY_MCP_FONT_DIR: ./fonts
+
+  image:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      PUSH: ${{ github.event_name != 'pull_request' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Image name (GHCR wants it lower-case)
+        id: name
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ${{ steps.name.outputs.image }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=sha-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      # Build the native image into the local daemon first and start it, so a
+      # broken image never reaches the registry. The multi-arch push below
+      # reuses this build's layers from the cache.
+      - name: Build (amd64, local)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: display-mcp:smoke
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test
+        run: |
+          docker run -d --name smoke --network host --health-interval=2s display-mcp:smoke
+          for _ in $(seq 30); do
+            status=$(docker inspect -f '{{.State.Health.Status}}' smoke)
+            [ "$status" = healthy ] && break
+            [ "$(docker inspect -f '{{.State.Running}}' smoke)" = true ] || break
+            sleep 2
+          done
+          docker logs smoke
+          curl -fsS http://127.0.0.1:8080/healthz
+          echo
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/display.json)
+          [ "$code" = 503 ] || { echo "expected 503 before a publish, got $code"; exit 1; }
+          [ "$status" = healthy ] || { echo "container never went healthy: $status"; exit 1; }
+          docker rm -f smoke
+
+      - uses: docker/login-action@v3
+        if: env.PUSH == 'true'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push (amd64 + arm64)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: ${{ env.PUSH == 'true' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
