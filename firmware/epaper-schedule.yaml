@@ -60,30 +60,38 @@ esphome:
   includes:
     - display_list.h
   on_boot:
-    priority: -100
-    then:
-      # Why this wake happened, which is the whole basis for holding the board
-      # open afterwards (see flash_window). esp_sleep.h comes in with
-      # deep_sleep's own header. A cold boot reports UNDEFINED and is
-      # deliberately NOT treated as a press: a brownout loop on a flat battery
-      # would then hold 30 s every time it restarted, which is exactly when
-      # the panel can least afford it. Press the button after a power-on.
-      - lambda: |-
-          const auto cause = esp_sleep_get_wakeup_cause();
-          id(woke_by_button) = cause == ESP_SLEEP_WAKEUP_EXT0 ||
-                               cause == ESP_SLEEP_WAKEUP_EXT1 ||
-                               cause == ESP_SLEEP_WAKEUP_GPIO;
-          // Counted here and not in wake_cycle, which also runs from the
-          // refresh_now action and both template buttons: X-Panel-Wakes is
-          // meant to be comparable against the hourly schedule, so a manual
-          // refresh must not look like an extra wake.
-          id(diag_wakes) += 1;
-          // Say why we are up, at INFO, so a log tail can tell a timer wake
-          // from a button, a power cycle or a crash. On 2026-09-19 an extra
-          // wake 52 s after sleeping went unexplained for want of this line.
-          ESP_LOGI("dl", "boot: wake cause %d, reset reason %d, wake #%u",
-                   (int) cause, (int) esp_reset_reason(), (unsigned) id(diag_wakes));
-      - script.execute: wake_cycle
+    # Before any component's setup (display is lower): release the panel-rail
+    # hold sleep_now put on GPIO${epd_power_pin}, or the display's init could not
+    # switch the panel back on. gpio_hold_dis on an unheld pin is harmless,
+    # so a cold boot is fine too.
+    - priority: 1000
+      then:
+        - lambda: |-
+            gpio_hold_dis(static_cast<gpio_num_t>(${epd_power_pin}));
+    - priority: -100
+      then:
+        # Why this wake happened, which is the whole basis for holding the board
+        # open afterwards (see flash_window). esp_sleep.h comes in with
+        # deep_sleep's own header. A cold boot reports UNDEFINED and is
+        # deliberately NOT treated as a press: a brownout loop on a flat battery
+        # would then hold 30 s every time it restarted, which is exactly when
+        # the panel can least afford it. Press the button after a power-on.
+        - lambda: |-
+            const auto cause = esp_sleep_get_wakeup_cause();
+            id(woke_by_button) = cause == ESP_SLEEP_WAKEUP_EXT0 ||
+                                 cause == ESP_SLEEP_WAKEUP_EXT1 ||
+                                 cause == ESP_SLEEP_WAKEUP_GPIO;
+            // Counted here and not in wake_cycle, which also runs from the
+            // refresh_now action and both template buttons: X-Panel-Wakes is
+            // meant to be comparable against the hourly schedule, so a manual
+            // refresh must not look like an extra wake.
+            id(diag_wakes) += 1;
+            // Say why we are up, at INFO, so a log tail can tell a timer wake
+            // from a button, a power cycle or a crash. On 2026-09-19 an extra
+            // wake 52 s after sleeping went unexplained for want of this line.
+            ESP_LOGI("dl", "boot: wake cause %d, reset reason %d, wake #%u",
+                     (int) cause, (int) esp_reset_reason(), (unsigned) id(diag_wakes));
+        - script.execute: wake_cycle
 
 esp32:
   board: esp32-s3-devkitc-1
@@ -1464,6 +1472,25 @@ script:
                 condition:
                   lambda: "return !id(ota_active);"
                 timeout: 5min
+            # Panel rail off for the hour. The display component's setup()
+            # switches the load switch on and inits the panel on EVERY boot,
+            # but only a draw ends with DSLP + rail off -- so every 304 wake
+            # (23 of 24) used to sleep with the panel powered and its
+            # controllers awake. Measured symptom: ~10-13 %/day on 3000 mAh,
+            # i.e. ~12-16 mA continuous against a ~5-10 mAh/day wake budget.
+            # sleep() is a no-op when a draw already put the panel to sleep.
+            - lambda: "id(epd).sleep();"
+            - wait_until:
+                condition:
+                  lambda: "return !id(epd).is_processing();"
+                timeout: 5s
+            # Deep sleep releases outputs, and the component enables the
+            # pin's pull-up, so drive it low and hold it there until the next
+            # boot releases it (on_boot, priority 1000).
+            - lambda: |-
+                const auto pin = static_cast<gpio_num_t>(${epd_power_pin});
+                gpio_set_level(pin, 0);
+                gpio_hold_en(pin);  // GPIO1 is an RTC pad on the S3: this hold survives deep sleep
             - deep_sleep.enter: ds
 
 button:
