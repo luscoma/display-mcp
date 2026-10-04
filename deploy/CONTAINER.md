@@ -7,7 +7,7 @@ listeners and binds each to whatever addresses you give it:
 | Listener | Setting | Default | Serves |
 |---|---|---|---|
 | panel | `DISPLAY_MCP_PANEL_BIND`, `DISPLAY_MCP_PANEL_PORT` | `127.0.0.1:8080` | `/display.json` to the e-paper; unauthenticated, read-only |
-| MCP | `DISPLAY_MCP_MCP_HOST`, `DISPLAY_MCP_MCP_PORT` | `127.0.0.1:8001` | `/mcp`; Cloudflare Access JWTs when `DISPLAY_MCP_CF_ACCESS_*` is set |
+| MCP | `DISPLAY_MCP_SERVER_HOST`, `DISPLAY_MCP_SERVER_PORT` | `127.0.0.1:8001` | `/mcp`; Cloudflare Access JWTs when `DISPLAY_MCP_CF_ACCESS_*` is set |
 
 Both bind settings take a comma-separated list, and each address is bound as
 given. That includes `0.0.0.0`, so which interfaces each listener appears on

@@ -22,9 +22,9 @@ def test_settings_from_env_round_trip():
     env = {
         "DISPLAY_MCP_PANEL_BIND": "192.168.1.5",
         "DISPLAY_MCP_PANEL_PORT": "9090",
-        "DISPLAY_MCP_MCP_HOST": "127.0.0.1",
-        "DISPLAY_MCP_MCP_PORT": "9001",
-        "DISPLAY_MCP_MCP_PATH": "/rpc",
+        "DISPLAY_MCP_SERVER_HOST": "127.0.0.1",
+        "DISPLAY_MCP_SERVER_PORT": "9001",
+        "DISPLAY_MCP_SERVER_PATH": "/rpc",
         "DISPLAY_MCP_STATE_DIR": "/tmp/somewhere",
         "DISPLAY_MCP_FONT_DIR": "/tmp/fonts",
         "DISPLAY_MCP_CF_ACCESS_TEAM_DOMAIN": "https://team.cloudflareaccess.com",
@@ -50,7 +50,7 @@ def test_settings_from_env_defaults_are_authless():
 
 
 def test_empty_bind_list_is_refused(tmp_path):
-    for env in ({"DISPLAY_MCP_PANEL_BIND": " , "}, {"DISPLAY_MCP_MCP_HOST": ""}):
+    for env in ({"DISPLAY_MCP_PANEL_BIND": " , "}, {"DISPLAY_MCP_SERVER_HOST": ""}):
         with pytest.raises(SystemExit, match="is empty"):
             main_mod._build_servers(Store(tmp_path, tmp_path), settings_from_env(env))
 
@@ -124,7 +124,7 @@ async def test_panel_listens_on_every_configured_address(tmp_path):
 
 
 def test_mcp_host_parses_comma_list():
-    settings = settings_from_env({"DISPLAY_MCP_MCP_HOST": "10.99.0.20, 127.0.0.1,"})
+    settings = settings_from_env({"DISPLAY_MCP_SERVER_HOST": "10.99.0.20, 127.0.0.1,"})
     assert settings.mcp_bind == ("10.99.0.20", "127.0.0.1")
     assert settings_from_env({}).mcp_bind == ("127.0.0.1",)
 

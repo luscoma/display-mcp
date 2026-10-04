@@ -21,9 +21,9 @@ RestartSec=5
 Environment=DISPLAY_MCP_PANEL_BIND=192.168.1.10,127.0.0.1
 Environment=DISPLAY_MCP_PANEL_PORT=8080
 
-Environment=DISPLAY_MCP_MCP_HOST=127.0.0.1
-Environment=DISPLAY_MCP_MCP_PORT=8001
-Environment=DISPLAY_MCP_MCP_PATH=/mcp
+Environment=DISPLAY_MCP_SERVER_HOST=127.0.0.1
+Environment=DISPLAY_MCP_SERVER_PORT=8001
+Environment=DISPLAY_MCP_SERVER_PATH=/mcp
 Environment=DISPLAY_MCP_STATE_DIR=/var/lib/display-mcp
 Environment=DISPLAY_MCP_FONT_DIR=/opt/display-mcp/fonts
 

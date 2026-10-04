@@ -78,7 +78,7 @@ def bind_panel_sockets(settings: Settings) -> list[socket.socket]:
 
 def bind_mcp_sockets(settings: Settings) -> list[socket.socket]:
     """One pre-bound listening socket per configured MCP address."""
-    return _bind_sockets("DISPLAY_MCP_MCP_HOST", settings.mcp_bind, settings.mcp_port)
+    return _bind_sockets("DISPLAY_MCP_SERVER_HOST", settings.mcp_bind, settings.mcp_port)
 
 
 ServerSpec = tuple[uvicorn.Server, list[socket.socket] | None]

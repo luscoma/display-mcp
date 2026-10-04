@@ -80,8 +80,8 @@ directly; there is no internal HTTP API.
 
 Env (all `DISPLAY_MCP_*`): `PANEL_BIND` (comma-separated addresses, each
 bound explicitly as given; setup.sh writes `<lan-ip>,127.0.0.1`),
-`PANEL_PORT`, `MCP_HOST` (comma-separated likewise),
-`MCP_PORT`, `MCP_PATH`, `STATE_DIR`, `FONT_DIR`, `CF_ACCESS_TEAM_DOMAIN`,
+`PANEL_PORT`, `SERVER_HOST` (the MCP listener; comma-separated likewise),
+`SERVER_PORT`, `SERVER_PATH`, `STATE_DIR`, `FONT_DIR`, `CF_ACCESS_TEAM_DOMAIN`,
 `CF_ACCESS_AUD`. Same shape as the existing unit; `EPAPER_*` is gone.
 
 ## Panel listener

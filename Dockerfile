@@ -19,7 +19,7 @@ ARG PYTHON_VERSION=3.12
 # setup.sh and local dev. `fonts` is a bare stage holding just the .ttf files
 # at its root, so --build-context fonts=DIR can stand in for it.
 
-FROM debian:bookworm-slim AS fonts-fetch
+FROM debian:trixie-slim AS fonts-fetch
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl \
  && rm -rf /var/lib/apt/lists/*
@@ -34,7 +34,7 @@ COPY --from=fonts-fetch /out/ /
 # pyproject force-includes docs/SPEC.md and samples/display.json into the
 # wheel, so both have to be in the build context.
 
-FROM python:${PYTHON_VERSION}-slim AS build
+FROM python:${PYTHON_VERSION}-slim-trixie AS build
 ENV PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
 RUN python -m venv /opt/display-mcp/venv
 WORKDIR /src
@@ -46,7 +46,7 @@ RUN /opt/display-mcp/venv/bin/pip install .
 
 # --- runtime ----------------------------------------------------------------
 
-FROM python:${PYTHON_VERSION}-slim
+FROM python:${PYTHON_VERSION}-slim-trixie
 
 ARG UID=10001
 RUN groupadd --system --gid "$UID" display-mcp \
@@ -66,9 +66,9 @@ ENV PATH=/opt/display-mcp/venv/bin:$PATH \
     PYTHONUNBUFFERED=1 \
     DISPLAY_MCP_PANEL_BIND=127.0.0.1 \
     DISPLAY_MCP_PANEL_PORT=8080 \
-    DISPLAY_MCP_MCP_HOST=127.0.0.1 \
-    DISPLAY_MCP_MCP_PORT=8001 \
-    DISPLAY_MCP_MCP_PATH=/mcp \
+    DISPLAY_MCP_SERVER_HOST=127.0.0.1 \
+    DISPLAY_MCP_SERVER_PORT=8001 \
+    DISPLAY_MCP_SERVER_PATH=/mcp \
     DISPLAY_MCP_STATE_DIR=/var/lib/display-mcp \
     DISPLAY_MCP_FONT_DIR=/opt/display-mcp/fonts
 
