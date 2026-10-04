@@ -55,8 +55,12 @@ semantics.
   covers `bg` + `palette` + `ops` only. The ETag is that hash in quotes.
 - The panel endpoint is unauthenticated and read-only, bound explicitly to
   the LAN address plus 127.0.0.1, never a wildcard. The MCP endpoint binds
-  loopback; a Cloudflare Tunnel fronts it. That tunnel is the only edge —
-  the old reverse-proxy/nftables path is gone, don't reintroduce it.
+  loopback, plus optionally an address on a tunnel-only network that only
+  cloudflared shares (`deploy/CONTAINER.md`); never the LAN, never a
+  wildcard, and off loopback only with Cloudflare Access configured
+  (`main.check_mcp_binds` enforces both). A Cloudflare Tunnel fronts it.
+  That tunnel is the only edge — the old reverse-proxy/nftables path is
+  gone, don't reintroduce it.
 - Warnings from the renderer never block a publish. Hard errors do.
 - Field names in `store.py` and the tool return shapes in `docs/PLAN.md`
   are final; other packages code against them.

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import ipaddress
 import logging
 import signal
 import socket
@@ -59,23 +60,58 @@ def check_panel_binds(settings: Settings) -> None:
             )
 
 
-def bind_panel_sockets(settings: Settings) -> list[socket.socket]:
-    """One pre-bound listening socket per configured panel address.
+def _is_loopback(addr: str) -> bool:
+    if addr == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(addr).is_loopback
+    except ValueError:
+        return False
+
+
+def check_mcp_binds(settings: Settings) -> None:
+    """The MCP endpoint is loopback, plus at most a tunnel-only network address.
+
+    A non-loopback address is how a cloudflared running elsewhere (its own
+    container on a network only it and this host share) reaches the endpoint.
+    Off loopback, auth.py's local-operator exemption never applies, so every
+    request needs an Access JWT -- which is why such an address is refused
+    while Access is unconfigured: authless is a loopback-only mode.
+    """
+    if not settings.mcp_bind:
+        raise SystemExit("refusing to start: DISPLAY_MCP_MCP_HOST is empty")
+    for addr in settings.mcp_bind:
+        if addr in WILDCARDS:
+            raise SystemExit(
+                f"refusing to start: DISPLAY_MCP_MCP_HOST contains {addr!r}. Bind the "
+                "MCP endpoint to 127.0.0.1, plus the tunnel network's address if "
+                "cloudflared runs elsewhere, never to all interfaces."
+            )
+        if not _is_loopback(addr) and not settings.auth_enabled:
+            raise SystemExit(
+                f"refusing to start: DISPLAY_MCP_MCP_HOST contains {addr!r}, which is "
+                "not loopback, and Cloudflare Access is not configured. Set "
+                "DISPLAY_MCP_CF_ACCESS_TEAM_DOMAIN and DISPLAY_MCP_CF_ACCESS_AUD, or "
+                "bind the MCP endpoint to 127.0.0.1 only."
+            )
+
+
+def _bind_sockets(addrs: tuple[str, ...], port: int) -> list[socket.socket]:
+    """One pre-bound listening socket per address.
 
     Binding each address explicitly is the whole point: a socket bound to
     192.168.1.10 cannot answer on the host's global IPv6 address, and a v6
     socket is v6-only so it never quietly covers v4 as well.
     """
-    check_panel_binds(settings)
     socks: list[socket.socket] = []
     try:
-        for addr in settings.panel_bind:
+        for addr in addrs:
             family = socket.AF_INET6 if ":" in addr else socket.AF_INET
             s = socket.socket(family, socket.SOCK_STREAM)
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             if family == socket.AF_INET6:
                 s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
-            s.bind((addr, settings.panel_port))
+            s.bind((addr, port))
             s.listen(128)
             s.set_inheritable(True)
             socks.append(s)
@@ -84,6 +120,18 @@ def bind_panel_sockets(settings: Settings) -> list[socket.socket]:
             s.close()
         raise
     return socks
+
+
+def bind_panel_sockets(settings: Settings) -> list[socket.socket]:
+    """One pre-bound listening socket per configured panel address."""
+    check_panel_binds(settings)
+    return _bind_sockets(settings.panel_bind, settings.panel_port)
+
+
+def bind_mcp_sockets(settings: Settings) -> list[socket.socket]:
+    """One pre-bound listening socket per configured MCP address."""
+    check_mcp_binds(settings)
+    return _bind_sockets(settings.mcp_bind, settings.mcp_port)
 
 
 ServerSpec = tuple[uvicorn.Server, list[socket.socket] | None]
@@ -106,18 +154,26 @@ def _build_servers(store: Store, settings: Settings) -> list[ServerSpec]:
         print(f"panel: http://{shown}:{settings.panel_port}/display.json")
 
     mcp_app = build_mcp_app(store, settings)
+    try:
+        mcp_socks = bind_mcp_sockets(settings)
+    except BaseException:
+        for s in panel_socks:
+            s.close()
+        raise
     mcp_cfg = uvicorn.Config(
         mcp_app,
-        host=settings.mcp_host,
+        host=settings.mcp_bind[0],
         port=settings.mcp_port,
         log_config=None,
         access_log=False,
     )
     mcp = uvicorn.Server(mcp_cfg)
     _disable_own_signal_handling(mcp)
-    print(f"mcp: http://{settings.mcp_host}:{settings.mcp_port}{settings.mcp_path}")
+    for addr in settings.mcp_bind:
+        shown = f"[{addr}]" if ":" in addr else addr
+        print(f"mcp: http://{shown}:{settings.mcp_port}{settings.mcp_path}")
 
-    return [(panel, panel_socks), (mcp, None)]
+    return [(panel, panel_socks), (mcp, mcp_socks)]
 
 
 async def _run(settings: Settings) -> None:
@@ -153,6 +209,7 @@ def main() -> None:
     settings = settings_from_env()
 
     check_panel_binds(settings)
+    check_mcp_binds(settings)
     asyncio.run(_run(settings))
 
 

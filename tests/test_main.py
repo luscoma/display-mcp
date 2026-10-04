@@ -118,3 +118,92 @@ async def test_panel_listens_on_every_configured_address(tmp_path):
         for s in servers:
             s.should_exit = True
         await asyncio.wait_for(task, timeout=5)
+
+
+_ACCESS = {
+    "DISPLAY_MCP_CF_ACCESS_TEAM_DOMAIN": "https://team.cloudflareaccess.com",
+    "DISPLAY_MCP_CF_ACCESS_AUD": "aud-tag",
+}
+
+
+def test_mcp_host_parses_comma_list():
+    settings = settings_from_env({"DISPLAY_MCP_MCP_HOST": "10.99.0.20, 127.0.0.1,"})
+    assert settings.mcp_bind == ("10.99.0.20", "127.0.0.1")
+    assert settings_from_env({}).mcp_bind == ("127.0.0.1",)
+
+
+@pytest.mark.parametrize("bad", ["0.0.0.0", "10.99.0.20,0.0.0.0", "::", "", " , "])
+def test_wildcard_anywhere_in_mcp_bind_list_is_refused(bad):
+    settings = settings_from_env({"DISPLAY_MCP_MCP_HOST": bad, **_ACCESS})
+    with pytest.raises(SystemExit):
+        main_mod.check_mcp_binds(settings)
+
+
+@pytest.mark.parametrize("addr", ["10.99.0.20", "fd00::20", "mcp.internal"])
+def test_non_loopback_mcp_bind_needs_access(addr):
+    authless = settings_from_env({"DISPLAY_MCP_MCP_HOST": f"{addr},127.0.0.1"})
+    with pytest.raises(SystemExit, match="not loopback"):
+        main_mod.check_mcp_binds(authless)
+    main_mod.check_mcp_binds(
+        settings_from_env({"DISPLAY_MCP_MCP_HOST": f"{addr},127.0.0.1", **_ACCESS})
+    )
+
+
+@pytest.mark.parametrize("addr", ["127.0.0.1", "127.0.0.2", "::1", "localhost"])
+def test_loopback_mcp_bind_is_fine_authless(addr):
+    main_mod.check_mcp_binds(settings_from_env({"DISPLAY_MCP_MCP_HOST": addr}))
+
+
+def test_main_refuses_a_non_loopback_mcp_bind_without_access(monkeypatch):
+    monkeypatch.setattr(
+        main_mod,
+        "settings_from_env",
+        lambda: settings_from_env({"DISPLAY_MCP_MCP_HOST": "10.99.0.20"}),
+    )
+    with pytest.raises(SystemExit):
+        main_mod.main()
+
+
+@pytest.mark.asyncio
+async def test_mcp_listens_on_every_configured_address(tmp_path):
+    # 127.0.0.2 stands in for the tunnel network's address: a second,
+    # distinct address the MCP listener must answer on, and one Linux routes
+    # to loopback without any setup.
+    binds = ["127.0.0.1", "127.0.0.2"]
+    try:
+        socket.create_server(("127.0.0.2", 0)).close()
+    except OSError:
+        pytest.skip("127.0.0.2 not bindable here")
+    settings = Settings(
+        panel_bind=("127.0.0.1",),
+        panel_port=_free_port(),
+        mcp_host=",".join(binds),
+        mcp_port=_free_port(),
+        state_dir=tmp_path / "state",
+        font_dir=tmp_path / "fonts",
+    )
+    store = Store(settings.state_dir, settings.font_dir)
+    specs = main_mod._build_servers(store, settings)
+    servers = [srv for srv, _ in specs]
+
+    async def _serve_all() -> None:
+        await asyncio.gather(*(srv.serve(sockets=socks) for srv, socks in specs))
+
+    task = asyncio.create_task(_serve_all())
+    try:
+        for _ in range(200):
+            if all(s.started for s in servers):
+                break
+            await asyncio.sleep(0.02)
+        else:
+            pytest.fail("server did not start in time")
+        async with httpx.AsyncClient() as client:
+            for addr in binds:
+                # Any HTTP answer proves the listener is there; the protocol
+                # itself is test_mcp.py's job.
+                resp = await client.get(f"http://{addr}:{settings.mcp_port}/nope")
+                assert resp.status_code == 404, addr
+    finally:
+        for s in servers:
+            s.should_exit = True
+        await asyncio.wait_for(task, timeout=5)
