@@ -28,8 +28,10 @@ substitutions:
 
   # The display-list server. Raw IP on purpose: the panel's DNS view has
   # already changed under it once, and a dead name leaves the wall frozen on
-  # its last image with nothing in the log but a failed fetch.
-  dl_url: "http://172.17.247.125:8080/display.json"
+  # its last image with nothing in the log but a failed fetch. The address is
+  # the Proxmox container's panel NIC, which has a fixed MAC; reserve it in
+  # DHCP so it does not move (deploy/PROXMOX.md).
+  dl_url: "http://172.17.36.18:8080/display.json"
 
   sleep_minutes: "60min"
   max_awake: "4min"
