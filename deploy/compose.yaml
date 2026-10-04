@@ -4,17 +4,9 @@
 #   cp deploy/compose.env.example deploy/.env    # then edit it
 #   docker compose -f deploy/compose.yaml up -d
 #
-# cloudflared is not here: it runs in its own LXC on a tunnel-only network
-# (CONTAINER.md, "Network"), and reaches the MCP listener at this host's
-# address on that network.
-#
-# Host networking, deliberately. The bind rules — panel on the LAN address
-# plus 127.0.0.1, MCP on 127.0.0.1 plus the tunnel network's address, never a
-# wildcard, never the MCP endpoint on the LAN — are about the host's
-# interfaces. With a bridge network the process would see only a container
-# address, and publishing ports would put Docker's NAT rules in between.
-# Sharing the host's network namespace keeps every address in DISPLAY_MCP_*
-# meaning exactly what it means under systemd.
+# Host networking, so the addresses in deploy/.env are the host's own and
+# mean exactly what they mean under systemd. CONTAINER.md, "Choosing the
+# addresses", covers picking them, and the bridge-network alternative.
 
 name: display-mcp
 
@@ -24,14 +16,12 @@ services:
     network_mode: host
     restart: unless-stopped
     environment:
-      DISPLAY_MCP_PANEL_BIND: ${DISPLAY_MCP_PANEL_BIND:?set DISPLAY_MCP_PANEL_BIND to "<lan-ip>,127.0.0.1" in deploy/.env}
+      DISPLAY_MCP_PANEL_BIND: ${DISPLAY_MCP_PANEL_BIND:?set DISPLAY_MCP_PANEL_BIND in deploy/.env}
       DISPLAY_MCP_PANEL_PORT: ${DISPLAY_MCP_PANEL_PORT:-8080}
-      # "<tunnel-net-ip>,127.0.0.1". A non-loopback address here is refused
-      # at startup unless both Access settings below are set.
       DISPLAY_MCP_MCP_HOST: ${DISPLAY_MCP_MCP_HOST:-127.0.0.1}
       DISPLAY_MCP_MCP_PORT: ${DISPLAY_MCP_MCP_PORT:-8001}
       DISPLAY_MCP_MCP_PATH: /mcp
-      # Both unset -> authless, which is accepted only on loopback alone.
+      # Both unset -> the MCP endpoint is authless; startup logs it loudly.
       DISPLAY_MCP_CF_ACCESS_TEAM_DOMAIN: ${DISPLAY_MCP_CF_ACCESS_TEAM_DOMAIN:-}
       DISPLAY_MCP_CF_ACCESS_AUD: ${DISPLAY_MCP_CF_ACCESS_AUD:-}
       # Optional Host-header allowlist, e.g. mcp.example.com (mcp_server.py).

@@ -12,9 +12,9 @@ bit-identical. That repo is superseded entirely; this one is authoritative.
 
 | Decision | Choice |
 |---|---|
-| Process model | one process, two listeners (panel on LAN, MCP on loopback or a tunnel-only network) |
+| Process model | one process, two listeners (panel on LAN, MCP on loopback) |
 | MCP SDK | official `mcp>=2,<3`, FastMCP class, streamable HTTP, stateless |
-| Edge | Cloudflare Tunnel (`cloudflared` on the host, outbound only) to the loopback MCP listener; no public port, and no requirement that the host have a routable address of its own. Decided 2026-09-09. Amended 2026-10-04 for the Proxmox move: cloudflared may instead run in its own LXC on a tunnel-only network, reaching the MCP listener at the host's address there (`deploy/CONTAINER.md`); that address is never the LAN, and is refused without Access configured. The earlier public-origin design (a reverse proxy with an Origin Certificate, plus an nftables allowlist) was dropped rather than kept as an option. |
+| Edge | Cloudflare Tunnel (`cloudflared` on the host, outbound only) to the loopback MCP listener; no public port, and no requirement that the host have a routable address of its own. Decided 2026-09-09. The earlier public-origin design (a reverse proxy with an Origin Certificate, plus an nftables allowlist) was dropped rather than kept as an option. |
 | App auth | a Starlette middleware in front of the MCP app verifies the `Cf-Access-Jwt-Assertion` header (JWKS, issuer, AUD). Authless when unconfigured, for local dev. |
 | Displays | keyed by name from day one; `default` is the alias for `/display.json` |
 | Tools | `set_display`, `copy_display`, `preview` (published or draft), `validate`, `get_display`, `status`, `clear_display`, `describe`, `guide`, `swatches`; resources `spec`, `current`, `sample`; prompt `compose_display` |
@@ -72,16 +72,15 @@ display-mcp/
 | Listener | Bind | Who |
 |---|---|---|
 | panel | `<pi-lan-ip>:8080`, plain HTTP | the e-paper, LAN only, unauthenticated, read-only |
-| MCP | `127.0.0.1:8001/mcp`, plus `<tunnel-net-ip>:8001` when cloudflared runs elsewhere | Claude, via Cloudflare Access → the tunnel |
+| MCP | `127.0.0.1:8001/mcp` | Claude, via Cloudflare Access → the tunnel |
 
 Both listeners are Starlette apps run by `uvicorn.Server` instances on one
 event loop, sharing one in-memory `Store`. The MCP tools call the store
 directly; there is no internal HTTP API.
 
 Env (all `DISPLAY_MCP_*`): `PANEL_BIND` (comma-separated addresses, each
-bound explicitly; wildcards refused; setup.sh writes `<lan-ip>,127.0.0.1`),
-`PANEL_PORT`, `MCP_HOST` (comma-separated like `PANEL_BIND`; wildcards
-refused, and a non-loopback entry refused unless both `CF_ACCESS_*` are set),
+bound explicitly as given; setup.sh writes `<lan-ip>,127.0.0.1`),
+`PANEL_PORT`, `MCP_HOST` (comma-separated likewise),
 `MCP_PORT`, `MCP_PATH`, `STATE_DIR`, `FONT_DIR`, `CF_ACCESS_TEAM_DOMAIN`,
 `CF_ACCESS_AUD`. Same shape as the existing unit; `EPAPER_*` is gone.
 

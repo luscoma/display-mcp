@@ -53,14 +53,14 @@ semantics.
 
 - `Store.publish()` is the only thing that stamps `meta.hash`. The hash
   covers `bg` + `palette` + `ops` only. The ETag is that hash in quotes.
-- The panel endpoint is unauthenticated and read-only, bound explicitly to
-  the LAN address plus 127.0.0.1, never a wildcard. The MCP endpoint binds
-  loopback, plus optionally an address on a tunnel-only network that only
-  cloudflared shares (`deploy/CONTAINER.md`); never the LAN, never a
-  wildcard, and off loopback only with Cloudflare Access configured
-  (`main.check_mcp_binds` enforces both). A Cloudflare Tunnel fronts it.
-  That tunnel is the only edge — the old reverse-proxy/nftables path is
-  gone, don't reintroduce it.
+- The panel endpoint is unauthenticated and read-only. Both listeners bind
+  exactly the comma-separated addresses they are configured with; which
+  networks they appear on is the deployment's choice, not validated by the
+  service (`deploy/CONTAINER.md`). The shipped configs bind the panel to
+  the LAN address plus 127.0.0.1 and the MCP endpoint to loopback, with a
+  Cloudflare Tunnel fronting it. That tunnel is the only edge the repo
+  ships — the old reverse-proxy/nftables path is gone, don't reintroduce
+  it.
 - Warnings from the renderer never block a publish. Hard errors do.
 - Field names in `store.py` and the tool return shapes in `docs/PLAN.md`
   are final; other packages code against them.

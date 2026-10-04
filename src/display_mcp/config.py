@@ -13,12 +13,10 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class Settings:
-    # One or more addresses, each bound explicitly. Never a wildcard.
+    # One or more addresses, each bound explicitly (main._bind_sockets).
     panel_bind: tuple[str, ...] = ("127.0.0.1",)
     panel_port: int = 8080
-    # Comma-separated like panel_bind, each bound explicitly: loopback, plus
-    # optionally an address on a tunnel-only network (deploy/CONTAINER.md).
-    # Never a wildcard, never the LAN address; see main.check_mcp_binds.
+    # Comma-separated like panel_bind, each bound explicitly.
     mcp_host: str = "127.0.0.1"
     mcp_port: int = 8001
     mcp_path: str = "/mcp"

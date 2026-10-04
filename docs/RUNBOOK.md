@@ -144,8 +144,8 @@ sudoedit /etc/systemd/system/display-mcp.service
 Each address is bound explicitly. The LAN one is for the panel; loopback is
 for you, so every check below works from the host itself. Binding addresses
 rather than `0.0.0.0` means the panel endpoint can't quietly appear on an
-interface you forgot about, and the service refuses to start if a wildcard
-sneaks into the list.
+interface you forgot about. The service binds whatever it is given, so that
+part is on you.
 
 Now prove the renderer works before anything is listening. This loads both
 fonts, walks every op in the sample document and reports the hash it would
