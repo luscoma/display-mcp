@@ -1,0 +1,41 @@
+# display-mcp under Docker Compose — the container equivalent of
+# `setup.sh install`. deploy/CONTAINER.md walks through it.
+#
+#   cp deploy/compose.env.example deploy/.env    # then edit it
+#   docker compose -f deploy/compose.yaml up -d
+#
+# Host networking, so the addresses in deploy/.env are the host's own and
+# mean exactly what they mean under systemd. CONTAINER.md, "Choosing the
+# addresses", covers picking them, and the bridge-network alternative.
+
+name: display-mcp
+
+services:
+  display-mcp:
+    image: ${DISPLAY_MCP_IMAGE:-ghcr.io/OWNER/display-mcp:latest}
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      DISPLAY_MCP_PANEL_BIND: ${DISPLAY_MCP_PANEL_BIND:?set DISPLAY_MCP_PANEL_BIND in deploy/.env}
+      DISPLAY_MCP_PANEL_PORT: ${DISPLAY_MCP_PANEL_PORT:-8080}
+      DISPLAY_MCP_SERVER_HOST: ${DISPLAY_MCP_SERVER_HOST:-127.0.0.1}
+      DISPLAY_MCP_SERVER_PORT: ${DISPLAY_MCP_SERVER_PORT:-8001}
+      DISPLAY_MCP_SERVER_PATH: /mcp
+      # Both unset -> the MCP endpoint is authless; startup logs it loudly.
+      DISPLAY_MCP_CF_ACCESS_TEAM_DOMAIN: ${DISPLAY_MCP_CF_ACCESS_TEAM_DOMAIN:-}
+      DISPLAY_MCP_CF_ACCESS_AUD: ${DISPLAY_MCP_CF_ACCESS_AUD:-}
+      # Optional Host-header allowlist, e.g. mcp.example.com (mcp_server.py).
+      DISPLAY_MCP_ALLOWED_HOSTS: ${DISPLAY_MCP_ALLOWED_HOSTS:-}
+    volumes:
+      - state:/var/lib/display-mcp
+    # The systemd unit's confinement, as far as Compose can say it.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 512m
+
+volumes:
+  state:

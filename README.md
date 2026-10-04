@@ -76,8 +76,9 @@ request carries a Cloudflare Access JWT that the app verifies itself. The
 **read** side never leaves your network, is unauthenticated and serves one
 static document — the worst case there is a neighbour learning your schedule.
 
-Neither listener is a wildcard bind. Both are explicit addresses, and the
-service refuses to start if a wildcard sneaks into the list.
+Each listener binds exactly the addresses it is given. The shipped configs
+give the panel the LAN address and the MCP endpoint loopback; choosing them is
+the deployment's job, not something the service enforces.
 
 ## What a day looks like
 

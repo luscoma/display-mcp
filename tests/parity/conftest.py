@@ -108,6 +108,7 @@ def _branch(src: str, start_marker: str, end_marker: str) -> str:
 _STUB = r"""
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>

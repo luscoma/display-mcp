@@ -2,9 +2,11 @@
 
 Standing up the display-list server: a Python service on a host on your
 network that Claude writes to over MCP and the panel reads from over the LAN.
-No Docker, no browser. The host is a plain Debian box; nothing below is
-Pi-specific. It is easiest if the host and the panel share a network segment,
-but they don't have to — see step 5.
+No browser. This runbook is the systemd install; the container route is
+`deploy/CONTAINER.md`, and every gate below applies to it unchanged. The host
+is a plain Debian box; nothing below is Pi-specific. It is easiest if the
+host and the panel share a network segment, but they don't have to — see
+step 5.
 
 ## What you're building
 
@@ -142,8 +144,8 @@ sudoedit /etc/systemd/system/display-mcp.service
 Each address is bound explicitly. The LAN one is for the panel; loopback is
 for you, so every check below works from the host itself. Binding addresses
 rather than `0.0.0.0` means the panel endpoint can't quietly appear on an
-interface you forgot about, and the service refuses to start if a wildcard
-sneaks into the list.
+interface you forgot about. The service binds whatever it is given, so that
+part is on you.
 
 Now prove the renderer works before anything is listening. This loads both
 fonts, walks every op in the sample document and reports the hash it would

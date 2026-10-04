@@ -1,5 +1,9 @@
 # Deploying
 
+To run it as a container instead, see [`CONTAINER.md`](CONTAINER.md): CI
+builds and publishes the image to GHCR, and `compose.yaml` runs it under
+Docker Compose. Everything below is the systemd path.
+
 There is no deploy script. The host has a checkout with an `origin` pointing
 at GitHub, and `setup.sh` runs there — so a deploy is a pull and one command,
 and the thing that runs as root is a script you have already read.

@@ -13,9 +13,10 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class Settings:
-    # One or more addresses, each bound explicitly. Never a wildcard.
+    # One or more addresses, each bound explicitly (main._bind_sockets).
     panel_bind: tuple[str, ...] = ("127.0.0.1",)
     panel_port: int = 8080
+    # Comma-separated like panel_bind, each bound explicitly.
     mcp_host: str = "127.0.0.1"
     mcp_port: int = 8001
     mcp_path: str = "/mcp"
@@ -29,6 +30,10 @@ class Settings:
     def auth_enabled(self) -> bool:
         return bool(self.cf_access_team_domain and self.cf_access_aud)
 
+    @property
+    def mcp_bind(self) -> tuple[str, ...]:
+        return _addr_list(self.mcp_host)
+
 
 def _addr_list(raw: str) -> tuple[str, ...]:
     """Comma-separated addresses -> tuple, whitespace and empties dropped."""
@@ -41,9 +46,9 @@ def settings_from_env(env: dict[str, str] | None = None) -> Settings:
     return Settings(
         panel_bind=_addr_list(g("PANEL_BIND", "127.0.0.1")),
         panel_port=int(g("PANEL_PORT", "8080")),
-        mcp_host=g("MCP_HOST", "127.0.0.1"),
-        mcp_port=int(g("MCP_PORT", "8001")),
-        mcp_path=g("MCP_PATH", "/mcp"),
+        mcp_host=g("SERVER_HOST", "127.0.0.1"),
+        mcp_port=int(g("SERVER_PORT", "8001")),
+        mcp_path=g("SERVER_PATH", "/mcp"),
         state_dir=Path(g("STATE_DIR", "/var/lib/display-mcp")),
         font_dir=Path(g("FONT_DIR", "/opt/display-mcp/fonts")),
         cf_access_team_domain=g("CF_ACCESS_TEAM_DOMAIN") or None,

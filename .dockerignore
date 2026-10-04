@@ -1,0 +1,11 @@
+# The image needs pyproject.toml, README.md, src/, docs/SPEC.md, samples/ and
+# deploy/fetch-fonts.sh. Everything else stays out of the build context.
+*
+!pyproject.toml
+!README.md
+!src/
+!docs/SPEC.md
+!samples/
+!deploy/fetch-fonts.sh
+**/__pycache__
+**/*.pyc

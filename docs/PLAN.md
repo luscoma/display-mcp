@@ -14,7 +14,7 @@ bit-identical. That repo is superseded entirely; this one is authoritative.
 |---|---|
 | Process model | one process, two listeners (panel on LAN, MCP on loopback) |
 | MCP SDK | official `mcp>=2,<3`, FastMCP class, streamable HTTP, stateless |
-| Edge | Cloudflare Tunnel (`cloudflared` on the host, outbound only) to the loopback MCP listener; no public port, and no requirement that the host have a routable address of its own. Decided 2026-09-09; the earlier public-origin design (a reverse proxy with an Origin Certificate, plus an nftables allowlist) was dropped rather than kept as an option. |
+| Edge | Cloudflare Tunnel (`cloudflared` on the host, outbound only) to the loopback MCP listener; no public port, and no requirement that the host have a routable address of its own. Decided 2026-09-09. The earlier public-origin design (a reverse proxy with an Origin Certificate, plus an nftables allowlist) was dropped rather than kept as an option. |
 | App auth | a Starlette middleware in front of the MCP app verifies the `Cf-Access-Jwt-Assertion` header (JWKS, issuer, AUD). Authless when unconfigured, for local dev. |
 | Displays | keyed by name from day one; `default` is the alias for `/display.json` |
 | Tools | `set_display`, `copy_display`, `preview` (published or draft), `validate`, `get_display`, `status`, `clear_display`, `describe`, `guide`, `swatches`; resources `spec`, `current`, `sample`; prompt `compose_display` |
@@ -79,9 +79,9 @@ event loop, sharing one in-memory `Store`. The MCP tools call the store
 directly; there is no internal HTTP API.
 
 Env (all `DISPLAY_MCP_*`): `PANEL_BIND` (comma-separated addresses, each
-bound explicitly; wildcards refused; setup.sh writes `<lan-ip>,127.0.0.1`),
-`PANEL_PORT`, `MCP_HOST`,
-`MCP_PORT`, `MCP_PATH`, `STATE_DIR`, `FONT_DIR`, `CF_ACCESS_TEAM_DOMAIN`,
+bound explicitly as given; setup.sh writes `<lan-ip>,127.0.0.1`),
+`PANEL_PORT`, `SERVER_HOST` (the MCP listener; comma-separated likewise),
+`SERVER_PORT`, `SERVER_PATH`, `STATE_DIR`, `FONT_DIR`, `CF_ACCESS_TEAM_DOMAIN`,
 `CF_ACCESS_AUD`. Same shape as the existing unit; `EPAPER_*` is gone.
 
 ## Panel listener

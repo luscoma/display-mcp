@@ -23,3 +23,6 @@ firmware/.esphome/
 mount/stl/*coupon*
 mount/stl/*ladder*
 mount/stl/*joint*
+
+# deploy/.env: the compose settings, including the tunnel token.
+deploy/.env

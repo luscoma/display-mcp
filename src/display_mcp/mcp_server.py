@@ -864,6 +864,6 @@ def build_mcp_app(store: Store, settings: Settings) -> ASGIApp:
         json_response=True,
         stateless_http=True,
         transport_security=_transport_security(settings),
-        host=settings.mcp_host,
+        host=settings.mcp_bind[0],
     )
     return wrap_with_access_auth(app, settings)

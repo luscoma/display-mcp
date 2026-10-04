@@ -31,7 +31,9 @@ semantics.
   `test_size_normalise.py`'s font/icon key normaliser,
   `test_arduinojson_type_guards.py`'s type-guard idiom against the real
   vendored ArduinoJson).
-- `deploy/` systemd unit, setup.sh, fonts fetch
+- `deploy/` systemd unit, setup.sh, fonts fetch; `compose.yaml` and
+  `CONTAINER.md` for the container route (root `Dockerfile`,
+  `.github/workflows/container.yml` publishes to GHCR)
 - `samples/display.json` known-good document, hash `ab71629b1ca76ea6`
 - `firmware/` ESPHome project, the source of truth for the panel:
   `epaper-schedule.yaml`, `display_list.h`, `fetch_and_watch.py`,
@@ -51,10 +53,14 @@ semantics.
 
 - `Store.publish()` is the only thing that stamps `meta.hash`. The hash
   covers `bg` + `palette` + `ops` only. The ETag is that hash in quotes.
-- The panel endpoint is unauthenticated and read-only, bound explicitly to
-  the LAN address plus 127.0.0.1, never a wildcard. The MCP endpoint binds
-  loopback; a Cloudflare Tunnel fronts it. That tunnel is the only edge —
-  the old reverse-proxy/nftables path is gone, don't reintroduce it.
+- The panel endpoint is unauthenticated and read-only. Both listeners bind
+  exactly the comma-separated addresses they are configured with; which
+  networks they appear on is the deployment's choice, not validated by the
+  service (`deploy/CONTAINER.md`). The shipped configs bind the panel to
+  the LAN address plus 127.0.0.1 and the MCP endpoint to loopback, with a
+  Cloudflare Tunnel fronting it. That tunnel is the only edge the repo
+  ships — the old reverse-proxy/nftables path is gone, don't reintroduce
+  it.
 - Warnings from the renderer never block a publish. Hard errors do.
 - Field names in `store.py` and the tool return shapes in `docs/PLAN.md`
   are final; other packages code against them.
